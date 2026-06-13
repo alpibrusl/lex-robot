@@ -131,6 +131,24 @@ proxy; a `Connection: close` header avoids a keep-alive hang against the lex-web
 server. The Tier-1 `depot_sidecar` stand-in mirrors the same routes for offline
 runs. lex-os grant: `manifests/depot.capsule.json`.
 
+### Tier 2: real MuJoCo physics scene
+
+`sidecar/depot_mujoco_sidecar.py` is a real MuJoCo scene (truck + charge-inlet
+site + a mocap-teleoperated connector) behind the same protocol — the same
+`depot_demo.lex` runs against it unchanged (`perceive` reads `site_xpos`, `move`
+runs `mj_step`, `connect` checks site alignment).
+
+```sh
+pip install mujoco
+python3 sidecar/depot_mujoco_sidecar.py &
+lex run --allow-effects env,io,net examples/depot_demo.lex run
+```
+
+![MuJoCo depot: connector approaching the truck inlet](media/depot_mujoco.gif)
+
+Connection is currently alignment-based; a rigid weld and a full Unitree G1
+humanoid (MuJoCo Menagerie) are the Tier-2 stretch goals (lex-robot#4).
+
 ## Evidence-gated task graph (the lex-loom pattern)
 
 `src/task.lex` runs **Perceive → Plan → Execute → Verify** with a hard gate at

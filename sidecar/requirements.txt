@@ -10,3 +10,6 @@ numpy
 # lerobot
 
 # sim_sidecar.py needs nothing (Python standard library only).
+
+# depot_mujoco_sidecar.py (Tier-2 MuJoCo depot scene)
+mujoco
