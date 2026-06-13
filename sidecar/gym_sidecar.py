@@ -137,6 +137,30 @@ class Sim:
                 break
         return steps, float(reward), float(max_reward), bool(term), bool(trunc)
 
+    # ── Step-wise control (so the Lex grant can vet each command) ────────────
+    def reset_episode(self, name: str):
+        self.load_policy(name)
+        self.obs, _ = self.env.reset()
+        self.policy.reset()
+        ap = self.obs["agent_pos"]
+        return float(ap[0]) / PLANE, float(ap[1]) / PLANE
+
+    def next_action(self):
+        # What the policy *wants* — normalized to [0,1]. Does NOT step the env.
+        import torch
+
+        with torch.no_grad():
+            a = self.post(self.policy.select_action(self.pre(self._raw(self.obs))))
+        arr = a.squeeze(0).cpu().numpy()
+        return float(arr[0]) / PLANE, float(arr[1]) / PLANE
+
+    def apply(self, x_norm: float, y_norm: float):
+        # Execute a (possibly grant-adjusted) command.
+        action = self.np.array([x_norm * PLANE, y_norm * PLANE], dtype=self.np.float32)
+        self.obs, reward, term, trunc, _ = self.env.step(action)
+        ap = self.obs["agent_pos"]
+        return float(reward), bool(term), bool(trunc), float(ap[0]) / PLANE, float(ap[1]) / PLANE
+
 
 SIM = None
 
@@ -168,6 +192,15 @@ def handle_skill(name: str, args: dict) -> dict:
         return run_policy(args)
     if name == "record_episode":
         return record_episode(args)
+    if name == "reset_episode":
+        x, y = sim().reset_episode(args.get("name", "lerobot/diffusion_pusht"))
+        return {"agent_x": x, "agent_y": y}
+    if name == "policy_action":
+        x, y = sim().next_action()
+        return {"x": x, "y": y}
+    if name == "apply_action":
+        r, term, trunc, ax, ay = sim().apply(float(args.get("x", 0.5)), float(args.get("y", 0.5)))
+        return {"reward": r, "terminated": term, "truncated": trunc, "agent_x": ax, "agent_y": ay}
     return {"error": f"unknown skill: {name}"}
 
 

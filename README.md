@@ -63,6 +63,28 @@ python3 sidecar/gym_sidecar.py &
 lex run --allow-effects net,io examples/demo.lex run
 ```
 
+## Why Lex, not vanilla LeRobot? (a demo where Lex does real work)
+
+PushT-solving is 100% LeRobot — Lex adds nothing there. Lex's value is
+**governance**: bounding what a policy is allowed to do. This demo proves it.
+
+A **keep-out zone** (a "bystander" region — the top half of the workspace) is
+declared. The *same* learned policy runs two ways against real physics:
+
+```sh
+.venv312/bin/python sidecar/gym_sidecar.py &
+lex run --allow-effects net,io examples/safe_rollout.lex run
+# UNGOVERNED (raw policy):  57/80 unsafe commands EXECUTED into the keep-out zone
+# GOVERNED   (Lex grant):   60 unsafe commands BLOCKED, 0 executed
+# → same policy; the Lex grant is the only difference
+```
+
+Lex sits **in the per-step loop**: it fetches each command the policy wants,
+checks it against the grant's keep-out box, and blocks/clamps the unsafe ones.
+Vanilla LeRobot has no such boundary — it executes whatever the policy emits.
+That is the property Lex adds: a learned policy you don't fully trust, kept
+inside an enforced envelope.
+
 ## Evidence-gated task graph (the lex-loom pattern)
 
 `src/task.lex` runs **Perceive → Plan → Execute → Verify** with a hard gate at

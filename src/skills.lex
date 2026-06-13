@@ -10,6 +10,8 @@ import "std.float" as flt
 
 import "std.int" as int
 
+import "std.list" as list
+
 import "./types" as t
 
 import "./grant" as grant
@@ -38,6 +40,47 @@ fn parse_outcome(resp :: Str) -> t.Outcome {
     } else {
       Stalled(resp)
     }
+  }
+}
+
+# ── Tiny flat-JSON float extractor (scaffold; avoids a json dep) ─────────────
+fn nth1(xs :: List[Str]) -> Str {
+  match list.head(list.tail(xs)) { Some(v) => v, None => "" }
+}
+
+fn head_or(xs :: List[Str], dflt :: Str) -> Str {
+  match list.head(xs) { Some(v) => v, None => dflt }
+}
+
+# Extract a numeric field from a flat JSON object. key e.g. "\"x\":".
+fn jfloat(json :: Str, key :: Str, dflt :: Float) -> Float {
+  let seg := nth1(str.split(json, key))
+  let tok := head_or(str.split(head_or(str.split(seg, ","), seg), "}"), seg)
+  match str.to_float(str.trim(tok)) {
+    Some(v) => v,
+    None => dflt,
+  }
+}
+
+# ── Step-wise control (lets the Lex grant vet each policy command) ───────────
+fn reset_episode(r :: t.Robot, name :: Str) -> [net] Result[Str, Str] {
+  client.call(r.sidecar_url, "reset_episode", str.join(["{\"name\":\"", name, "\"}"], ""))
+}
+
+# The action the policy *wants* (normalized), before any grant check.
+fn policy_action(r :: t.Robot) -> [net] Result[t.Vec3, Str] {
+  match client.call(r.sidecar_url, "policy_action", "{}") {
+    Err(e) => Err(e),
+    Ok(s) => Ok({ x: jfloat(s, "\"x\":", 0.5), y: jfloat(s, "\"y\":", 0.5), z: 0.0 }),
+  }
+}
+
+# Execute a (possibly grant-adjusted) command; returns the resulting reward.
+fn apply_action(r :: t.Robot, p :: t.Vec3) -> [net] Result[Float, Str] {
+  let body := str.join(["{\"x\":", flt.to_str(p.x), ",\"y\":", flt.to_str(p.y), "}"], "")
+  match client.call(r.sidecar_url, "apply_action", body) {
+    Err(e) => Err(e),
+    Ok(s) => Ok(jfloat(s, "\"reward\":", 0.0)),
   }
 }
 
