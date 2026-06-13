@@ -110,10 +110,26 @@ Two real properties Lex enforces here:
   evidence the connection completed. Teardown stops the session **before**
   unplugging (disconnect-mid-charge is `reversibility: supervised`).
 
-The charging API (`/v1/chargers/:id/start|stop`) mirrors the real **lex-charge**
-service (ev-fleet), so `charge_url` can point at the actual lex-charge/lex-csms
-instead of the Tier-1 sidecar with no Lex changes. lex-os grant:
-`manifests/depot.capsule.json`.
+### Against the real ev-fleet lex-charge/lex-csms
+
+The same demo runs against the **real** charging stack — no Lex changes, just
+env vars. `src/charge.lex` uses the header-capable `http.send` + `http.with_auth`
+(Bearer JWT), so it talks to the authenticated lex-charge directly:
+
+```sh
+python3 sidecar/depot_sidecar.py &                          # physical depot (:8900)
+# (ev-fleet stack up; lex-charge published to host on :18000; JWT minted for JWT_SECRET)
+LEX_CHARGE_URL=http://127.0.0.1:18000 LEX_CHARGE_TOKEN=<jwt> LEX_DEPOT_CP=CP-RTM-01 \
+  lex run --allow-effects env,io,net examples/depot_demo.lex run
+#   [ok ] verify.start   — lex-charge accepted (sent)            ← real remote_start → CSMS
+#   [ok ] verify.confirm — active OCPP session for CP-RTM-01     ← real /v1/sessions/active
+#   task SUCCESS — truck charging
+```
+
+Notes: `127.0.0.1` (not `localhost`) avoids an IPv6 hang through the docker
+proxy; a `Connection: close` header avoids a keep-alive hang against the lex-web
+server. The Tier-1 `depot_sidecar` stand-in mirrors the same routes for offline
+runs. lex-os grant: `manifests/depot.capsule.json`.
 
 ## Evidence-gated task graph (the lex-loom pattern)
 

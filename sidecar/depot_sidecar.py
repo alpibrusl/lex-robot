@@ -73,17 +73,23 @@ class Depot:
         self.connected = False
         return {"outcome": "reached", "detail": f"connector released (was_connected={was}, active_tx={self.active_tx})"}
 
-    # ── OCPP-shaped charging backend (mirrors lex-charge) ────────────────────
+    # ── OCPP-shaped charging backend (mirrors the real ev-fleet/lex-charge) ──
     def start_session(self, cp_id, connector_id, id_tag):
         if not self.connected:
-            return 409, {"status": "Rejected", "reason": "connector not seated"}
+            return 409, {"sent": False, "reason": "connector not seated"}
         self.tx_counter += 1
         self.active_tx = self.tx_counter
-        return 200, {"status": "Accepted", "transaction_id": self.active_tx, "cp_id": cp_id, "connector_id": connector_id, "id_tag": id_tag}
+        self.active_cp = cp_id
+        return 200, {"sent": True, "cp_id": cp_id, "transaction_id": self.active_tx}
+
+    def active_sessions(self):
+        if self.active_tx is None:
+            return []
+        return [{"id": self.active_tx, "cp_id": getattr(self, "active_cp", "DEPOT-CP-01"), "connector_id": 1, "stop_ts": None}]
 
     def stop_session(self, cp_id, transaction_id):
         self.active_tx = None
-        return 200, {"status": "Accepted", "transaction_id": transaction_id}
+        return 200, {"sent": True, "cp_id": cp_id}
 
 
 DEPOT = Depot()
@@ -143,6 +149,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/health":
             return self._send(200, {"ok": True, "connected": DEPOT.connected, "active_tx": DEPOT.active_tx})
+        if self.path == "/v1/sessions/active":
+            with _LOCK:
+                return self._send(200, DEPOT.active_sessions())
         return self._send(404, {"error": "not found"})
 
     def log_message(self, *a):

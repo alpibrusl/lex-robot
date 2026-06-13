@@ -1,63 +1,95 @@
-# charge.lex — OCPP-shaped charging client.
+# charge.lex — OCPP charging client for the real lex-charge service (ev-fleet).
 #
-# Mirrors the real lex-charge service (ev-fleet/lex-charge):
-#   POST <charge_url>/v1/chargers/<cp_id>/start  { connector_id, id_tag }
-#   POST <charge_url>/v1/chargers/<cp_id>/stop   { transaction_id }
+# Uses the header-capable http API (http.send + with_auth/with_header), so it
+# talks to the *authenticated* lex-charge directly — no proxy needed:
+#   POST <charge_url>/v1/chargers/<cp_id>/start  Bearer <jwt>  { connector_id, id_tag }
+#   GET  <charge_url>/v1/sessions/active          Bearer <jwt>
+#   POST <charge_url>/v1/chargers/<cp_id>/stop    Bearer <jwt>
 #
-# Point charge_url at the depot sidecar (Tier-1 stand-in) or the real
-# lex-charge. A session only starts if the connector is physically seated — so
-# a non-zero transaction_id is real evidence the robot completed the connection.
+# charge_url + token point at either the real lex-charge or the depot sidecar
+# stand-in (which mirrors these routes). A session that appears in
+# /v1/sessions/active for the cp_id is real OCPP evidence the connection worked.
 
 import "std.str" as str
+
+import "std.int" as int
 
 import "std.http" as http
 
 import "std.bytes" as bytes
 
-import "std.int" as int
+import "std.map" as map
 
-import "std.list" as list
+fn http_err(e :: HttpError) -> Str {
+  match e {
+    TimeoutError => "timeout",
+    TlsError(m) => str.concat("tls: ", m),
+    NetworkError(m) => str.concat("network: ", m),
+    DecodeError(m) => str.concat("decode: ", m),
+  }
+}
 
-# Returns Some(transaction_id) if the session started (OCPP Accepted), else None.
-fn start(charge_url :: Str, cp_id :: Str, connector_id :: Int, id_tag :: Str) -> [net] Result[Option[Int], Str] {
+fn base_req(method :: Str, url :: Str) -> { method :: Str, url :: Str, headers :: Map[Str, Str], body :: Option[Bytes], timeout_ms :: Option[Int] } {
+  { method: method, url: url, headers: map.new(), body: None, timeout_ms: Some(15000) }
+}
+
+fn body_str(resp :: HttpResponse) -> Str {
+  match http.text_body(resp) {
+    Ok(s) => s,
+    Err(_) => "",
+  }
+}
+
+# Strip spaces so checks work against both compact JSON (real lex-charge) and
+# spaced JSON (the Python stand-in's json.dumps).
+fn compact(s :: Str) -> Str {
+  str.replace(s, " ", "")
+}
+
+fn auth(req :: { method :: Str, url :: Str, headers :: Map[Str, Str], body :: Option[Bytes], timeout_ms :: Option[Int] }, token :: Str) -> { method :: Str, url :: Str, headers :: Map[Str, Str], body :: Option[Bytes], timeout_ms :: Option[Int] } {
+  # Connection: close avoids the client hanging on keep-alive sockets that the
+  # server doesn't close (seen against the lex-web HTTP server via the docker proxy).
+  let req2 := http.with_header(req, "Connection", "close")
+  if str.is_empty(token) {
+    req2
+  } else {
+    http.with_auth(req2, "Bearer", token)
+  }
+}
+
+# Issue an OCPP remote-start. Returns true if lex-charge accepted it (sent:true).
+fn start(charge_url :: Str, cp_id :: Str, connector_id :: Int, id_tag :: Str, token :: Str) -> [net] Result[Bool, Str] {
   let url := str.join([charge_url, "/v1/chargers/", cp_id, "/start"], "")
-  let body := str.join(["{\"connector_id\":", int.to_str(connector_id), ",\"id_tag\":\"", id_tag, "\"}"], "")
-  match http.post(url, bytes.from_str(body), "application/json") {
-    Err(_) => Err("charge service unreachable"),
-    Ok(resp) => match bytes.to_str(resp.body) {
-      Err(_) => Err("charge response decode failed"),
-      Ok(s) => if str.contains(s, "\"Accepted\"") {
-        Ok(Some(tx_id(s)))
-      } else {
-        Ok(None)
-      },
+  let payload := str.join(["{\"connector_id\":", int.to_str(connector_id), ",\"id_tag\":\"", id_tag, "\"}"], "")
+  let req0 := base_req("POST", url)
+  let req1 := { method: req0.method, url: req0.url, headers: req0.headers, body: Some(bytes.from_str(payload)), timeout_ms: req0.timeout_ms }
+  let req := auth(http.with_header(req1, "Content-Type", "application/json"), token)
+  match http.send(req) {
+    Err(e) => Err(http_err(e)),
+    Ok(resp) => {
+      let b := compact(body_str(resp))
+      Ok(if str.contains(b, "\"sent\":true") { true } else { str.contains(b, "\"Accepted\"") })
     },
   }
 }
 
-fn stop(charge_url :: Str, cp_id :: Str, transaction_id :: Int) -> [net] Result[Unit, Str] {
-  let url := str.join([charge_url, "/v1/chargers/", cp_id, "/stop"], "")
-  let body := str.join(["{\"transaction_id\":", int.to_str(transaction_id), "}"], "")
-  match http.post(url, bytes.from_str(body), "application/json") {
-    Err(_) => Err("charge service unreachable"),
-    Ok(_) => Ok(()),
+# Confirm via the real session list that this cp_id has an active session.
+fn confirm_active(charge_url :: Str, cp_id :: Str, token :: Str) -> [net] Result[Bool, Str] {
+  let url := str.concat(charge_url, "/v1/sessions/active")
+  let req := auth(base_req("GET", url), token)
+  match http.send(req) {
+    Err(e) => Err(http_err(e)),
+    Ok(resp) => Ok(str.contains(compact(body_str(resp)), str.join(["\"cp_id\":\"", cp_id, "\""], ""))),
   }
 }
 
-fn nth1(xs :: List[Str]) -> Str {
-  match list.head(list.tail(xs)) { Some(v) => v, None => "" }
-}
-
-fn head_or(xs :: List[Str], dflt :: Str) -> Str {
-  match list.head(xs) { Some(v) => v, None => dflt }
-}
-
-# Extract "transaction_id": N from a flat JSON response.
-fn tx_id(json :: Str) -> Int {
-  let seg := nth1(str.split(json, "\"transaction_id\":"))
-  let tok := head_or(str.split(head_or(str.split(seg, ","), seg), "}"), seg)
-  match str.to_int(str.trim(tok)) {
-    Some(n) => n,
-    None => 0,
+fn stop(charge_url :: Str, cp_id :: Str, token :: Str) -> [net] Result[Unit, Str] {
+  let url := str.join([charge_url, "/v1/chargers/", cp_id, "/stop"], "")
+  let req0 := base_req("POST", url)
+  let req1 := { method: req0.method, url: req0.url, headers: req0.headers, body: Some(bytes.from_str("{}")), timeout_ms: req0.timeout_ms }
+  let req := auth(http.with_header(req1, "Content-Type", "application/json"), token)
+  match http.send(req) {
+    Err(e) => Err(http_err(e)),
+    Ok(_) => Ok(()),
   }
 }
