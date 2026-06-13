@@ -38,9 +38,11 @@ PushT is a 2D point-pusher, so the mapping is lossy and documented per skill in
 - `record_episode` → captures frames to a `.npz` (full LeRobotDataset export is a
   follow-up).
 
-> **Not run in CI.** `gym_sidecar.py` follows the documented gym-pusht /
-> gymnasium API but hasn't been executed here. The env id and the LeRobot policy
-> import path can shift between releases — verify against your install.
+> **Verified locally** on macOS / Python 3.14, gym-pusht 0.1.6 — `read_joints`,
+> `read_camera`, `move_to`, `record_episode` work end-to-end. **Pin `pymunk<7`**
+> (in `requirements.txt`): gym-pusht 0.1.6 uses the pymunk 6.x collision-handler
+> API and pymunk 7 breaks the env with `'Space' object has no attribute
+> 'add_collision_handler'`. `run_policy`'s rollout loop is the remaining TODO.
 
 ## Going to real hardware
 Copy `gym_sidecar.py`, replace the `Sim` env calls with LeRobot robot/policy

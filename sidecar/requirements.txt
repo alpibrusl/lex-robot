@@ -1,6 +1,8 @@
 # gym_sidecar.py (real-physics PushT testing backend)
 gymnasium
 gym-pusht
+pymunk>=6.2,<7   # gym-pusht 0.1.6 uses the pymunk 6.x collision-handler API;
+                # pymunk 7 removed add_collision_handler and breaks the env.
 pillow
 numpy
 
