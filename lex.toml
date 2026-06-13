@@ -1,0 +1,11 @@
+[package]
+name    = "lex-robot"
+version = "0.1.0"
+lex     = "0.9.8"
+license = "EUPL-1.2"
+description = "Effect-typed, capability-bounded control layer over LeRobot (design-stage scaffold)"
+
+# No external deps yet — the scaffold uses only the standard library so it
+# compiles anywhere. JSON is built/parsed with std.str + std.json. lex-trail /
+# lex-os / lex-llm integration is layered on later (see DESIGN.md).
+[dependencies]

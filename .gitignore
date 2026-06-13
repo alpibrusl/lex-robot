@@ -1,0 +1,13 @@
+# Lex / build
+target/
+*.tsbuildinfo
+
+# Python sidecar
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# data / scratch
+*.db
+/data/
