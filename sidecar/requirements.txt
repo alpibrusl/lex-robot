@@ -1,0 +1,10 @@
+# gym_sidecar.py (real-physics PushT testing backend)
+gymnasium
+gym-pusht
+pillow
+numpy
+
+# run_policy only — pretrained LeRobot policies. Heavier; pulls torch.
+# lerobot
+
+# sim_sidecar.py needs nothing (Python standard library only).

@@ -36,6 +36,18 @@ $LEX run --allow-effects net,io examples/demo.lex run
 # grasp(99N→clamped)  → ...   (allowed; force clamped to the grant ceiling)
 ```
 
+## Testing in simulation
+
+Three swappable sidecar backends behind one protocol (see `sidecar/README.md`):
+**stub** (stdlib, logic tests) → **gym** (`gym-pusht`, real 2D physics, no
+MuJoCo) → **hardware** (LeRobot). The Lex side is identical across all three.
+
+```sh
+pip install -r sidecar/requirements.txt   # gym backend
+python3 sidecar/gym_sidecar.py &
+lex run --allow-effects net,io examples/demo.lex run
+```
+
 ## How it fits the ecosystem
 - **lex-os** — runs `lex-robot` as a supervised box; the grant = physical safety
   envelope + budgets; supervisor can kill/reprovision.
