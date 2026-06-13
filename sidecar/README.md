@@ -33,13 +33,21 @@ PushT is a 2D point-pusher, so the mapping is lossy and documented per skill in
 - `grasp` → `stalled` (no gripper in PushT).
 - `read_joints` → the 2D agent position.
 - `read_camera` → the rendered frame as base64 JPEG.
-- `run_policy` → loads a pretrained LeRobot policy and runs it closed-loop
-  (verified with lerobot 0.5.1 + `lerobot/diffusion_pusht` on Apple MPS).
-  Needs `pip install lerobot`. `budget_ms` maps to a step cap (~10ms/step,
-  capped at the 300-step episode). Note: lerobot 0.5.1 logs an
-  "Unexpected key(s) … normalize_inputs.buffer_*" warning loading this
-  checkpoint — the policy runs but the missing input-norm buffers depress the
-  solve rate; a checkpoint/version with matching norm buffers fixes it.
+- `run_policy` → loads a pretrained LeRobot policy and runs it closed-loop,
+  **with correct normalization** (verified: lerobot 0.5.1 + `lerobot/diffusion_pusht`
+  on Apple MPS, ~0.9 peak coverage on good seeds). Needs `pip install lerobot`.
+  `budget_ms` maps to a step cap (~10ms/step, capped at the 300-step episode);
+  outcome is `reached` when peak coverage ≥ `LEX_ROBOT_SOLVE_REWARD` (default
+  0.90, matching the policy's reported mean) or the env terminates.
+  - Normalization fix: lerobot 0.5.x moved normalization into *processor
+    pipelines*, and the old checkpoint has no `policy_preprocessor.json`. We
+    build the processors from the dataset stats
+    (`make_pre_post_processors(cfg, dataset_stats=LeRobotDatasetMetadata("lerobot/pusht").stats)`)
+    and run preprocess → `select_action` → postprocess. Without this the policy
+    runs unnormalized and scores ~0 (the "Unexpected key(s) normalize_inputs.*"
+    warning is benign once the processors are in place).
+  - Thread-safety: the env/policy are single-instance and not thread-safe;
+    skill calls are serialized with a lock (ThreadingHTTPServer is concurrent).
 - `record_episode` → captures frames to a `.npz` (full LeRobotDataset export is a
   follow-up).
 

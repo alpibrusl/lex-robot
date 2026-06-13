@@ -29,11 +29,19 @@ import base64
 import io as _io
 import json
 import os
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+# The gym env + policy are single-instance and NOT thread-safe. ThreadingHTTPServer
+# handles requests concurrently, so serialize all skill calls — otherwise two
+# rollouts step the same env at once and corrupt each other.
+_SKILL_LOCK = threading.Lock()
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("LEX_ROBOT_SIDECAR_PORT", "8900"))
 ENV_ID = os.environ.get("LEX_ROBOT_GYM_ENV", "gym_pusht/PushT-v0")
+DATASET_REPO = os.environ.get("LEX_ROBOT_DATASET", "lerobot/pusht")  # stats for normalization
+SOLVE_REWARD = float(os.environ.get("LEX_ROBOT_SOLVE_REWARD", "0.90"))  # diffusion_pusht ~0.9 mean coverage
 # PushT renders/acts in a 0..512 pixel plane. lex-robot poses are arbitrary
 # units; we treat the incoming x,y as normalised [0,1] and scale to the plane.
 PLANE = 512.0
@@ -52,6 +60,8 @@ class Sim:
         self.policy = None
         self.policy_name = None
         self.dev = None
+        self.pre = None
+        self.post = None
 
     def agent_pos(self):
         ap = self.obs["agent_pos"] if isinstance(self.obs, dict) else None
@@ -79,20 +89,31 @@ class Sim:
                 break
         return float(reward), bool(terminated), bool(truncated)
 
-    def _batch(self, o):
+    def _raw(self, o):
+        # Unbatched raw obs; the preprocessor pipeline normalizes, batches, and
+        # moves to device.
         import torch
 
-        img = torch.from_numpy(o["pixels"]).permute(2, 0, 1).float().div(255).unsqueeze(0).to(self.dev)
-        st = torch.from_numpy(self.np.asarray(o["agent_pos"], dtype=self.np.float32)).unsqueeze(0).to(self.dev)
-        return {"observation.image": img, "observation.state": st}
+        return {
+            "observation.image": torch.from_numpy(o["pixels"]).permute(2, 0, 1).float().div(255),
+            "observation.state": torch.from_numpy(self.np.asarray(o["agent_pos"], dtype=self.np.float32)),
+        }
 
     def load_policy(self, name: str) -> None:
         from lerobot.policies.diffusion.modeling_diffusion import DiffusionPolicy
+        from lerobot.policies.factory import make_pre_post_processors
+        from lerobot.datasets.lerobot_dataset import LeRobotDatasetMetadata
 
         if self.policy_name != name:
             self.policy = DiffusionPolicy.from_pretrained(name)
             self.policy.eval()
             self.dev = self.policy.config.device
+            # lerobot 0.5.x moved normalization into processor pipelines. The
+            # old diffusion_pusht checkpoint has no processor JSONs, so build
+            # them from the dataset stats — WITHOUT this the policy runs
+            # unnormalized and scores ~0.
+            meta = LeRobotDatasetMetadata(DATASET_REPO)
+            self.pre, self.post = make_pre_post_processors(self.policy.config, dataset_stats=meta.stats)
             self.policy_name = name
 
     def rollout(self, name: str, max_steps: int):
@@ -103,15 +124,18 @@ class Sim:
         self.obs, _ = self.env.reset()
         self.policy.reset()
         reward = 0.0
+        max_reward = 0.0
         term = trunc = False
         steps = 0
         for steps in range(1, max_steps + 1):
+            batch = self.pre(self._raw(self.obs))
             with torch.no_grad():
-                action = self.policy.select_action(self._batch(self.obs))
+                action = self.post(self.policy.select_action(batch))
             self.obs, reward, term, trunc, _ = self.env.step(action.squeeze(0).cpu().numpy())
+            max_reward = max(max_reward, reward)
             if term or trunc:
                 break
-        return steps, float(reward), bool(term), bool(trunc)
+        return steps, float(reward), float(max_reward), bool(term), bool(trunc)
 
 
 SIM = None
@@ -158,11 +182,16 @@ def run_policy(args: dict) -> dict:
     budget_ms = int(args.get("budget_ms", 10000))
     max_steps = max(1, min(300, budget_ms // 100))
     try:
-        steps, reward, term, trunc = sim().rollout(name, max_steps)
+        steps, reward, max_reward, term, trunc = sim().rollout(name, max_steps)
     except Exception as e:
         return {"outcome": "stalled", "detail": f"run_policy error ({name}): {e}"}
-    outcome = "reached" if term else "timeout"
-    return {"outcome": outcome, "detail": f"steps={steps}, reward={reward:.3f}, policy={name}"}
+    # PushT may not emit `terminated`; treat peak coverage ≥ threshold as solved.
+    solved = term or max_reward >= SOLVE_REWARD
+    outcome = "reached" if solved else "timeout"
+    return {
+        "outcome": outcome,
+        "detail": f"steps={steps}, max_reward={max_reward:.3f}, final={reward:.3f}, policy={name}",
+    }
 
 
 def record_episode(args: dict) -> dict:
@@ -207,7 +236,9 @@ class Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             return self._send(400, {"error": "invalid json"})
         try:
-            self._send(200, handle_skill(name, args))
+            with _SKILL_LOCK:
+                result = handle_skill(name, args)
+            self._send(200, result)
         except Exception as e:  # surface sim errors to the Lex side as a stall
             self._send(200, {"outcome": "stalled", "detail": f"sim error: {e}"})
 
