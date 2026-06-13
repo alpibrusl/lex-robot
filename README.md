@@ -46,6 +46,11 @@ $LEX run --allow-effects net,io examples/demo.lex run
 # grasp(99N→clamped)  → ...   (allowed; force clamped to the grant ceiling)
 ```
 
+![LeRobot diffusion policy solving gym-pusht (0.94 coverage), driven through lex-robot on Apple MPS](media/pusht_solve.gif)
+
+*A `lerobot/diffusion_pusht` policy pushing the T to the goal in gym-pusht (~0.94
+coverage), run via the lex-robot gym sidecar on Apple MPS — a real recorded rollout.*
+
 ## Testing in simulation
 
 Three swappable sidecar backends behind one protocol (see `sidecar/README.md`):
