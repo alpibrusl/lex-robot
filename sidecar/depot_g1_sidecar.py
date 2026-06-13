@@ -85,16 +85,39 @@ def _build_spec():
     # Cartesian teleop target (mocap) — the weld below drags the hand to follow it.
     tgt = wb.add_body(name="ctrl_target", mocap=True, pos=[0.2, -0.15, 0.9])
     tgt.add_geom(type=mujoco.mjtGeom.mjGEOM_SPHERE, size=[0.018, 0, 0],
-                 rgba=[0, 1, 1, 0.2], contype=0, conaffinity=0)
+                 rgba=[0, 1, 1, 0.0], contype=0, conaffinity=0)  # invisible teleop marker
 
-    # Truck + charge inlet. The bulk box is visual; a small collidable inlet pad
-    # gives contact-rich insertion, with the inlet site held proud of the pad so
-    # the connector tip can reach it before the body bottoms out on the truck.
+    # Floor — the G1's feet rest at ~z=0 in the home pose, so this grounds it.
+    wb.add_geom(name="floor", type=mujoco.mjtGeom.mjGEOM_PLANE, size=[3, 3, 0.1],
+                rgba=[0.26, 0.28, 0.30, 1], contype=0, conaffinity=0)
+
+    # Truck silhouette (visual only) — a compact chassis + cab + wheels at ground,
+    # parked side-on so its charge port faces the robot at arm height. Kept small
+    # so it doesn't bury the port; the charge port is near the top of the side.
+    chassis = wb.add_body(name="chassis", pos=[0.54, -0.15, 0.50])
+    chassis.add_geom(type=mujoco.mjtGeom.mjGEOM_BOX, size=[0.18, 0.30, 0.45],
+                     rgba=[0.30, 0.40, 0.58, 1], contype=0, conaffinity=0)
+    chassis.add_geom(type=mujoco.mjtGeom.mjGEOM_BOX, pos=[0.0, 0.40, -0.05], size=[0.17, 0.12, 0.30],
+                     rgba=[0.24, 0.33, 0.50, 1], contype=0, conaffinity=0)  # cab
+    for wy in (-0.20, 0.30):
+        chassis.add_geom(type=mujoco.mjtGeom.mjGEOM_CYLINDER, pos=[0.0, wy, -0.40],
+                         size=[0.11, 0.05, 0], euler=[1.5708, 0, 0],
+                         rgba=[0.07, 0.07, 0.07, 1], contype=0, conaffinity=0)  # wheels
+
+    # Charge port assembly on the truck side facing the robot. The faceplate +
+    # recessed dark bore read as a socket the connector inserts into; the inlet
+    # site + small collidable pad are the validated seat geometry (unchanged), so
+    # contact-rich insertion + the seat weld still work. "led" recolors on charge.
     truck = wb.add_body(name="truck", pos=[0.42, -0.15, 0.90])
-    truck.add_geom(name="truck_g", type=mujoco.mjtGeom.mjGEOM_BOX, size=[0.06, 0.10, 0.10],
-                   rgba=[0.3, 0.4, 0.6, 1], contype=0, conaffinity=0)
+    truck.add_geom(name="faceplate", type=mujoco.mjtGeom.mjGEOM_BOX, pos=[-0.075, 0, 0],
+                   size=[0.012, 0.06, 0.06], rgba=[0.12, 0.12, 0.14, 1], contype=0, conaffinity=0)
+    truck.add_geom(name="bore", type=mujoco.mjtGeom.mjGEOM_CYLINDER, pos=[-0.02, 0, 0],
+                   size=[0.026, 0.055, 0], euler=[0, 1.5708, 0], rgba=[0.02, 0.02, 0.02, 1],
+                   contype=0, conaffinity=0)
+    truck.add_geom(name="led", type=mujoco.mjtGeom.mjGEOM_SPHERE, pos=[-0.085, 0, 0.058],
+                   size=[0.02, 0, 0], rgba=[0.85, 0.12, 0.12, 1], contype=0, conaffinity=0)
     truck.add_geom(name="pad", type=mujoco.mjtGeom.mjGEOM_BOX, pos=[-0.06, 0, 0],
-                   size=[0.008, 0.03, 0.03], rgba=[0.5, 0.5, 0.55, 1], contype=1, conaffinity=1)
+                   size=[0.008, 0.03, 0.03], rgba=[0.1, 0.1, 0.12, 1], contype=1, conaffinity=1)
     truck.add_site(name="inlet", pos=[-0.085, 0, 0], size=[0.02, 0, 0], rgba=[1, 0.8, 0, 1])
 
     # Connector rigidly mounted on the G1 hand (a real part of the arm).
@@ -134,11 +157,17 @@ class DepotG1:
     def __init__(self):
         self.m = _build_spec().compile()
         self.d = mujoco.MjData(self.m)
-        # Neutralize position actuators so the teleop weld can move the arm freely
-        # (gravity is off, base is pinned), and damp the dofs for smooth tracking.
-        self.m.actuator_gainprm[:, :] = 0
-        self.m.actuator_biasprm[:, :] = 0
-        self.m.dof_damping[:] = np.maximum(self.m.dof_damping, 4.0)
+        # Free ONLY the right-arm actuators so the teleop weld can move that arm;
+        # keep legs/torso/left-arm stiff (held at the home pose in reset) so the
+        # humanoid stays standing. Damp the freed dofs for smooth tracking.
+        arm = ("right_shoulder", "right_elbow", "right_wrist")
+        self.arm_acts = [i for i in range(self.m.nu)
+                         if self.m.actuator(i).name.startswith(arm)]
+        for i in self.arm_acts:
+            self.m.actuator_gainprm[i, :] = 0
+            self.m.actuator_biasprm[i, :] = 0
+            jid = self.m.actuator_trnid[i, 0]
+            self.m.dof_damping[self.m.jnt_dofadr[jid]] = 5.0
         self.mocap = self.m.body("ctrl_target").mocapid[0]
         self.s_tip = self.m.site("tip").id
         self.s_inlet = self.m.site("inlet").id
@@ -162,6 +191,11 @@ class DepotG1:
         self.d.eq_active[self.eq_seat] = 0
         self.m.geom("plug_g").contype = 1
         self.m.geom("plug_g").conaffinity = 1
+        # Hold every position actuator at its home-pose joint angle so the stiff
+        # (non-arm) joints keep the humanoid standing instead of driving to zero.
+        for i in range(self.m.nu):
+            jid = self.m.actuator_trnid[i, 0]
+            self.d.ctrl[i] = self.d.qpos[self.m.jnt_qposadr[jid]]
         mujoco.mj_forward(self.m, self.d)
         self.d.mocap_pos[self.mocap] = self.d.body(HAND).xpos.copy()
         self.connected = False
