@@ -86,10 +86,19 @@ lex-os check --grant manifests/pick_place.capsule.json box/agent_violation.lex
 #   grant violation: effect `proc` needs exec ≥ `sandboxed`, grant provides `none`   ← REFUSED
 ```
 
-So a robot program that tries to exceed its grant (e.g. shell out) is rejected
-*before execution*. The remaining step for full enforcement — running the task
-**inside** a lex-os microVM box as the guest agent (supervisor + budget kill +
-tamper-proof audit) — needs Linux/KVM and the guest protocol (DESIGN.md §8).
+And the **runtime supervisor** runs on macOS too (simulated perimeter, no KVM):
+
+```sh
+lex-os run --manifest manifests/pick_place.capsule.json --agent demo --audit-out /tmp/robot-audit.json
+#   audit_verified: true   outcome: "BudgetExhausted(...)"   reprovisions: 1
+```
+
+It mediates each command against the grant, tags reversibility, enforces the
+budget (kill), reprovisions, and emits a verified hash-chained audit log. See
+[`box/README.md`](box/README.md) for the full three-layer flow.
+
+The only piece that needs **Linux+KVM** is running the robot task itself inside
+an unbypassable Firecracker microVM as a lex-os guest agent (lex-robot#1).
 
 ## How it fits the ecosystem
 - **lex-os** — runs `lex-robot` as a supervised box; the grant = physical safety
