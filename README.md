@@ -6,23 +6,33 @@ ML + hardware engine; `lex-robot` is the safety envelope and the
 "judgment vs. authority" boundary (the [lex-os](https://github.com/alpibrusl/lex-os)
 thesis, applied to a physical body).
 
-> **Status: design-stage scaffold.** The Lex side compiles and the grant gate
-> works; the Python LeRobot sidecar is a build target (see `SIDECAR.md`).
-> **Not safe near a real arm yet** — see DESIGN.md §8.
+> **Status: working prototype (verified on macOS / Apple MPS).** End-to-end:
+> bounded skills → real gym-pusht physics → a learned LeRobot policy that solves
+> the task (~0.9 peak coverage) → an evidence-gated task graph → a hash-chained
+> lex-trail audit → a lex-os grant (static effect-wall + runtime supervised box).
+> **Still not safe near a real arm** — software grant ≠ physical safety; you need
+> firmware limits + a hardware e-stop (DESIGN.md §8). The Firecracker microVM box
+> and (optional) GPU training are the only Linux-only pieces (see issues #1, #2).
 
 ## Layout
 
 ```
 DESIGN.md        full design note (layering, reuse, milestones, constraints)
 SIDECAR.md       the Python sidecar HTTP protocol
-lex.toml         package manifest (std-only for now)
+lex.toml         package manifest (depends on lex-trail)
 src/
   types.lex      Pose, JointState, Frame, Outcome, Grant, Robot
   grant.lex      pure capability checks (workspace, force/velocity clamps)
   client.lex     HTTP bridge to the LeRobot sidecar (localhost)
-  skills.lex     bounded skill API (move_to, grasp, run_policy, …)
+  skills.lex     bounded skill API (move_to, grasp, run_policy, read_*, record_episode)
+  task.lex       evidence-gated Perceive→Plan→Execute→Verify graph + lex-trail audit
 examples/
   demo.lex       grant gate in action (Denied vs. allowed)
+  task_demo.lex  the full gated task graph end to end
+sidecar/         3 backends behind one protocol: sim_sidecar (stub) →
+                 gym_sidecar (real PushT + LeRobot policy) → hardware
+manifests/       lex-os grant for the task (pick_place.capsule.json)
+box/             lex-os agent programs + the three-layer enforcement guide
 ```
 
 ## Try the grant gate (no robot needed)
@@ -66,8 +76,9 @@ lex run --allow-effects net,io examples/task_demo.lex run
 # task SUCCESS after 1 attempt(s)
 ```
 
-Swap `execute()` from `move_to` to `run_policy` to gate on actual task
-completion by a learned LeRobot policy.
+Set `use_policy=true` in `task_demo.lex` to gate Verify on a real LeRobot policy
+solving the task (`run_policy`, verified ~0.9 peak coverage on MPS — needs the
+gym sidecar + `lerobot`).
 
 ## Running under lex-os (the capability box)
 
@@ -109,10 +120,13 @@ an unbypassable Firecracker microVM as a lex-os guest agent (lex-robot#1).
   provenance for LeRobotDataset episodes).
 - **lex-llm** — high-level planner / skill selector.
 
-## Known scaffold gaps (intentional)
+## Known gaps (intentional / next)
 - `actuate` / `sense` are **not** first-class Lex effects yet (compiler-defined
-  set); skills carry `[net]` and capability is enforced at runtime via `grant.lex`.
-  Promoting them to real effects is a lex-lang change (DESIGN.md §4).
-- JSON is hand-built/parsed with `std.str` to stay dependency-free; swap to
-  `lex-schema/json_value` once deps are wired.
-- No lex-trail wiring yet; no WebSocket streaming yet.
+  set); skills carry `[net]` and capability is enforced at runtime via `grant.lex`
+  + the lex-os grant. Promoting them to real effects is a lex-lang change (DESIGN.md §4).
+- JSON is hand-built with `std.str`; could swap to `lex-schema/json_value`.
+- No WebSocket streaming of sensor/state yet (HTTP request/response only).
+- The robot task doesn't yet run *inside* a Firecracker microVM as a lex-os
+  guest agent (needs Linux+KVM — issue #1). The static effect-wall + simulated
+  runtime supervisor already work on macOS.
+- `record_episode` writes frames to `.npz`; full LeRobotDataset export is a follow-up.
