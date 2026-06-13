@@ -84,6 +84,47 @@ fn apply_action(r :: t.Robot, p :: t.Vec3) -> [net] Result[Float, Str] {
   }
 }
 
+# ── Depot / EV-charging skills ───────────────────────────────────────────────
+fn reset_depot(r :: t.Robot) -> [net] Result[Str, Str] {
+  client.call(r.sidecar_url, "reset_depot", "{}")
+}
+
+# Read the truck's charge-inlet pose (Perceive).
+fn read_inlet(r :: t.Robot) -> [net] Result[t.Pose, Str] {
+  match client.call(r.sidecar_url, "read_inlet", "{}") {
+    Err(e) => Err(e),
+    Ok(s) => Ok({
+      pos: { x: jfloat(s, "\"x\":", 0.0), y: jfloat(s, "\"y\":", 0.0), z: jfloat(s, "\"z\":", 0.0) },
+      rx: jfloat(s, "\"rx\":", 0.0), ry: jfloat(s, "\"ry\":", 0.0), rz: jfloat(s, "\"rz\":", 0.0),
+    }),
+  }
+}
+
+# Seat the connector. Grant-gated: rejected if not allowed; force clamped to the
+# grant ceiling before the command is sent.
+fn connect_charger(r :: t.Robot, force :: Float) -> [net] t.Outcome {
+  if grant.skill_allowed(r.grant, "connect_charger") {
+    let clamped := grant.clamp_force(r.grant, force)
+    match client.call(r.sidecar_url, "connect_charger", str.join(["{\"force\":", f(clamped), "}"], "")) {
+      Err(e) => Stalled(e),
+      Ok(resp) => parse_outcome(resp),
+    }
+  } else {
+    Denied("skill connect_charger not in grant")
+  }
+}
+
+fn disconnect_charger(r :: t.Robot) -> [net] t.Outcome {
+  if grant.skill_allowed(r.grant, "disconnect_charger") {
+    match client.call(r.sidecar_url, "disconnect_charger", "{}") {
+      Err(e) => Stalled(e),
+      Ok(resp) => parse_outcome(resp),
+    }
+  } else {
+    Denied("skill disconnect_charger not in grant")
+  }
+}
+
 # ── Sensing ──────────────────────────────────────────────────────────────────
 fn read_joints(r :: t.Robot) -> [net] Result[Str, Str] {
   client.call(r.sidecar_url, "read_joints", "{}")

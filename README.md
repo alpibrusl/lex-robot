@@ -85,6 +85,36 @@ Vanilla LeRobot has no such boundary — it executes whatever the policy emits.
 That is the property Lex adds: a learned policy you don't fully trust, kept
 inside an enforced envelope.
 
+## EV-depot demo: physical action gated by a real protocol (lex-robot#4)
+
+Where the safety rules aren't synthetic. A (stationary) humanoid arm connects a
+charging connector to a truck, and the charging **session** is the Verify gate:
+
+```sh
+python3 sidecar/depot_sidecar.py &
+lex run --allow-effects net,io examples/depot_demo.lex run
+#   [ok ] perceive — inlet at (0.7,0.5,0.3)
+#   [ok ] plan — approach the inlet
+#   [ok ] execute.move — reached
+#   [ok ] execute.connect (req 99N->clamped 15N) — reached     ← grant clamps the force
+#   [ok ] verify — OCPP StartTransaction Accepted, tx=1001     ← real session, only if seated
+#   task SUCCESS — truck charging
+#   teardown — stopped tx + disconnect
+```
+
+Two real properties Lex enforces here:
+- **Force ceiling** — the connect skill requests 99N; the grant clamps it to
+  15N before it reaches the arm (plus a firmware floor in the sidecar).
+- **Protocol-coupled Verify** — the OCPP `StartTransaction` only succeeds when the
+  connector is *physically seated*, so a non-zero `transaction_id` is genuine
+  evidence the connection completed. Teardown stops the session **before**
+  unplugging (disconnect-mid-charge is `reversibility: supervised`).
+
+The charging API (`/v1/chargers/:id/start|stop`) mirrors the real **lex-charge**
+service (ev-fleet), so `charge_url` can point at the actual lex-charge/lex-csms
+instead of the Tier-1 sidecar with no Lex changes. lex-os grant:
+`manifests/depot.capsule.json`.
+
 ## Evidence-gated task graph (the lex-loom pattern)
 
 `src/task.lex` runs **Perceive → Plan → Execute → Verify** with a hard gate at

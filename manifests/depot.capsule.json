@@ -1,0 +1,19 @@
+{
+  "goal": {
+    "description": "Connect the charging connector to the truck inlet, start the OCPP session, then stop+disconnect",
+    "done_signal": "OCPP StartTransaction Accepted (non-zero transaction_id)"
+  },
+  "grant": {
+    "filesystem": "ReadWrite",
+    "network": "Allowlist",
+    "exec": "None"
+  },
+  "budget": {
+    "wall_clock_secs": 120,
+    "max_commands": 50,
+    "max_money_cents": 0,
+    "max_api_calls": 0
+  },
+  "isolation_floor": "Namespace",
+  "egress": ["127.0.0.1", "localhost"]
+}
