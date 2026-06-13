@@ -13,3 +13,11 @@ numpy
 
 # depot_mujoco_sidecar.py (Tier-2 MuJoCo depot scene)
 mujoco
+
+# depot_g1_sidecar.py (Tier-3: real Unitree G1 humanoid) also needs the G1 model
+# from MuJoCo Menagerie (heavy STL meshes, not vendored). Sparse-checkout it and
+# point LEX_G1_DIR at it:
+#   git clone --depth 1 --filter=blob:none --sparse \
+#     https://github.com/google-deepmind/mujoco_menagerie.git /tmp/menagerie
+#   git -C /tmp/menagerie sparse-checkout set unitree_g1
+#   export LEX_G1_DIR=/tmp/menagerie/unitree_g1

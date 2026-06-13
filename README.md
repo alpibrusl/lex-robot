@@ -146,8 +146,45 @@ lex run --allow-effects env,io,net examples/depot_demo.lex run
 
 ![MuJoCo depot: connector approaching the truck inlet](media/depot_mujoco.gif)
 
-Connection is currently alignment-based; a rigid weld and a full Unitree G1
-humanoid (MuJoCo Menagerie) are the Tier-2 stretch goals (lex-robot#4).
+### Tier 3: real Unitree G1 humanoid + contact-rich insertion + rigid weld
+
+`sidecar/depot_g1_sidecar.py` loads the real **Unitree G1** humanoid (MuJoCo
+Menagerie) and drives its right arm to do the connect — same depot protocol, so
+`depot_demo.lex` runs against it unchanged. The fidelity jumps from Tier 2:
+
+- **Real humanoid arm**, not a floating capsule. The connector is mounted on the
+  G1 hand; the arm is moved by a mocap weld (Cartesian teleop, no IK), pelvis
+  pinned to the world (a stationary depot humanoid), gravity off so there's no
+  whole-body balancing.
+- **Contact-rich insertion** — the connector geom and the inlet pad are
+  collidable, so the plug physically contacts the truck during approach.
+- **Rigid weld on seat** — once the tip is aligned within tolerance, a stiff
+  weld equality (plug→truck) locks in place: a real mechanical join, not just an
+  alignment flag. `disconnect_charger` releases it.
+
+The G1 lives in its natural frame (right hand at −y), so the sidecar maps the
+grant's `[0,1]` workspace onto the real reachable box — the grant and demo stay
+unchanged. The model isn't vendored (heavy STL meshes); point `LEX_G1_DIR` at a
+Menagerie checkout:
+
+```sh
+pip install mujoco numpy
+git clone --depth 1 --filter=blob:none --sparse \
+  https://github.com/google-deepmind/mujoco_menagerie.git /tmp/menagerie
+git -C /tmp/menagerie sparse-checkout set unitree_g1
+export LEX_G1_DIR=/tmp/menagerie/unitree_g1
+python3 sidecar/depot_g1_sidecar.py &
+lex run --allow-effects env,net,io examples/depot_demo.lex run
+#   [ok ] execute.move — reached            ← the G1 right arm reaches the inlet
+#   [ok ] execute.connect (req 99N->clamped 15N) — reached   ← grant clamps + weld seats
+#   [ok ] verify.confirm — active OCPP session
+#   task SUCCESS — truck charging
+```
+
+![Unitree G1 reaching across to seat the charge connector in the truck inlet](media/depot_g1.gif)
+
+Connection now uses real contact + a rigid weld. A full whole-body G1 (legs/torso
+actuated for balance instead of a pinned pelvis) is the remaining stretch (lex-robot#4).
 
 ## Evidence-gated task graph (the lex-loom pattern)
 
