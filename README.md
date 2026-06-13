@@ -48,6 +48,27 @@ python3 sidecar/gym_sidecar.py &
 lex run --allow-effects net,io examples/demo.lex run
 ```
 
+## Evidence-gated task graph (the lex-loom pattern)
+
+`src/task.lex` runs **Perceive → Plan → Execute → Verify** with a hard gate at
+Verify (a task is "done" only when a real outcome confirms it) and bounded
+retries — the lex-loom pipeline, self-contained (no DB/orchestrator) so it runs
+against any sidecar.
+
+```sh
+.venv312/bin/python sidecar/gym_sidecar.py &     # real PushT physics
+lex run --allow-effects net,io examples/task_demo.lex run
+# attempt 1:
+#   [ok ] perceive — agent_pos [...]   (real sensor read)
+#   [ok ] plan — target (...)
+#   [ok ] execute — reached            (move_to in physics)
+#   [ok ] verify — outcome reached     (the gate)
+# task SUCCESS after 1 attempt(s)
+```
+
+Swap `execute()` from `move_to` to `run_policy` to gate on actual task
+completion by a learned LeRobot policy.
+
 ## How it fits the ecosystem
 - **lex-os** — runs `lex-robot` as a supervised box; the grant = physical safety
   envelope + budgets; supervisor can kill/reprovision.

@@ -5,7 +5,7 @@ target/
 # Python sidecar
 __pycache__/
 *.pyc
-.venv/
+.venv*/
 venv/
 
 # data / scratch

@@ -33,8 +33,13 @@ PushT is a 2D point-pusher, so the mapping is lossy and documented per skill in
 - `grasp` → `stalled` (no gripper in PushT).
 - `read_joints` → the 2D agent position.
 - `read_camera` → the rendered frame as base64 JPEG.
-- `run_policy` → loads a pretrained LeRobot policy; **the rollout loop is the one
-  TODO** (version-specific — see the `# TODO` in the file).
+- `run_policy` → loads a pretrained LeRobot policy and runs it closed-loop
+  (verified with lerobot 0.5.1 + `lerobot/diffusion_pusht` on Apple MPS).
+  Needs `pip install lerobot`. `budget_ms` maps to a step cap (~10ms/step,
+  capped at the 300-step episode). Note: lerobot 0.5.1 logs an
+  "Unexpected key(s) … normalize_inputs.buffer_*" warning loading this
+  checkpoint — the policy runs but the missing input-norm buffers depress the
+  solve rate; a checkpoint/version with matching norm buffers fixes it.
 - `record_episode` → captures frames to a `.npz` (full LeRobotDataset export is a
   follow-up).
 

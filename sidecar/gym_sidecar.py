@@ -49,6 +49,9 @@ class Sim:
         self.np = __import__("numpy")
         self.env = gym.make(ENV_ID, obs_type="pixels_agent_pos", render_mode="rgb_array")
         self.obs, _ = self.env.reset()
+        self.policy = None
+        self.policy_name = None
+        self.dev = None
 
     def agent_pos(self):
         ap = self.obs["agent_pos"] if isinstance(self.obs, dict) else None
@@ -75,6 +78,40 @@ class Sim:
             if terminated or truncated:
                 break
         return float(reward), bool(terminated), bool(truncated)
+
+    def _batch(self, o):
+        import torch
+
+        img = torch.from_numpy(o["pixels"]).permute(2, 0, 1).float().div(255).unsqueeze(0).to(self.dev)
+        st = torch.from_numpy(self.np.asarray(o["agent_pos"], dtype=self.np.float32)).unsqueeze(0).to(self.dev)
+        return {"observation.image": img, "observation.state": st}
+
+    def load_policy(self, name: str) -> None:
+        from lerobot.policies.diffusion.modeling_diffusion import DiffusionPolicy
+
+        if self.policy_name != name:
+            self.policy = DiffusionPolicy.from_pretrained(name)
+            self.policy.eval()
+            self.dev = self.policy.config.device
+            self.policy_name = name
+
+    def rollout(self, name: str, max_steps: int):
+        """Reset the env + policy and run the learned policy closed-loop."""
+        import torch
+
+        self.load_policy(name)
+        self.obs, _ = self.env.reset()
+        self.policy.reset()
+        reward = 0.0
+        term = trunc = False
+        steps = 0
+        for steps in range(1, max_steps + 1):
+            with torch.no_grad():
+                action = self.policy.select_action(self._batch(self.obs))
+            self.obs, reward, term, trunc, _ = self.env.step(action.squeeze(0).cpu().numpy())
+            if term or trunc:
+                break
+        return steps, float(reward), bool(term), bool(trunc)
 
 
 SIM = None
@@ -113,24 +150,19 @@ def handle_skill(name: str, args: dict) -> dict:
 def run_policy(args: dict) -> dict:
     """Roll out a pretrained LeRobot policy in the env until success/timeout.
 
-    The LeRobot policy import path and obs formatting vary by version, so this is
-    best-effort and fails loudly with guidance rather than guessing silently.
+    Verified with lerobot 0.5.1 + lerobot/diffusion_pusht on Apple MPS. ~0.2s
+    per step on CPU/MPS, so budget_ms maps to a step cap (≈10ms/step budget,
+    capped at the PushT episode length of 300).
     """
     name = args.get("name", "lerobot/diffusion_pusht")
-    budget_ms = int(args.get("budget_ms", 30000))
+    budget_ms = int(args.get("budget_ms", 10000))
+    max_steps = max(1, min(300, budget_ms // 100))
     try:
-        import torch
-        from lerobot.common.policies.factory import make_policy  # path may differ by version
-        del torch, make_policy
+        steps, reward, term, trunc = sim().rollout(name, max_steps)
     except Exception as e:
-        return {
-            "outcome": "stalled",
-            "detail": f"run_policy needs lerobot installed and the policy import wired for your "
-            f"version (tried lerobot.common.policies.factory): {e}",
-        }
-    # Wiring the exact obs→policy→action loop is version-specific; left as the
-    # one TODO that must be matched to the installed LeRobot. Until then:
-    return {"outcome": "stalled", "detail": f"policy {name} loaded; rollout loop not wired (budget_ms={budget_ms})"}
+        return {"outcome": "stalled", "detail": f"run_policy error ({name}): {e}"}
+    outcome = "reached" if term else "timeout"
+    return {"outcome": outcome, "detail": f"steps={steps}, reward={reward:.3f}, policy={name}"}
 
 
 def record_episode(args: dict) -> dict:
