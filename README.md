@@ -69,6 +69,28 @@ lex run --allow-effects net,io examples/task_demo.lex run
 Swap `execute()` from `move_to` to `run_policy` to gate on actual task
 completion by a learned LeRobot policy.
 
+## Running under lex-os (the capability box)
+
+`manifests/pick_place.capsule.json` is a [lex-os](https://github.com/alpibrusl/lex-os)
+grant: `fs=read-write net=allowlist exec=none`, budgets, egress=localhost. The
+real `lex-os` binary enforces it as a static **effect-wall** before anything runs:
+
+```sh
+lex-os resolve --manifest manifests/pick_place.capsule.json
+#   grant: "fs=read-write net=allowlist exec=none"
+
+lex-os check --grant manifests/pick_place.capsule.json box/agent_ok.lex
+#   effects: ["fs_write","io","net"]   ok: true        ← within grant
+
+lex-os check --grant manifests/pick_place.capsule.json box/agent_violation.lex
+#   grant violation: effect `proc` needs exec ≥ `sandboxed`, grant provides `none`   ← REFUSED
+```
+
+So a robot program that tries to exceed its grant (e.g. shell out) is rejected
+*before execution*. The remaining step for full enforcement — running the task
+**inside** a lex-os microVM box as the guest agent (supervisor + budget kill +
+tamper-proof audit) — needs Linux/KVM and the guest protocol (DESIGN.md §8).
+
 ## How it fits the ecosystem
 - **lex-os** — runs `lex-robot` as a supervised box; the grant = physical safety
   envelope + budgets; supervisor can kill/reprovision.

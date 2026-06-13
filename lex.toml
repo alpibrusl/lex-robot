@@ -5,7 +5,7 @@ lex     = "0.9.8"
 license = "EUPL-1.2"
 description = "Effect-typed, capability-bounded control layer over LeRobot (design-stage scaffold)"
 
-# No external deps yet — the scaffold uses only the standard library so it
-# compiles anywhere. JSON is built/parsed with std.str + std.json. lex-trail /
-# lex-os / lex-llm integration is layered on later (see DESIGN.md).
+# src/ (types/grant/client/skills) is std-only. src/task.lex adds lex-trail for
+# a hash-chained audit of each Perceive/Plan/Execute/Verify step.
 [dependencies]
+lex-trail = { git = "https://github.com/alpibrusl/lex-trail" }

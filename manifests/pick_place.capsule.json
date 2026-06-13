@@ -1,0 +1,19 @@
+{
+  "goal": {
+    "description": "Pick the red block and place it in the bin (gym-pusht: push the T to the goal)",
+    "done_signal": null
+  },
+  "grant": {
+    "filesystem": "ReadWrite",
+    "network": "Allowlist",
+    "exec": "None"
+  },
+  "budget": {
+    "wall_clock_secs": 120,
+    "max_commands": 200,
+    "max_money_cents": 0,
+    "max_api_calls": 0
+  },
+  "isolation_floor": "Namespace",
+  "egress": ["127.0.0.1", "localhost"]
+}

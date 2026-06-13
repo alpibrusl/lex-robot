@@ -25,10 +25,13 @@ fn demo_grant() -> t.Grant {
   }
 }
 
-fn run() -> [net, io] Unit {
+fn run() -> [net, io, sql, fs_write, time] Unit {
   let robot := { sidecar_url: "http://localhost:8900", grant: demo_grant() }
-  let result := task.run(robot, 3)
+  # use_policy=false → fast structural pass; set true to gate on a real
+  # LeRobot policy solving the task (needs the gym sidecar + lerobot).
+  let result := task.run(robot, 3, false, "/tmp/lex-robot-trail.db")
   let verdict := if result.success { "SUCCESS" } else { "FAILED" }
   let __1 := io.print(str.join(["task ", verdict, " after ", int.to_str(result.attempts), " attempt(s)"], ""))
+  let __2 := io.print(str.concat("trail head: ", result.last_event))
   ()
 }

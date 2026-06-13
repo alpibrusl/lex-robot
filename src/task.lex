@@ -1,9 +1,10 @@
-# lex-robot/task.lex — evidence-gated task graph (the lex-loom pattern).
+# lex-robot/task.lex — evidence-gated task graph (the lex-loom pattern) with a
+# hash-chained lex-trail audit.
 #
-# Perceive → Plan → Execute → Verify, with a hard gate at Verify: a task is
-# only "done" when a real post-condition (sensor / outcome) confirms it.
-# Failure loops back (bounded retries), mirroring lex-loom's gated pipeline —
-# self-contained here (no DB / orchestrator) so it runs against any sidecar.
+# Perceive → Plan → Execute → Verify, hard gate at Verify (done only when a real
+# outcome confirms it), bounded retries. Every phase is appended to a lex-trail
+# log, each event chained to the previous via its content-hash id — a
+# tamper-evident record of exactly what the robot did.
 
 import "std.str" as str
 
@@ -11,13 +12,15 @@ import "std.io" as io
 
 import "std.int" as int
 
+import "lex-trail/src/log" as tlog
+
 import "./types" as t
 
 import "./skills" as skills
 
 type StepLog = { phase :: Str, ok :: Bool, detail :: Str }
 
-type TaskResult = { success :: Bool, attempts :: Int, log :: List[StepLog] }
+type TaskResult = { success :: Bool, attempts :: Int, last_event :: Str }
 
 fn outcome_str(o :: t.Outcome) -> Str {
   match o {
@@ -35,7 +38,22 @@ fn is_reached(o :: t.Outcome) -> Bool {
   }
 }
 
-# ── Phase 1: Perceive — confirm the robot is responsive (real sensor read). ──
+# Sanitize a detail string into a JSON payload (drops quotes/newlines).
+fn payload(detail :: Str) -> Str {
+  let clean := str.replace(str.replace(detail, "\"", "'"), "\n", " ")
+  str.join(["{\"detail\":\"", clean, "\"}"], "")
+}
+
+# Append one event chained to `parent`; return the new event id (or `parent`
+# unchanged on failure, so the chain never breaks the run).
+fn trail(log :: tlog.Log, parent :: Str, kind :: Str, detail :: Str) -> [sql, time] Str {
+  match tlog.append(log, kind, Some(parent), payload(detail)) {
+    Ok(ev) => ev.id,
+    Err(_) => parent,
+  }
+}
+
+# ── Phases ───────────────────────────────────────────────────────────────────
 fn perceive(r :: t.Robot) -> [net] StepLog {
   match skills.read_joints(r) {
     Err(e) => { phase: "perceive", ok: false, detail: e },
@@ -43,19 +61,21 @@ fn perceive(r :: t.Robot) -> [net] StepLog {
   }
 }
 
-# ── Phase 2: Plan — choose a target/strategy. Pure (judgment, no actuation). ──
-# A real planner (lex-llm) would decide here; the scaffold uses a fixed target.
 fn plan_target() -> t.Pose {
   { pos: { x: 0.5, y: 0.5, z: 0.2 }, rx: 0.0, ry: 0.0, rz: 0.0 }
 }
 
-# ── Phase 3: Execute — actuate via a grant-gated skill. ──────────────────────
-fn execute(r :: t.Robot, target :: t.Pose) -> [net] t.Outcome {
-  skills.move_to(r, target)
+# use_policy=true gates on real task completion via a learned LeRobot policy;
+# false uses a single grant-checked move (fast, structural).
+fn execute(r :: t.Robot, target :: t.Pose, use_policy :: Bool) -> [net] t.Outcome {
+  if use_policy {
+    skills.run_policy(r, "lerobot/diffusion_pusht", "solve pusht", 8000)
+  } else {
+    skills.move_to(r, target)
+  }
 }
 
-# ── Phase 4: Verify — the gate. Only pass on a confirmed outcome. ────────────
-fn verify(r :: t.Robot, o :: t.Outcome) -> StepLog {
+fn verify(o :: t.Outcome) -> StepLog {
   if is_reached(o) {
     { phase: "verify", ok: true, detail: "outcome reached" }
   } else {
@@ -68,38 +88,54 @@ fn log_step(s :: StepLog) -> [io] Unit {
   io.print(str.join(["  [", mark, "] ", s.phase, " — ", s.detail], ""))
 }
 
-# One Perceive→Plan→Execute→Verify pass.
-fn attempt(r :: t.Robot, n :: Int) -> [net, io] TaskResult {
+# One Perceive→Plan→Execute→Verify pass; threads the audit chain via `parent`.
+fn attempt(r :: t.Robot, n :: Int, use_policy :: Bool, log :: tlog.Log, parent :: Str) -> [net, io, sql, time] { ok :: Bool, parent :: Str } {
   let __h := io.print(str.join(["attempt ", int.to_str(n), ":"], ""))
   let p := perceive(r)
   let __1 := log_step(p)
+  let e_p := trail(log, parent, "perceive", p.detail)
   if p.ok {
     let target := plan_target()
-    let __pl := log_step({ phase: "plan", ok: true, detail: "target (0.5,0.5,0.2)" })
-    let o := execute(r, target)
-    let __ex := log_step({ phase: "execute", ok: is_reached(o), detail: outcome_str(o) })
-    let v := verify(r, o)
-    let __v := log_step(v)
-    { success: v.ok, attempts: n, log: [p, v] }
+    let __2 := log_step({ phase: "plan", ok: true, detail: "target (0.5,0.5,0.2)" })
+    let e_pl := trail(log, e_p, "plan", "target 0.5,0.5,0.2")
+    let o := execute(r, target, use_policy)
+    let __3 := log_step({ phase: "execute", ok: is_reached(o), detail: outcome_str(o) })
+    let e_ex := trail(log, e_pl, "execute", outcome_str(o))
+    let v := verify(o)
+    let __4 := log_step(v)
+    let e_v := trail(log, e_ex, "verify", v.detail)
+    { ok: v.ok, parent: e_v }
   } else {
-    { success: false, attempts: n, log: [p] }
+    { ok: false, parent: e_p }
   }
 }
 
-# Run the gated task with bounded retries.
-fn run_task(r :: t.Robot, max_attempts :: Int, n :: Int) -> [net, io] TaskResult {
-  let res := attempt(r, n)
-  if res.success {
-    res
+fn loop(r :: t.Robot, max :: Int, n :: Int, use_policy :: Bool, log :: tlog.Log, parent :: Str) -> [net, io, sql, time] TaskResult {
+  let a := attempt(r, n, use_policy, log, parent)
+  if a.ok {
+    { success: true, attempts: n, last_event: a.parent }
   } else {
-    if n >= max_attempts {
-      res
+    if n >= max {
+      { success: false, attempts: n, last_event: a.parent }
     } else {
-      run_task(r, max_attempts, n + 1)
+      loop(r, max, n + 1, use_policy, log, a.parent)
     }
   }
 }
 
-fn run(r :: t.Robot, max_attempts :: Int) -> [net, io] TaskResult {
-  run_task(r, max_attempts, 1)
+# Run the gated task, recording a hash-chained trail at `trail_path`.
+fn run(r :: t.Robot, max_attempts :: Int, use_policy :: Bool, trail_path :: Str) -> [net, io, sql, fs_write, time] TaskResult {
+  match tlog.open(trail_path) {
+    Err(e) => {
+      let __e := io.print(str.concat("trail open failed: ", e))
+      { success: false, attempts: 0, last_event: "" }
+    },
+    Ok(log) => match tlog.append(log, "task_started", None, "{}") {
+      Err(e) => {
+        let __e := io.print(str.concat("trail root failed: ", e))
+        { success: false, attempts: 0, last_event: "" }
+      },
+      Ok(root) => loop(r, max_attempts, 1, use_policy, log, root.id),
+    },
+  }
 }
