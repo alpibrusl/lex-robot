@@ -183,8 +183,34 @@ lex run --allow-effects env,net,io examples/depot_demo.lex run
 
 ![Unitree G1 reaching across to seat the charge connector in the truck inlet](media/depot_g1.gif)
 
-Connection now uses real contact + a rigid weld. A full whole-body G1 (legs/torso
-actuated for balance instead of a pinned pelvis) is the remaining stretch (lex-robot#4).
+Connection uses real contact + a rigid weld. By default the pelvis is pinned and
+gravity is off (a rock-solid stationary depot arm). `LEX_G1_BALANCE=1` switches to
+**whole-body balance**: gravity on, no pin — the G1 stands on its own two legs (a
+PD hold of the home pose) while only the right arm reaches; it parks the truck a
+little closer so the reach stays inside the balance envelope (CoM over the feet).
+
+```sh
+LEX_G1_BALANCE=1 python3 sidecar/depot_g1_sidecar.py &
+lex run --allow-effects env,net,io examples/depot_demo.lex run   # same demo, unchanged
+```
+
+![Unitree G1 balancing on its own legs while plugging in the charge connector](media/depot_g1_balance.gif)
+
+### Going to real hardware (the transfer seam)
+
+The sim drives the arm with a mocap-weld teleop shortcut — fine for a demo, not a
+real controller. The part that **does** transfer is the Lex governance layer
+(grant force/workspace clamps, the Perceive→Plan→Execute→Verify graph, real OCPP).
+`sidecar/depot_hw_sidecar.py` is the seam: the same depot protocol with `# REAL:`
+markers for a LeRobot-driven arm and an independent firmware force floor (defense
+in depth behind the grant clamp). It runs as a stub by default so the whole
+governance path exercises offline; `LEX_ROBOT_HW=1` switches to a real arm — and
+the Lex side doesn't change a line.
+
+```sh
+python3 sidecar/depot_hw_sidecar.py &                            # stub (no hardware)
+lex run --allow-effects env,net,io examples/depot_demo.lex run   # same demo, unchanged
+```
 
 ## Evidence-gated task graph (the lex-loom pattern)
 

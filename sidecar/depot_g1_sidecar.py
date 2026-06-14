@@ -29,7 +29,15 @@ heavy). Point LEX_G1_DIR at a checkout of mujoco_menagerie/unitree_g1, e.g.:
     git -C /tmp/menagerie sparse-checkout set unitree_g1
     export LEX_G1_DIR=/tmp/menagerie/unitree_g1
 
+Two modes (same protocol, same Lex side):
+  * default — pelvis pinned to world + gravity off: a rock-solid stationary depot
+    arm where the legs don't matter (best for the contact-rich + rigid-weld demo).
+  * LEX_G1_BALANCE=1 — gravity on, no pin: the G1 stands on its own legs (a
+    whole-body PD hold of the home pose) while only the right arm reaches. The
+    truck parks a little closer so the reach stays inside the balance envelope.
+
 Deps: pip install mujoco numpy. Run:  python3 sidecar/depot_g1_sidecar.py
+                                       LEX_G1_BALANCE=1 python3 sidecar/depot_g1_sidecar.py
 
 Also serves the OCPP-shaped charging stand-in (/v1/chargers/:id/start|stop,
 /v1/sessions/active) so Verify works offline; point LEX_CHARGE_URL at the real
@@ -62,11 +70,20 @@ WS_HI = np.array([0.60, 0.10, 1.10])
 
 HAND = "right_wrist_yaw_link"  # G1 right end-effector link the connector mounts on
 
+# Two modes. Default (pinned): pelvis welded to world + gravity off — a rock-solid
+# "stationary depot arm" where the legs don't matter. Balance: gravity on, no pin,
+# the G1 stands on its own legs (PD-held pose) while only the right arm is free to
+# reach. Balance is the physically-honest mode; it needs an in-reach port so the
+# CoM stays over the feet, so it parks the truck a little closer.
+BALANCE = os.environ.get("LEX_G1_BALANCE", "0") == "1"
+PINNED_TRUCK = (0.42, -0.15, 0.90)
+BAL_TRUCK = (0.34, -0.13, 0.84)
+
 _LOCK = threading.Lock()
 
 
-def _g1_xml():
-    p = os.path.join(G1_DIR, "g1_with_hands.xml")
+def _g1_xml(name):
+    p = os.path.join(G1_DIR, name)
     if not os.path.exists(p):
         sys.exit(
             f"Unitree G1 model not found at {p}.\n"
@@ -76,10 +93,10 @@ def _g1_xml():
     return p
 
 
-def _build_spec():
-    spec = mujoco.MjSpec.from_file(_g1_xml())
-    spec.option.gravity = [0, 0, 0]      # stationary depot arm — no balancing
-    spec.option.timestep = 0.004
+def _add_depot(spec, truck):
+    """Add the teleop target, truck silhouette, charge port, connector, and the
+    three weld equalities to a G1 spec. `truck` is the (x,y,z) of the port body."""
+    tx, ty, tz = truck
     wb = spec.worldbody
 
     # Cartesian teleop target (mocap) — the weld below drags the hand to follow it.
@@ -87,14 +104,10 @@ def _build_spec():
     tgt.add_geom(type=mujoco.mjtGeom.mjGEOM_SPHERE, size=[0.018, 0, 0],
                  rgba=[0, 1, 1, 0.0], contype=0, conaffinity=0)  # invisible teleop marker
 
-    # Floor — the G1's feet rest at ~z=0 in the home pose, so this grounds it.
-    wb.add_geom(name="floor", type=mujoco.mjtGeom.mjGEOM_PLANE, size=[3, 3, 0.1],
-                rgba=[0.26, 0.28, 0.30, 1], contype=0, conaffinity=0)
-
     # Truck silhouette (visual only) — a box truck parked side-on: cargo body +
     # lower cab + chassis rail + road wheels, so the charge port sits on the
     # cargo side at arm height and the whole thing reads as a vehicle.
-    chassis = wb.add_body(name="chassis", pos=[0.52, -0.05, 0.0])
+    chassis = wb.add_body(name="chassis", pos=[tx + 0.10, ty + 0.10, 0.0])
     chassis.add_geom(type=mujoco.mjtGeom.mjGEOM_BOX, pos=[0.0, 0.0, 0.60], size=[0.17, 0.34, 0.35],
                      rgba=[0.30, 0.40, 0.58, 1], contype=0, conaffinity=0)        # cargo box
     chassis.add_geom(type=mujoco.mjtGeom.mjGEOM_BOX, pos=[-0.01, 0.46, 0.40], size=[0.15, 0.12, 0.26],
@@ -113,23 +126,22 @@ def _build_spec():
 
     # Charge port assembly on the truck side facing the robot. The faceplate +
     # recessed dark bore read as a socket the connector inserts into; the inlet
-    # site + small collidable pad are the validated seat geometry (unchanged), so
-    # contact-rich insertion + the seat weld still work. "led" recolors on charge.
-    truck = wb.add_body(name="truck", pos=[0.42, -0.15, 0.90])
-    truck.add_geom(name="faceplate", type=mujoco.mjtGeom.mjGEOM_BOX, pos=[-0.075, 0, 0],
-                   size=[0.012, 0.06, 0.06], rgba=[0.12, 0.12, 0.14, 1], contype=0, conaffinity=0)
-    truck.add_geom(name="bore", type=mujoco.mjtGeom.mjGEOM_CYLINDER, pos=[-0.02, 0, 0],
-                   size=[0.026, 0.055, 0], euler=[0, 1.5708, 0], rgba=[0.02, 0.02, 0.02, 1],
-                   contype=0, conaffinity=0)
-    truck.add_geom(name="led", type=mujoco.mjtGeom.mjGEOM_SPHERE, pos=[-0.085, 0, 0.058],
-                   size=[0.02, 0, 0], rgba=[0.85, 0.12, 0.12, 1], contype=0, conaffinity=0)
-    truck.add_geom(name="pad", type=mujoco.mjtGeom.mjGEOM_BOX, pos=[-0.06, 0, 0],
-                   size=[0.008, 0.03, 0.03], rgba=[0.1, 0.1, 0.12, 1], contype=1, conaffinity=1)
-    truck.add_site(name="inlet", pos=[-0.085, 0, 0], size=[0.02, 0, 0], rgba=[1, 0.8, 0, 1])
+    # site + small collidable pad are the validated seat geometry, so contact-rich
+    # insertion + the seat weld still work. "led" recolors on charge.
+    truck_b = wb.add_body(name="truck", pos=[tx, ty, tz])
+    truck_b.add_geom(name="faceplate", type=mujoco.mjtGeom.mjGEOM_BOX, pos=[-0.075, 0, 0],
+                     size=[0.012, 0.06, 0.06], rgba=[0.12, 0.12, 0.14, 1], contype=0, conaffinity=0)
+    truck_b.add_geom(name="bore", type=mujoco.mjtGeom.mjGEOM_CYLINDER, pos=[-0.02, 0, 0],
+                     size=[0.026, 0.055, 0], euler=[0, 1.5708, 0], rgba=[0.02, 0.02, 0.02, 1],
+                     contype=0, conaffinity=0)
+    truck_b.add_geom(name="led", type=mujoco.mjtGeom.mjGEOM_SPHERE, pos=[-0.085, 0, 0.058],
+                     size=[0.02, 0, 0], rgba=[0.85, 0.12, 0.12, 1], contype=0, conaffinity=0)
+    truck_b.add_geom(name="pad", type=mujoco.mjtGeom.mjGEOM_BOX, pos=[-0.06, 0, 0],
+                     size=[0.008, 0.03, 0.03], rgba=[0.1, 0.1, 0.12, 1], contype=1, conaffinity=1)
+    truck_b.add_site(name="inlet", pos=[-0.085, 0, 0], size=[0.02, 0, 0], rgba=[1, 0.8, 0, 1])
 
     # Connector rigidly mounted on the G1 hand (a real part of the arm).
-    hand = spec.body(HAND)
-    plug = hand.add_body(name="plug", pos=[0.06, -0.02, 0.0])
+    plug = spec.body(HAND).add_body(name="plug", pos=[0.06, -0.02, 0.0])
     plug.add_geom(name="plug_g", type=mujoco.mjtGeom.mjGEOM_CAPSULE, size=[0.016, 0.035, 0],
                   rgba=[0.3, 0.9, 0.6, 1], contype=1, conaffinity=1)
     plug.add_site(name="tip", pos=[0.055, 0, 0], size=[0.012, 0, 0], rgba=[0, 1, 0, 1])
@@ -142,6 +154,21 @@ def _build_spec():
     spec.add_equality(type=mujoco.mjtEq.mjEQ_WELD, name="seat",
                       objtype=mujoco.mjtObj.mjOBJ_BODY, name1="plug", name2="truck", active=False)
     return spec
+
+
+def _build_spec():
+    if BALANCE:
+        # Start from the Menagerie scene (working collidable floor + standing
+        # keyframe + gravity), so the G1 can balance on its own legs.
+        spec = mujoco.MjSpec.from_file(_g1_xml("scene_with_hands.xml"))
+        return _add_depot(spec, BAL_TRUCK)
+    # Pinned mode: bare robot, gravity off, a visual floor; the base weld holds it.
+    spec = mujoco.MjSpec.from_file(_g1_xml("g1_with_hands.xml"))
+    spec.option.gravity = [0, 0, 0]
+    spec.option.timestep = 0.004
+    spec.worldbody.add_geom(name="floor", type=mujoco.mjtGeom.mjGEOM_PLANE, size=[3, 3, 0.1],
+                            rgba=[0.26, 0.28, 0.30, 1], contype=0, conaffinity=0)
+    return _add_depot(spec, PINNED_TRUCK)
 
 
 def _lock_weld_in_place(m, d, eqid):
@@ -179,6 +206,8 @@ class DepotG1:
         self.s_tip = self.m.site("tip").id
         self.s_inlet = self.m.site("inlet").id
         self.eq_seat = self.m.equality("seat").id
+        self.eq_teleop = self.m.equality("teleop").id
+        self.eq_basepin = self.m.equality("basepin").id
         self.connected = False
         self.tx = None
         self.active_cp = None
@@ -196,6 +225,8 @@ class DepotG1:
         if self.m.nkey > 0:
             mujoco.mj_resetDataKeyframe(self.m, self.d, 0)  # home arm pose
         self.d.eq_active[self.eq_seat] = 0
+        # Pinned mode pins the pelvis to world; balance mode stands on its legs.
+        self.d.eq_active[self.eq_basepin] = 0 if BALANCE else 1
         self.m.geom("plug_g").contype = 1
         self.m.geom("plug_g").conaffinity = 1
         # Hold every position actuator at its home-pose joint angle so the stiff
@@ -205,6 +236,13 @@ class DepotG1:
             self.d.ctrl[i] = self.d.qpos[self.m.jnt_qposadr[jid]]
         mujoco.mj_forward(self.m, self.d)
         self.d.mocap_pos[self.mocap] = self.d.body(HAND).xpos.copy()
+        mujoco.mj_forward(self.m, self.d)
+        if BALANCE:
+            # Lock the teleop weld to the current hand pose so it doesn't yank the
+            # arm and topple the robot, then let the legs settle into a stance.
+            _lock_weld_in_place(self.m, self.d, self.eq_teleop)
+            for _ in range(120):
+                mujoco.mj_step(self.m, self.d)
         self.connected = False
         self.tx = None
         return {"inlet": self._inlet(), "arm": self._tip()}
@@ -227,15 +265,24 @@ class DepotG1:
         # Servo the mocap target on tip-to-goal error; the teleop weld drags the
         # G1 hand (and the mounted connector) to follow. Real mj_step physics.
         goal = self.n2w([nx, ny, nz])
-        for k in range(900):
+        # Balance mode reaches gently (the legs must compensate the CoM shift) and
+        # must end quasi-static, or settling will topple it; pinned mode can drive
+        # hard since the base is fixed.
+        gain, steps, min_k = (0.03, 3000, 600) if BALANCE else (0.35, 900, 60)
+        for k in range(steps):
             err = goal - self.d.site_xpos[self.s_tip]
             # Clamp the mocap target to the reachable box so it can't integrate
             # away and drive the arm into its joint limits if motion is blocked.
             self.d.mocap_pos[self.mocap] = np.clip(
-                self.d.mocap_pos[self.mocap] + 0.35 * err, WS_LO - 0.05, WS_HI + 0.05)
+                self.d.mocap_pos[self.mocap] + gain * err, WS_LO - 0.05, WS_HI + 0.05)
             mujoco.mj_step(self.m, self.d)
-            if float(np.linalg.norm(err)) < 0.05 and k > 60:
+            if float(np.linalg.norm(err)) < 0.04 and k > min_k:
                 break
+        if BALANCE:
+            for _ in range(200):     # hold the target so the stance stabilizes
+                err = goal - self.d.site_xpos[self.s_tip]
+                self.d.mocap_pos[self.mocap] = self.d.mocap_pos[self.mocap] + gain * err
+                mujoco.mj_step(self.m, self.d)
         t = self._tip()
         return {"outcome": "reached",
                 "detail": f"G1 hand at ({t['x']:.2f},{t['y']:.2f},{t['z']:.2f}), tip-inlet dist={self.dist():.3f}"}
@@ -246,15 +293,23 @@ class DepotG1:
         d = self.dist()
         if d > ALIGN_TOL:
             return {"outcome": "stalled", "detail": f"not aligned (dist={d:.3f} > tol={ALIGN_TOL})"}
-        # Rigid weld on seat: lock the plug->truck weld at the current pose, then
-        # drop the now-redundant plug/truck contact so weld and contact don't fight.
+        self.connected = True
+        if BALANCE:
+            # A plug->truck weld would close a kinematic loop (truck↔plug↔arm↔legs
+            # ↔floor) that fights the standing balance, so here the connector is
+            # held seated by the arm itself; the rigid weld is a pinned-mode detail.
+            for _ in range(80):
+                mujoco.mj_step(self.m, self.d)
+            return {"outcome": "reached",
+                    "detail": f"connector seated by the standing G1 at {force:.1f}N (dist={d:.3f})"}
+        # Pinned mode — rigid weld on seat: lock the plug->truck weld at the current
+        # pose, then drop the now-redundant contact so weld and contact don't fight.
         _lock_weld_in_place(self.m, self.d, self.eq_seat)
         self.d.eq_active[self.eq_seat] = 1
         self.m.geom("plug_g").contype = 0
         self.m.geom("plug_g").conaffinity = 0
         for _ in range(120):
             mujoco.mj_step(self.m, self.d)
-        self.connected = True
         return {"outcome": "reached",
                 "detail": f"connector welded into inlet on G1 hand at {force:.1f}N (dist={d:.3f})"}
 
