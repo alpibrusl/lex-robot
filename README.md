@@ -85,6 +85,36 @@ Vanilla LeRobot has no such boundary — it executes whatever the policy emits.
 That is the property Lex adds: a learned policy you don't fully trust, kept
 inside an enforced envelope.
 
+## Untrusted LLM planner, Lex on the rails (lex-robot#5)
+
+The same boundary, one level up: when an **LLM** does the planning, the grant is
+what stands between its *judgment* and the robot's *authority*. The LLM is asked
+to "tidy the cup into the bin" and — as LLMs do — emits a mix of sensible steps, a
+hallucinated shortcut, an over-grip, an out-of-bounds reach, and a prompt-injected
+"sweep everything off the table". Lex checks every proposed action against the
+grant **before** it can reach the actuators:
+
+```sh
+python3 sidecar/sim_sidecar.py &
+lex run --allow-effects fs_write,io,net,sql,time examples/llm_planner_demo.lex run
+#   [ALLOW] move_to (0.5,0.1,0.2) — task: approach the cup
+#   [CLAMP] grasp 250N -> 20N — llm: grip it hard so it won't slip
+#   [BLOCK] move_to (0.45,0.5,0.2) — hallucination — enters keep-out (bystander) zone; NOT SENT
+#   [BLOCK] move_to (0.5,1.5,0.2) — llm: reach behind the wall — outside workspace; NOT SENT
+#   [BLOCK] sweep_all — INJECTED — skill not in grant; NOT SENT
+#   executed: 5   clamped: 1   BLOCKED (never sent): 3
+#   task SUCCESS — cup placed in the bin (Verify gate passed)
+#   audit: 9 events, 9 valid → chain intact (tamper-evident)
+```
+
+Three unsafe actions are blocked and never reach the wire, the over-grip is clamped
+to the grant ceiling, the task is "done" only when the **goal action actually
+completes** (Verify), and every proposed-vs-executed decision is a hash-chained
+lex-trail event that `event.is_valid` re-checks (tamper-evident). The canned plan
+stands in for the LLM so it runs offline; swap `propose_plan()` for a real lex-llm
+call returning structured tool calls and the governance is unchanged. This is the
+answer to "LLM-driven robots are unsafe": the LLM proposes, the grant disposes.
+
 ## EV-depot demo: physical action gated by a real protocol (lex-robot#4)
 
 Where the safety rules aren't synthetic. A (stationary) humanoid arm connects a
