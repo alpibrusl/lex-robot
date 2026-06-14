@@ -91,18 +91,25 @@ def _build_spec():
     wb.add_geom(name="floor", type=mujoco.mjtGeom.mjGEOM_PLANE, size=[3, 3, 0.1],
                 rgba=[0.26, 0.28, 0.30, 1], contype=0, conaffinity=0)
 
-    # Truck silhouette (visual only) — a compact chassis + cab + wheels at ground,
-    # parked side-on so its charge port faces the robot at arm height. Kept small
-    # so it doesn't bury the port; the charge port is near the top of the side.
-    chassis = wb.add_body(name="chassis", pos=[0.54, -0.15, 0.50])
-    chassis.add_geom(type=mujoco.mjtGeom.mjGEOM_BOX, size=[0.18, 0.30, 0.45],
-                     rgba=[0.30, 0.40, 0.58, 1], contype=0, conaffinity=0)
-    chassis.add_geom(type=mujoco.mjtGeom.mjGEOM_BOX, pos=[0.0, 0.40, -0.05], size=[0.17, 0.12, 0.30],
-                     rgba=[0.24, 0.33, 0.50, 1], contype=0, conaffinity=0)  # cab
-    for wy in (-0.20, 0.30):
-        chassis.add_geom(type=mujoco.mjtGeom.mjGEOM_CYLINDER, pos=[0.0, wy, -0.40],
-                         size=[0.11, 0.05, 0], euler=[1.5708, 0, 0],
-                         rgba=[0.07, 0.07, 0.07, 1], contype=0, conaffinity=0)  # wheels
+    # Truck silhouette (visual only) — a box truck parked side-on: cargo body +
+    # lower cab + chassis rail + road wheels, so the charge port sits on the
+    # cargo side at arm height and the whole thing reads as a vehicle.
+    chassis = wb.add_body(name="chassis", pos=[0.52, -0.05, 0.0])
+    chassis.add_geom(type=mujoco.mjtGeom.mjGEOM_BOX, pos=[0.0, 0.0, 0.60], size=[0.17, 0.34, 0.35],
+                     rgba=[0.30, 0.40, 0.58, 1], contype=0, conaffinity=0)        # cargo box
+    chassis.add_geom(type=mujoco.mjtGeom.mjGEOM_BOX, pos=[-0.01, 0.46, 0.40], size=[0.15, 0.12, 0.26],
+                     rgba=[0.22, 0.30, 0.46, 1], contype=0, conaffinity=0)        # cab
+    chassis.add_geom(type=mujoco.mjtGeom.mjGEOM_BOX, pos=[-0.10, 0.45, 0.50], size=[0.06, 0.10, 0.10],
+                     rgba=[0.45, 0.6, 0.75, 1], contype=0, conaffinity=0)         # windshield
+    chassis.add_geom(type=mujoco.mjtGeom.mjGEOM_BOX, pos=[0.0, 0.02, 0.26], size=[0.15, 0.46, 0.04],
+                     rgba=[0.12, 0.12, 0.14, 1], contype=0, conaffinity=0)        # chassis rail
+    for wy in (-0.24, 0.14, 0.46):
+        chassis.add_geom(type=mujoco.mjtGeom.mjGEOM_CYLINDER, pos=[-0.19, wy, 0.12],
+                         size=[0.12, 0.05, 0], euler=[0, 1.5708, 0],
+                         rgba=[0.07, 0.07, 0.07, 1], contype=0, conaffinity=0)     # road wheels
+        chassis.add_geom(type=mujoco.mjtGeom.mjGEOM_CYLINDER, pos=[-0.19, wy, 0.12],
+                         size=[0.05, 0.052, 0], euler=[0, 1.5708, 0],
+                         rgba=[0.45, 0.45, 0.47, 1], contype=0, conaffinity=0)     # hubs
 
     # Charge port assembly on the truck side facing the robot. The faceplate +
     # recessed dark bore read as a socket the connector inserts into; the inlet
