@@ -14,6 +14,46 @@ thesis, applied to a physical body).
 > firmware limits + a hardware e-stop (DESIGN.md §8). The Firecracker microVM box
 > and (optional) GPU training are the only Linux-only pieces (see issues #1, #2).
 
+## Quickstart (5 minutes, no ML dependencies)
+
+The four **governance** demos need only the `lex` toolchain + `python3` — no pip
+installs. They are the point of the project (the brain is LeRobot's job).
+
+**1. Install the `lex` toolchain** — prebuilt binaries for Linux/macOS/Windows on
+[lex-lang releases](https://github.com/alpibrusl/lex-lang/releases):
+
+```sh
+tar -xzf lex-v0.9.8-aarch64-apple-darwin.tar.gz && mv lex /usr/local/bin/ && lex version
+# or Docker:  docker run -p 4040:4040 ghcr.io/alpibrusl/lex:v0.9.8
+```
+
+**2. Run a demo** — each target starts a stdlib-only stub sidecar, runs the
+program, and stops the sidecar:
+
+```sh
+make demo      # ← start here: untrusted LLM planner, Lex on the rails
+make grant     # grant gate: in-bounds allowed, out-of-bounds denied, force clamped
+make task      # evidence-gated Perceive → Plan → Execute → Verify
+make depot     # OCPP-gated depot connect
+make smoke     # type-check everything + run all four, asserting the output (CI-ready)
+```
+
+(No `make`? Use `bash scripts/demo.sh llm`.) The only Lex dependency, `lex-trail`,
+is public and fetched automatically on first run.
+
+### Dependency matrix
+
+| demo | command | needs |
+|---|---|---|
+| LLM planner / grant / task / depot | `make demo` / `grant` / `task` / `depot` | **`lex` + `python3` only** (stdlib sidecars) |
+| keep-out (learned policy vs. grant) | `make keepout` | + `pip install -r sidecar/requirements.txt` (gym-pusht, lerobot) |
+| MuJoCo depot (Tier-2 / Tier-3 G1) | `python3 sidecar/depot_mujoco_sidecar.py` · `depot_g1_sidecar.py` | + `mujoco` (+ G1 model via `LEX_G1_DIR`) |
+| learned reach policy (behaviour cloning) | `python3 sidecar/g1_bc_reach.py` | + `torch` (+ G1 model) |
+
+Everything is public: the toolchain ([lex-lang](https://github.com/alpibrusl/lex-lang)),
+the one Lex package dep ([lex-trail](https://github.com/alpibrusl/lex-trail)), and
+all Python deps (PyPI). No private packages are required to build or run.
+
 ## Layout
 
 ```

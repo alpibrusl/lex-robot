@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Reproducible smoke test: type-check everything, then run the four zero-dependency
+# governance demos and assert the load-bearing lines. No ML deps (lex + python3).
+# Exit non-zero on any failure — suitable for CI.
+set -uo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+fail=0
+pass() { printf "  \033[32mPASS\033[0m %s\n" "$1"; }
+bad()  { printf "  \033[31mFAIL\033[0m %s\n" "$1"; fail=1; }
+
+echo "== lex check =="
+for f in src/*.lex examples/*.lex; do
+  if lex check "$f" >/dev/null 2>&1; then pass "check $f"; else bad "check $f"; fi
+done
+
+# Run a demo and assert an expected substring appears in its output.
+expect() { # <demo> <needle> <label>
+  out="$(scripts/demo.sh "$1" 2>/dev/null | tr -d '\r')"
+  if grep -qF "$2" <<<"$out"; then pass "$3"; else bad "$3 — missing: $2"; echo "$out" | sed 's/^/      /'; fi
+}
+
+echo "== demos =="
+expect grant "denied" "grant gate denies out-of-bounds move"
+expect llm   "BLOCKED (never sent): 3" "LLM planner blocks 3 unsafe actions"
+expect llm   "chain intact" "LLM planner audit chain verifies"
+expect task  "SUCCESS" "evidence-gated task graph succeeds"
+expect depot "task SUCCESS" "OCPP-gated depot demo succeeds"
+
+echo
+if [ "$fail" -eq 0 ]; then echo "ALL GREEN"; else echo "FAILURES ABOVE"; fi
+exit "$fail"

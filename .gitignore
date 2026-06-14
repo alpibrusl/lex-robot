@@ -11,3 +11,4 @@ venv/
 # data / scratch
 *.db
 /data/
+MUJOCO_LOG.TXT
