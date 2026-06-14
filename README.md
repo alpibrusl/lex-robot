@@ -1,5 +1,7 @@
 # lex-robot
 
+[![ci](https://github.com/alpibrusl/lex-robot/actions/workflows/ci.yml/badge.svg)](https://github.com/alpibrusl/lex-robot/actions/workflows/ci.yml)
+
 Effect-typed, capability-bounded, auditable control layer for robots — sitting
 **above** [LeRobot](https://github.com/huggingface/lerobot). LeRobot stays the
 ML + hardware engine; `lex-robot` is the safety envelope and the
@@ -20,11 +22,20 @@ The four **governance** demos need only the `lex` toolchain + `python3` — no p
 installs. They are the point of the project (the brain is LeRobot's job).
 
 **1. Install the `lex` toolchain** — prebuilt binaries for Linux/macOS/Windows on
-[lex-lang releases](https://github.com/alpibrusl/lex-lang/releases):
+[lex-lang releases](https://github.com/alpibrusl/lex-lang/releases). Pick your
+platform's tarball (`aarch64-apple-darwin`, `x86_64-apple-darwin`,
+`x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`), e.g. macOS Apple Silicon:
 
 ```sh
-tar -xzf lex-v0.9.8-aarch64-apple-darwin.tar.gz && mv lex /usr/local/bin/ && lex version
-# or Docker:  docker run -p 4040:4040 ghcr.io/alpibrusl/lex:v0.9.8
+V=v0.9.10; T=aarch64-apple-darwin
+curl -fsSL "https://github.com/alpibrusl/lex-lang/releases/download/$V/lex-$V-$T.tar.gz" | tar -xz
+sudo mv "lex-$V-$T/lex" /usr/local/bin/ && lex version
+```
+
+Or skip the install entirely and run everything in Docker (no `lex`/python needed):
+
+```sh
+docker build -t lex-robot . && docker run --rm lex-robot        # type-check + all 4 demos
 ```
 
 **2. Run a demo** — each target starts a stdlib-only stub sidecar, runs the

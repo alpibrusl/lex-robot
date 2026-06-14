@@ -1,0 +1,42 @@
+name: ci
+
+# Gates the repo on the same thing a newcomer does: install the published `lex`
+# toolchain, then type-check everything, confirm the README still matches the
+# code, and run the four zero-dependency governance demos asserting their output.
+# No ML deps (gym/mujoco/torch) — those demos are exercised out-of-band.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    env:
+      LEX_VERSION: v0.9.10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install lex toolchain
+        run: |
+          set -euo pipefail
+          tgt=x86_64-unknown-linux-gnu
+          url="https://github.com/alpibrusl/lex-lang/releases/download/${LEX_VERSION}/lex-${LEX_VERSION}-${tgt}.tar.gz"
+          curl -fsSL "$url" -o /tmp/lex.tgz
+          tar -xzf /tmp/lex.tgz -C /tmp
+          sudo mv "/tmp/lex-${LEX_VERSION}-${tgt}/lex" /usr/local/bin/lex
+          lex version
+
+      - name: README in sync with code
+        run: bash scripts/check_readme.sh
+
+      - name: Smoke (type-check + 4 governance demos)
+        run: bash scripts/smoke.sh
