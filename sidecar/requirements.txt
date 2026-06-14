@@ -21,3 +21,6 @@ mujoco
 #     https://github.com/google-deepmind/mujoco_menagerie.git /tmp/menagerie
 #   git -C /tmp/menagerie sparse-checkout set unitree_g1
 #   export LEX_G1_DIR=/tmp/menagerie/unitree_g1
+
+# g1_bc_reach.py (learned reach policy via behavior cloning) also needs torch:
+#   pip install torch    # MPS-accelerated on Apple Silicon

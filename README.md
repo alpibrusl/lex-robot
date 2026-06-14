@@ -212,6 +212,33 @@ python3 sidecar/depot_hw_sidecar.py &                            # stub (no hard
 lex run --allow-effects env,net,io examples/depot_demo.lex run   # same demo, unchanged
 ```
 
+### A *learned* controller (not the scripted servo)
+
+The reach in the gifs is a hand-written servo — scripted by us, not decided by the
+robot. `sidecar/g1_bc_reach.py` replaces it with a learned policy: it uses the
+servo as an **expert** to reach random goals, trains a small MLP by **behaviour
+cloning** (proprioception + goal → joint targets), then drives the arm with the
+*learned* network in closed loop — no servo, no weld. Generalisation to goals it
+never saw (including the real charge inlet) is the test.
+
+```sh
+pip install torch
+python3 sidecar/g1_bc_reach.py
+#   trained on ~4k samples, BC loss 0.019
+#   learned-policy rollout (closed loop, no servo):
+#     held-out goals: 11/20 within 0.06 m
+#     REAL charge inlet: 0.050 m  (reached)
+```
+
+![Learned BC policy driving the G1 arm to the charge port (no scripted servo)](media/depot_g1_policy.gif)
+
+It's a deliberately tiny experiment: the network genuinely decides the joint
+motion (autonomous *control*), but it's proprioception+goal only (no vision), a
+fraction of held-out goals still miss, and the un-actuated free base throws
+transient "unstable" warnings (it's hard-pinned each step; the run stays finite).
+A real autonomous version would swap this MLP for a vision-based LeRobot policy
+trained on teleop episodes — which is exactly what `depot_hw_sidecar.py` plugs in.
+
 ## Evidence-gated task graph (the lex-loom pattern)
 
 `src/task.lex` runs **Perceive → Plan → Execute → Verify** with a hard gate at
