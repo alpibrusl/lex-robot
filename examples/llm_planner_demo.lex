@@ -17,7 +17,7 @@
 # difference.
 #
 #   python3 sidecar/sim_sidecar.py &
-#   lex run --allow-effects net,io,sql,fs_write,time examples/llm_planner_demo.lex run
+#   lex run --allow-effects net,sense,actuate,io,sql,fs_write,time examples/llm_planner_demo.lex run
 
 import "std.io" as io
 
@@ -99,7 +99,7 @@ fn posxy(a :: Action) -> Str {
 }
 
 # Govern + (maybe) execute one proposed action; log the decision; update stats.
-fn govern_one(r :: t.Robot, a :: Action, st :: Stats, log :: tlog.Log) -> [net, io, sql, time] Stats {
+fn govern_one(r :: t.Robot, a :: Action, st :: Stats, log :: tlog.Log) -> [net, sense, actuate, io, sql, time] Stats {
   let g := r.grant
   if grant.skill_allowed(g, a.skill) {
     if a.skill == "move_to" {
@@ -145,7 +145,7 @@ fn govern_one(r :: t.Robot, a :: Action, st :: Stats, log :: tlog.Log) -> [net, 
   }
 }
 
-fn govern_all(r :: t.Robot, plan :: List[Action], st :: Stats, log :: tlog.Log) -> [net, io, sql, time] Stats {
+fn govern_all(r :: t.Robot, plan :: List[Action], st :: Stats, log :: tlog.Log) -> [net, sense, actuate, io, sql, time] Stats {
   match list.head(plan) {
     None => st,
     Some(a) => {
@@ -155,7 +155,7 @@ fn govern_all(r :: t.Robot, plan :: List[Action], st :: Stats, log :: tlog.Log) 
   }
 }
 
-fn run() -> [net, io, sql, fs_write, time] Unit {
+fn run() -> [net, sense, actuate, io, sql, fs_write, time] Unit {
   let robot := { sidecar_url: "http://localhost:8900", grant: demo_grant() }
   let plan := propose_plan()
   let __h := io.print(str.join(["=== untrusted LLM planner — ", int.to_str(list.len(plan)), " proposed steps; Lex on the rails ==="], ""))

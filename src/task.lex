@@ -54,7 +54,7 @@ fn trail(log :: tlog.Log, parent :: Str, kind :: Str, detail :: Str) -> [sql, ti
 }
 
 # ── Phases ───────────────────────────────────────────────────────────────────
-fn perceive(r :: t.Robot) -> [net] StepLog {
+fn perceive(r :: t.Robot) -> [net, sense] StepLog {
   match skills.read_joints(r) {
     Err(e) => { phase: "perceive", ok: false, detail: e },
     Ok(s) => { phase: "perceive", ok: true, detail: s },
@@ -67,7 +67,7 @@ fn plan_target() -> t.Pose {
 
 # use_policy=true gates on real task completion via a learned LeRobot policy;
 # false uses a single grant-checked move (fast, structural).
-fn execute(r :: t.Robot, target :: t.Pose, use_policy :: Bool) -> [net] t.Outcome {
+fn execute(r :: t.Robot, target :: t.Pose, use_policy :: Bool) -> [net, sense, actuate] t.Outcome {
   if use_policy {
     skills.run_policy(r, "lerobot/diffusion_pusht", "solve pusht", 8000)
   } else {
@@ -89,7 +89,7 @@ fn log_step(s :: StepLog) -> [io] Unit {
 }
 
 # One Perceive→Plan→Execute→Verify pass; threads the audit chain via `parent`.
-fn attempt(r :: t.Robot, n :: Int, use_policy :: Bool, log :: tlog.Log, parent :: Str) -> [net, io, sql, time] { ok :: Bool, parent :: Str } {
+fn attempt(r :: t.Robot, n :: Int, use_policy :: Bool, log :: tlog.Log, parent :: Str) -> [net, sense, actuate, io, sql, time] { ok :: Bool, parent :: Str } {
   let __h := io.print(str.join(["attempt ", int.to_str(n), ":"], ""))
   let p := perceive(r)
   let __1 := log_step(p)
@@ -110,7 +110,7 @@ fn attempt(r :: t.Robot, n :: Int, use_policy :: Bool, log :: tlog.Log, parent :
   }
 }
 
-fn loop(r :: t.Robot, max :: Int, n :: Int, use_policy :: Bool, log :: tlog.Log, parent :: Str) -> [net, io, sql, time] TaskResult {
+fn loop(r :: t.Robot, max :: Int, n :: Int, use_policy :: Bool, log :: tlog.Log, parent :: Str) -> [net, sense, actuate, io, sql, time] TaskResult {
   let a := attempt(r, n, use_policy, log, parent)
   if a.ok {
     { success: true, attempts: n, last_event: a.parent }
@@ -124,7 +124,7 @@ fn loop(r :: t.Robot, max :: Int, n :: Int, use_policy :: Bool, log :: tlog.Log,
 }
 
 # Run the gated task, recording a hash-chained trail at `trail_path`.
-fn run(r :: t.Robot, max_attempts :: Int, use_policy :: Bool, trail_path :: Str) -> [net, io, sql, fs_write, time] TaskResult {
+fn run(r :: t.Robot, max_attempts :: Int, use_policy :: Bool, trail_path :: Str) -> [net, sense, actuate, io, sql, fs_write, time] TaskResult {
   match tlog.open(trail_path) {
     Err(e) => {
       let __e := io.print(str.concat("trail open failed: ", e))

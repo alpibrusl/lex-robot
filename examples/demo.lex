@@ -2,7 +2,7 @@
 #
 # Run (no sidecar needed to see the Denied path; the in-bounds call will report
 # a network error if no sidecar is listening on :8900):
-#   lex run --allow-effects net,io examples/demo.lex run
+#   lex run --allow-effects net,sense,actuate,io examples/demo.lex run
 
 import "std.io" as io
 
@@ -32,7 +32,7 @@ fn demo_grant() -> t.Grant {
   }
 }
 
-fn run() -> [net, io] Unit {
+fn run() -> [net, sense, actuate, io] Unit {
   let robot := { sidecar_url: "http://localhost:8900", grant: demo_grant() }
 
   # In-workspace target: grant allows it, so the skill reaches the sidecar.

@@ -11,7 +11,7 @@
 # run blocks every one of them. Same policy — the difference is the Lex grant.
 #
 #   .venv312/bin/python sidecar/gym_sidecar.py &
-#   lex run --allow-effects net,io examples/safe_rollout.lex run
+#   lex run --allow-effects net,sense,actuate,io examples/safe_rollout.lex run
 
 import "std.io" as io
 
@@ -34,7 +34,7 @@ fn ko_hi() -> t.Vec3 { { x: 1.0, y: 1.0, z: 0.0 } }
 type RunStats = { in_zone :: Int, blocked :: Int }
 
 # One step: get the policy's wanted command, optionally gate it, apply it.
-fn step(r :: t.Robot, govern :: Bool, acc :: RunStats) -> [net, io] RunStats {
+fn step(r :: t.Robot, govern :: Bool, acc :: RunStats) -> [net, sense, actuate, io] RunStats {
   match skills.policy_action(r) {
     Err(_) => acc,
     Ok(want) => {
@@ -61,7 +61,7 @@ fn step(r :: t.Robot, govern :: Bool, acc :: RunStats) -> [net, io] RunStats {
   }
 }
 
-fn loop(r :: t.Robot, govern :: Bool, n :: Int, acc :: RunStats) -> [net, io] RunStats {
+fn loop(r :: t.Robot, govern :: Bool, n :: Int, acc :: RunStats) -> [net, sense, actuate, io] RunStats {
   if n <= 0 {
     acc
   } else {
@@ -70,12 +70,12 @@ fn loop(r :: t.Robot, govern :: Bool, n :: Int, acc :: RunStats) -> [net, io] Ru
   }
 }
 
-fn run_one(r :: t.Robot, govern :: Bool, steps :: Int) -> [net, io] RunStats {
+fn run_one(r :: t.Robot, govern :: Bool, steps :: Int) -> [net, sense, actuate, io] RunStats {
   let __r := skills.reset_episode(r, "lerobot/diffusion_pusht")
   loop(r, govern, steps, { in_zone: 0, blocked: 0 })
 }
 
-fn run() -> [net, io] Unit {
+fn run() -> [net, sense, actuate, io] Unit {
   let robot := { sidecar_url: "http://localhost:8900", grant: demo_grant() }
   let steps := 80
 

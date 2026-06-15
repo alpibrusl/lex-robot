@@ -12,3 +12,6 @@ venv/
 *.db
 /data/
 MUJOCO_LOG.TXT
+
+# transient negative-test file written by scripts/smoke.sh
+.effwall_neg.lex

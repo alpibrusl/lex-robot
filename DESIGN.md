@@ -5,7 +5,8 @@
 > stays the ML + hardware engine; `lex-robot` is the safety envelope and the
 > "judgment vs. authority" boundary — the lex-os thesis applied to a body.
 
-Status: design sketch. No code yet.
+Status: implemented working prototype (see README). This note records the design;
+where it says "sketch", the code in `src/` is the ground truth.
 
 ---
 
@@ -80,12 +81,27 @@ both reason about them:
 
 | effect | operation examples | meaning |
 |---|---|---|
-| `actuate` | `actuate("arm")`, `actuate("gripper")` | drives a physical output |
-| `sense`   | `sense("cam")`, `sense("joints")` | reads a sensor (no physical effect) |
+| `actuate` | `move_to`, `grasp`, `run_policy`, `connect_charger` | drives a physical output |
+| `sense`   | `read_camera`, `read_joints`, `policy_action`, `read_inlet` | reads a sensor (no physical effect) |
 
 A pure planner that only *reasons* has neither. A "look but don't touch"
 calibration routine is `[sense]` only. Anything that can move the robot is
-`[actuate ...]` and is gated by the grant.
+`[actuate]` and is gated by the grant.
+
+**Implemented.** Lex supports user-defined effect kinds, so `sense`/`actuate` are
+first-class effects today — no lex-lang change was needed. They sit alongside
+`[net]` (the actual sidecar transport) on each skill in `src/skills.lex`. Two
+properties make them load-bearing:
+
+- **Propagation** — a caller that invokes an `[actuate]` skill must declare
+  `[actuate]` itself, or `lex check` fails (`effect-not-declared`). A `[sense]`-only
+  routine therefore *cannot compile* if it calls `move_to`.
+- **Runtime authority** — `lex run --allow-effects <set>` is the grant's
+  execution-level gate. Withholding `actuate` makes every actuating skill
+  unreachable before it runs (`effect not in --allow-effects`).
+
+`scripts/smoke.sh` asserts both as negative checks (`== effect wall ==`), so the
+boundary is enforced in CI, not just documented.
 
 ---
 
