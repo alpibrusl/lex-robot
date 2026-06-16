@@ -192,3 +192,64 @@ fn record_episode(r :: t.Robot, task :: Str) -> [net, sense] Result[Str, Str] {
     Err("skill record_episode not in grant")
   }
 }
+
+# ── Dangerous-tool skills ─────────────────────────────────────────────────────
+# Sense whether a workpiece is present in the jig and physically clamped.
+fn workpiece_status(r :: t.Robot) -> [net, sense] Result[t.WorkpieceStatus, Str] {
+  match client.call(r.sidecar_url, "workpiece_status", "{}") {
+    Err(e) => Err(e),
+    Ok(s) => Ok({
+      present: str.contains(s, "\"present\": true"),
+      clamped: str.contains(s, "\"clamped\": true"),
+    }),
+  }
+}
+
+# Actuate the clamp that holds the workpiece. Precondition for tool firing.
+fn clamp_workpiece(r :: t.Robot) -> [net, sense, actuate] t.Outcome {
+  if grant.skill_allowed(r.grant, "clamp_workpiece") {
+    match client.call(r.sidecar_url, "clamp_workpiece", "{}") {
+      Err(e) => Stalled(e),
+      Ok(resp) => parse_outcome(resp),
+    }
+  } else {
+    Denied("skill clamp_workpiece not in grant")
+  }
+}
+
+# Fire a tool (laser/drill/welder) at target. Three grant checks in order:
+#   1. skill "actuate_tool" in the grant
+#   2. target.pos inside tool_lo..tool_hi (the workpiece bounding box)
+#   3. workpiece sensor reports clamped (re-read every call — no bypass)
+# Power is clamped to max_power before the command is sent.
+fn actuate_tool(r :: t.Robot, power :: Float, target :: t.Pose,
+                tool_lo :: t.Vec3, tool_hi :: t.Vec3, max_power :: Float)
+    -> [net, sense, actuate] t.Outcome {
+  if grant.skill_allowed(r.grant, "actuate_tool") {
+    if grant.in_box_3d(target.pos, tool_lo, tool_hi) {
+      match workpiece_status(r) {
+        Err(e) => Stalled(str.concat("workpiece sensor: ", e)),
+        Ok(ws) => {
+          if ws.clamped {
+            let safe_power := if power > max_power { max_power } else { power }
+            let body := str.join([
+              "{\"power\":", f(safe_power),
+              ",\"x\":", f(target.pos.x), ",\"y\":", f(target.pos.y), ",\"z\":", f(target.pos.z),
+              "}"
+            ], "")
+            match client.call(r.sidecar_url, "fire_tool", body) {
+              Err(e) => Stalled(e),
+              Ok(resp) => parse_outcome(resp),
+            }
+          } else {
+            Denied("workpiece not clamped — clamp before firing tool")
+          }
+        },
+      }
+    } else {
+      Denied("target outside tool firing zone")
+    }
+  } else {
+    Denied("skill actuate_tool not in grant")
+  }
+}

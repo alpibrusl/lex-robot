@@ -38,14 +38,31 @@ fn clamp_velocity(g :: t.Grant, v :: Float) -> Float {
   if v > g.max_velocity { g.max_velocity } else { v }
 }
 
-# ── Keep-out zone (a "bystander"/fragile region the robot must not enter) ─────
-# Expressed as an axis-aligned box in x/y. Kept separate from the Grant record
-# so it can be attached per-task without changing every grant literal.
+# ── Keep-out / fire zone checks ───────────────────────────────────────────────
+# 2-D axis-aligned box in x/y (used for keep-out zones where z is irrelevant).
+# Kept separate from the Grant record so it can be attached per-task without
+# changing every grant literal.
 fn in_box(p :: t.Vec3, lo :: t.Vec3, hi :: t.Vec3) -> Bool {
   if p.x < lo.x { false } else {
     if p.x > hi.x { false } else {
       if p.y < lo.y { false } else {
         if p.y > hi.y { false } else { true }
+      }
+    }
+  }
+}
+
+# 3-D axis-aligned box (all three axes). Used for volumetric constraints such
+# as a tool firing zone where z matters (e.g. mid-air vs. on the workpiece).
+fn in_box_3d(p :: t.Vec3, lo :: t.Vec3, hi :: t.Vec3) -> Bool {
+  if p.x < lo.x { false } else {
+    if p.x > hi.x { false } else {
+      if p.y < lo.y { false } else {
+        if p.y > hi.y { false } else {
+          if p.z < lo.z { false } else {
+            if p.z > hi.z { false } else { true }
+          }
+        }
       }
     }
   }

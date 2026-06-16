@@ -29,6 +29,9 @@ expect task  "SUCCESS" "evidence-gated task graph succeeds"
 expect depot "task SUCCESS" "OCPP-gated depot demo succeeds"
 expect dynamic_keepout "commands BLOCKED" "dynamic keep-out blocks intrusions into moving bystander zone"
 expect dynamic_keepout "entered zone: 0" "dynamic keep-out: zero commands reach the moving zone when governed"
+expect tool_fire "BLOCKED: target outside tool firing zone" "tool fire: out-of-zone attempts blocked"
+expect tool_fire "BLOCKED: workpiece not clamped" "tool fire: pre-clamp attempt blocked"
+expect tool_fire "→ FIRED" "tool fire: valid fire after clamp verify"
 
 # The budget wall (DESIGN.md §6/§9.5): the grant carries action + wall-clock
 # budgets, and the in-box supervisor (src/budget.lex) kills a run that exceeds

@@ -22,6 +22,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("LEX_ROBOT_SIDECAR_PORT", "8900"))
 
+# ── Dangerous-tool state ─────────────────────────────────────────────────────
+# Tracks whether the workpiece is present and physically clamped.
+_TOOL_LOCK = threading.Lock()
+_TOOL_STATE = {"clamped": False}
+
 # ── Dynamic keep-out state ────────────────────────────────────────────────────
 # Shared step counter for the dynamic-keepout demo. policy_action advances it;
 # read_bystander reads it without advancing (both see the same step per loop).
@@ -61,9 +66,23 @@ def handle_skill(name: str, args: dict) -> dict:
     The Lex grant has already vetted the call (workspace/force/skill allowlist)
     before it reaches here, so the sidecar only sees authorized requests.
     """
+    if name == "workpiece_status":
+        with _TOOL_LOCK:
+            clamped = _TOOL_STATE["clamped"]
+        return {"present": True, "clamped": clamped}
+    if name == "clamp_workpiece":
+        with _TOOL_LOCK:
+            _TOOL_STATE["clamped"] = True
+        return {"outcome": "reached", "detail": "workpiece clamped"}
+    if name == "fire_tool":
+        power = args.get("power", 0)
+        x, y, z = args.get("x", 0), args.get("y", 0), args.get("z", 0)
+        return {"outcome": "reached", "detail": f"tool fired at {power}W @ ({x},{y},{z})"}
     if name == "reset_episode":
         with _KO_LOCK:
             _KO_STATE["step"] = 0
+        with _TOOL_LOCK:
+            _TOOL_STATE["clamped"] = False
         return {"ok": "reset"}
     if name == "read_bystander":
         with _KO_LOCK:

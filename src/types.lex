@@ -43,3 +43,6 @@ type Grant = {
 
 # Robot handle: where the sidecar lives + the active grant.
 type Robot = { sidecar_url :: Str, grant :: Grant }
+
+# Workpiece sensor reading (used by the dangerous-tool demo).
+type WorkpieceStatus = { present :: Bool, clamped :: Bool }
