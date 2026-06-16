@@ -17,6 +17,7 @@ fn outcome_str(o :: t.Outcome) -> Str {
     Reached => "reached",
     Stalled(m) => str.concat("stalled: ", m),
     Denied(m) => str.concat("denied: ", m),
+    Killed(m) => str.concat("killed: ", m),
     Timeout => "timeout",
   }
 }
@@ -29,6 +30,8 @@ fn demo_grant() -> t.Grant {
     max_velocity: 0.25,
     max_force: 15.0,
     max_grip_force: 20.0,
+    budget_actions: 200,
+    budget_wall_ms: 120000,
   }
 }
 

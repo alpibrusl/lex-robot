@@ -28,6 +28,15 @@ expect llm   "chain intact" "LLM planner audit chain verifies"
 expect task  "SUCCESS" "evidence-gated task graph succeeds"
 expect depot "task SUCCESS" "OCPP-gated depot demo succeeds"
 
+# The budget wall (DESIGN.md §6/§9.5): the grant carries action + wall-clock
+# budgets, and the in-box supervisor (src/budget.lex) kills a run that exceeds
+# them BEFORE the next command leaves the box — the runtime twin of the effect
+# wall. budget_demo uses a zero-action grant, so the same task that SUCCEEDs
+# above is killed with no command sent, and the kill is recorded in the trail.
+echo "== budget kill =="
+expect budget "action budget exhausted" "supervisor reports the budget breach reason"
+expect budget "task KILLED" "zero-action grant → run killed before any command"
+
 # The effect wall (DESIGN.md §4): actuate/sense are real Lex effects, so the
 # judgment/authority split is type-enforced — not a runtime convention. Both
 # halves are NEGATIVE checks: the build must FAIL to actuate when it shouldn't.

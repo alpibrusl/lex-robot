@@ -1,8 +1,8 @@
-# lex-robot — convenience targets. The four governance demos need only `lex` +
+# lex-robot — convenience targets. The five governance demos need only `lex` +
 # python3 (no pip). The ML demos (keep-out / MuJoCo / learned policy) need the
 # Python deps in sidecar/requirements.txt — see the README dependency matrix.
 
-.PHONY: help check smoke demo grant task depot keepout deps clean
+.PHONY: help check smoke demo grant task budget depot keepout deps clean
 
 help: ## Show this help
 	@grep -hE '^[a-z-]+:.*##' $(MAKEFILE_LIST) | sed -E 's/:.*## /\t/' | sort
@@ -10,7 +10,7 @@ help: ## Show this help
 check: ## Type-check all src + example programs
 	@for f in src/*.lex examples/*.lex; do lex check $$f >/dev/null && echo "ok  $$f"; done
 
-smoke: ## Run the zero-dep smoke test (check + 4 demos, asserts output)
+smoke: ## Run the zero-dep smoke test (check + 5 demos, asserts output)
 	@bash scripts/smoke.sh
 
 demo: ## Hero demo: untrusted LLM planner, Lex on the rails (no ML deps)
@@ -21,6 +21,9 @@ grant: ## Grant gate: in-bounds allowed, out-of-bounds denied (no ML deps)
 
 task: ## Evidence-gated Perceive->Plan->Execute->Verify graph (no ML deps)
 	@bash scripts/demo.sh task
+
+budget: ## Budget supervisor: a zero-action grant kills the run (no ML deps)
+	@bash scripts/demo.sh budget
 
 depot: ## OCPP-gated depot connect demo, stub sidecar (no ML deps)
 	@bash scripts/demo.sh depot

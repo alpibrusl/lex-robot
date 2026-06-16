@@ -99,5 +99,7 @@ fn demo_grant() -> t.Grant {
     max_velocity: 1.0,
     max_force: 15.0,
     max_grip_force: 20.0,
+    budget_actions: 200,
+    budget_wall_ms: 120000,
   }
 }
