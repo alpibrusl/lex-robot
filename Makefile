@@ -2,7 +2,7 @@
 # python3 (no pip). The ML demos (keep-out / MuJoCo / learned policy) need the
 # Python deps in sidecar/requirements.txt — see the README dependency matrix.
 
-.PHONY: help check smoke demo grant task budget depot keepout deps clean
+.PHONY: help check smoke demo grant task budget depot keepout dynamic_keepout deps clean
 
 help: ## Show this help
 	@grep -hE '^[a-z-]+:.*##' $(MAKEFILE_LIST) | sed -E 's/:.*## /\t/' | sort
@@ -35,6 +35,9 @@ keepout: ## Keep-out demo (NEEDS ML deps: gymnasium + gym-pusht + lerobot)
 	@python3 sidecar/gym_sidecar.py & echo $$! > /tmp/lex-robot-gym.pid; sleep 6; \
 	 lex run --allow-effects net,io examples/safe_rollout.lex run; \
 	 kill `cat /tmp/lex-robot-gym.pid` 2>/dev/null || true
+
+dynamic_keepout: ## Dynamic human keep-out: live-updating no-go zone (no ML deps)
+	@bash scripts/demo.sh dynamic_keepout
 
 clean: ## Remove stray run artifacts
 	@rm -f MUJOCO_LOG.TXT /tmp/lex-robot-*.log

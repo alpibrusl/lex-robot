@@ -142,6 +142,15 @@ fn read_camera(r :: t.Robot, name :: Str) -> [net, sense] Result[Str, Str] {
   client.call(r.sidecar_url, "read_camera", str.join(["{\"name\":\"", name, "\"}"], ""))
 }
 
+# Current position of the bystander/person in the workspace (normalized [0,1]).
+# Used by the dynamic keep-out demo to compute a live exclusion box each step.
+fn read_bystander(r :: t.Robot) -> [net, sense] Result[t.Vec3, Str] {
+  match client.call(r.sidecar_url, "read_bystander", "{}") {
+    Err(e) => Err(e),
+    Ok(s) => Ok({ x: jfloat(s, "\"x\":", 0.5), y: jfloat(s, "\"y\":", 0.5), z: 0.0 }),
+  }
+}
+
 # ── Actuating (grant-gated) ──────────────────────────────────────────────────
 fn move_to(r :: t.Robot, target :: t.Pose) -> [net, sense, actuate] t.Outcome {
   if grant.skill_allowed(r.grant, "move_to") {

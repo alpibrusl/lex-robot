@@ -27,6 +27,8 @@ expect llm   "BLOCKED (never sent): 3" "LLM planner blocks 3 unsafe actions"
 expect llm   "chain intact" "LLM planner audit chain verifies"
 expect task  "SUCCESS" "evidence-gated task graph succeeds"
 expect depot "task SUCCESS" "OCPP-gated depot demo succeeds"
+expect dynamic_keepout "commands BLOCKED" "dynamic keep-out blocks intrusions into moving bystander zone"
+expect dynamic_keepout "entered zone: 0" "dynamic keep-out: zero commands reach the moving zone when governed"
 
 # The budget wall (DESIGN.md §6/§9.5): the grant carries action + wall-clock
 # budgets, and the in-box supervisor (src/budget.lex) kills a run that exceeds
