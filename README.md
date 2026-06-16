@@ -4,8 +4,6 @@
 
 **Part of the [Lex](https://lexlang.org) project** — Robotics · [Manifesto](https://lexlang.org/manifesto) · [All packages](https://lexlang.org)
 
-[![ci](https://github.com/alpibrusl/lex-robot/actions/workflows/ci.yml/badge.svg)](https://github.com/alpibrusl/lex-robot/actions/workflows/ci.yml)
-
 Effect-typed, capability-bounded, auditable control layer for robots — sitting
 **above** [LeRobot](https://github.com/huggingface/lerobot). LeRobot stays the
 ML + hardware engine; `lex-robot` is the safety envelope and the
