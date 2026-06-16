@@ -12,7 +12,7 @@ thesis, applied to a physical body).
 
 > **Status: working prototype (verified on macOS / Apple MPS).** End-to-end:
 > bounded skills → real gym-pusht physics → a learned LeRobot policy that solves
-> the task (~0.9 peak coverage) → an evidence-gated task graph → a hash-chained
+> the task (best-case ~0.9 coverage, high variance) → an evidence-gated task graph → a hash-chained
 > lex-trail audit → a lex-os grant (static effect-wall + runtime supervised box).
 > **Still not safe near a real arm** — software grant ≠ physical safety; you need
 > firmware limits + a hardware e-stop (DESIGN.md §8). The Firecracker microVM box
@@ -340,9 +340,20 @@ lex run --allow-effects net,sense,actuate,io,sql,fs_write,time examples/task_dem
 # task SUCCESS after 1 attempt(s)
 ```
 
-Set `use_policy=true` in `task_demo.lex` to gate Verify on a real LeRobot policy
-solving the task (`run_policy`, verified ~0.9 peak coverage on MPS — needs the
-gym sidecar + `lerobot`).
+Set `use_policy=true` in `task_demo.lex` to gate Verify on a real LeRobot policy.
+Two honest caveats (measured on MPS, lerobot 0.5.1 + `lerobot/diffusion_pusht`):
+
+- **Policy is near-spec but not reliable.** Over 10 episodes, peak coverage ranged
+  0.0–0.88 (best 0.88, mean ~0.48); it rarely clears the 0.90 solve threshold. So
+  Verify will often legitimately report FAILED. Normalization is mostly working
+  (a broken-norm policy scores ~0 every episode — we see 0.7+), but the
+  `normalize_inputs.buffer_*` warning suggests the last ~0.1 is recoverable.
+- **The monolithic `run_policy` can't complete via Lex** on the current toolchain:
+  a full rollout (≈15–40s) exceeds `std.http`'s hard ~10s client timeout, so it
+  reports `timeout` (see `src/client.lex`). The closed-loop gating that **works
+  today** is the step-wise path — `examples/safe_rollout.lex` runs the same policy
+  against real physics, one grant-checked command at a time (verified live: 64/80
+  unsafe commands blocked, 0 executed). Needs the gym sidecar + `lerobot`.
 
 ## The effect wall: `actuate` / `sense` are types
 
