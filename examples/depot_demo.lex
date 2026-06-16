@@ -7,7 +7,7 @@
 # when the connector is physically seated). Then a safe stop+disconnect.
 #
 #   python3 sidecar/depot_sidecar.py &
-#   lex run --allow-effects net,io examples/depot_demo.lex run
+#   lex run --allow-effects env,net,sense,actuate,io examples/depot_demo.lex run
 
 import "std.io" as io
 
@@ -56,7 +56,7 @@ fn env_or(key :: Str, dflt :: Str) -> [env] Str {
   }
 }
 
-fn run() -> [env, net, io] Unit {
+fn run() -> [env, net, sense, actuate, io] Unit {
   # Defaults → the depot sidecar stand-in. Set these to hit the REAL lex-charge:
   #   LEX_CHARGE_URL=http://localhost:18000  LEX_CHARGE_TOKEN=<jwt>  LEX_DEPOT_CP=CP-RTM-01
   let cp_id := env_or("LEX_DEPOT_CP", "DEPOT-CP-01")

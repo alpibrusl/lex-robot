@@ -3,6 +3,16 @@
 # Each actuating skill: (1) checks the grant, (2) clamps to limits, (3) calls
 # the sidecar. A call the grant forbids returns Denied(...) and never touches
 # the wire. Sensor-only skills (read_*) don't actuate but still hit [net].
+#
+# Effect rows make the judgment/authority split a TYPE, not a convention
+# (DESIGN.md §4):
+#   [sense]    reads a sensor — no physical output (read_*, policy_action, ...)
+#   [actuate]  drives a physical output — gated by the grant (move_to, grasp, ...)
+#   [net]      the transport: each skill is a localhost call to the sidecar.
+# Because effects propagate, a caller cannot invoke an actuating skill without
+# declaring [actuate] itself — so `lex check` rejects a "look but don't touch"
+# routine that secretly moves the arm, and `lex run --allow-effects` (the grant's
+# authority) can withhold `actuate` to make actuation unreachable before run.
 
 import "std.str" as str
 
@@ -68,7 +78,7 @@ fn reset_episode(r :: t.Robot, name :: Str) -> [net] Result[Str, Str] {
 }
 
 # The action the policy *wants* (normalized), before any grant check.
-fn policy_action(r :: t.Robot) -> [net] Result[t.Vec3, Str] {
+fn policy_action(r :: t.Robot) -> [net, sense] Result[t.Vec3, Str] {
   match client.call(r.sidecar_url, "policy_action", "{}") {
     Err(e) => Err(e),
     Ok(s) => Ok({ x: jfloat(s, "\"x\":", 0.5), y: jfloat(s, "\"y\":", 0.5), z: 0.0 }),
@@ -76,7 +86,7 @@ fn policy_action(r :: t.Robot) -> [net] Result[t.Vec3, Str] {
 }
 
 # Execute a (possibly grant-adjusted) command; returns the resulting reward.
-fn apply_action(r :: t.Robot, p :: t.Vec3) -> [net] Result[Float, Str] {
+fn apply_action(r :: t.Robot, p :: t.Vec3) -> [net, sense, actuate] Result[Float, Str] {
   let body := str.join(["{\"x\":", flt.to_str(p.x), ",\"y\":", flt.to_str(p.y), "}"], "")
   match client.call(r.sidecar_url, "apply_action", body) {
     Err(e) => Err(e),
@@ -90,7 +100,7 @@ fn reset_depot(r :: t.Robot) -> [net] Result[Str, Str] {
 }
 
 # Read the truck's charge-inlet pose (Perceive).
-fn read_inlet(r :: t.Robot) -> [net] Result[t.Pose, Str] {
+fn read_inlet(r :: t.Robot) -> [net, sense] Result[t.Pose, Str] {
   match client.call(r.sidecar_url, "read_inlet", "{}") {
     Err(e) => Err(e),
     Ok(s) => Ok({
@@ -102,7 +112,7 @@ fn read_inlet(r :: t.Robot) -> [net] Result[t.Pose, Str] {
 
 # Seat the connector. Grant-gated: rejected if not allowed; force clamped to the
 # grant ceiling before the command is sent.
-fn connect_charger(r :: t.Robot, force :: Float) -> [net] t.Outcome {
+fn connect_charger(r :: t.Robot, force :: Float) -> [net, sense, actuate] t.Outcome {
   if grant.skill_allowed(r.grant, "connect_charger") {
     let clamped := grant.clamp_force(r.grant, force)
     match client.call(r.sidecar_url, "connect_charger", str.join(["{\"force\":", f(clamped), "}"], "")) {
@@ -114,7 +124,7 @@ fn connect_charger(r :: t.Robot, force :: Float) -> [net] t.Outcome {
   }
 }
 
-fn disconnect_charger(r :: t.Robot) -> [net] t.Outcome {
+fn disconnect_charger(r :: t.Robot) -> [net, sense, actuate] t.Outcome {
   if grant.skill_allowed(r.grant, "disconnect_charger") {
     match client.call(r.sidecar_url, "disconnect_charger", "{}") {
       Err(e) => Stalled(e),
@@ -126,16 +136,16 @@ fn disconnect_charger(r :: t.Robot) -> [net] t.Outcome {
 }
 
 # ── Sensing ──────────────────────────────────────────────────────────────────
-fn read_joints(r :: t.Robot) -> [net] Result[Str, Str] {
+fn read_joints(r :: t.Robot) -> [net, sense] Result[Str, Str] {
   client.call(r.sidecar_url, "read_joints", "{}")
 }
 
-fn read_camera(r :: t.Robot, name :: Str) -> [net] Result[Str, Str] {
+fn read_camera(r :: t.Robot, name :: Str) -> [net, sense] Result[Str, Str] {
   client.call(r.sidecar_url, "read_camera", str.join(["{\"name\":\"", name, "\"}"], ""))
 }
 
 # ── Actuating (grant-gated) ──────────────────────────────────────────────────
-fn move_to(r :: t.Robot, target :: t.Pose) -> [net] t.Outcome {
+fn move_to(r :: t.Robot, target :: t.Pose) -> [net, sense, actuate] t.Outcome {
   if grant.skill_allowed(r.grant, "move_to") {
     if grant.in_workspace(r.grant, target.pos) {
       match client.call(r.sidecar_url, "move_to", pose_json(target)) {
@@ -150,7 +160,7 @@ fn move_to(r :: t.Robot, target :: t.Pose) -> [net] t.Outcome {
   }
 }
 
-fn grasp(r :: t.Robot, force :: Float) -> [net] t.Outcome {
+fn grasp(r :: t.Robot, force :: Float) -> [net, sense, actuate] t.Outcome {
   if grant.skill_allowed(r.grant, "grasp") {
     let clamped := grant.clamp_grip(r.grant, force)
     match client.call(r.sidecar_url, "grasp", str.join(["{\"force\":", f(clamped), "}"], "")) {
@@ -163,7 +173,7 @@ fn grasp(r :: t.Robot, force :: Float) -> [net] t.Outcome {
 }
 
 # Hands the high-rate loop to LeRobot; the lex-os supervisor enforces the budget.
-fn run_policy(r :: t.Robot, name :: Str, goal :: Str, budget_ms :: Int) -> [net] t.Outcome {
+fn run_policy(r :: t.Robot, name :: Str, goal :: Str, budget_ms :: Int) -> [net, sense, actuate] t.Outcome {
   if grant.skill_allowed(r.grant, "run_policy") {
     let body := str.join([
       "{\"name\":\"", name, "\",\"goal\":\"", goal, "\",\"budget_ms\":", int.to_str(budget_ms), "}"
@@ -177,7 +187,9 @@ fn run_policy(r :: t.Robot, name :: Str, goal :: Str, budget_ms :: Int) -> [net]
   }
 }
 
-fn record_episode(r :: t.Robot, task :: Str) -> [net] Result[Str, Str] {
+# Captures a LeRobotDataset episode: reads sensors ([sense]); the file write
+# happens in the sidecar (Python), so it is not a Lex [fs_write].
+fn record_episode(r :: t.Robot, task :: Str) -> [net, sense] Result[Str, Str] {
   if grant.skill_allowed(r.grant, "record_episode") {
     client.call(r.sidecar_url, "record_episode", str.join(["{\"task\":\"", task, "\"}"], ""))
   } else {

@@ -28,6 +28,34 @@ expect llm   "chain intact" "LLM planner audit chain verifies"
 expect task  "SUCCESS" "evidence-gated task graph succeeds"
 expect depot "task SUCCESS" "OCPP-gated depot demo succeeds"
 
+# The effect wall (DESIGN.md §4): actuate/sense are real Lex effects, so the
+# judgment/authority split is type-enforced — not a runtime convention. Both
+# halves are NEGATIVE checks: the build must FAIL to actuate when it shouldn't.
+echo "== effect wall =="
+neg="$ROOT/.effwall_neg.lex"
+cat > "$neg" <<'LEXEOF'
+import "./src/types" as t
+import "./src/skills" as skills
+# A "look but don't touch" routine that ILLEGALLY tries to drive the arm.
+fn calibrate(r :: t.Robot) -> [net, sense] t.Outcome {
+  skills.move_to(r, { pos: { x: 0.2, y: 0.0, z: 0.1 }, rx: 0.0, ry: 0.0, rz: 0.0 })
+}
+LEXEOF
+if lex check "$neg" >/dev/null 2>&1; then
+  bad "compile-time: [sense]-only routine calling move_to type-checked (should be rejected)"
+else
+  pass "compile-time: [sense] routine cannot call an [actuate] skill (lex check rejects it)"
+fi
+rm -f "$neg"
+
+# Run-time: the grant's authority is --allow-effects. Withhold `actuate` and the
+# same demo code is unreachable before it runs — no command can leave the box.
+if lex run --allow-effects net,sense,io examples/demo.lex run >/dev/null 2>&1; then
+  bad "run-time: demo.lex ran with actuate withheld (should be blocked)"
+else
+  pass "run-time: actuate withheld → actuating skill blocked before execution"
+fi
+
 echo
 if [ "$fail" -eq 0 ]; then echo "ALL GREEN"; else echo "FAILURES ABOVE"; fi
 exit "$fail"

@@ -2,7 +2,7 @@
 #
 # Perceive → Plan → Execute → Verify against a running sidecar:
 #   python3 sidecar/sim_sidecar.py &          # or gym_sidecar.py
-#   lex run --allow-effects net,io examples/task_demo.lex run
+#   lex run --allow-effects net,sense,actuate,io,sql,fs_write,time examples/task_demo.lex run
 
 import "std.io" as io
 
@@ -25,7 +25,7 @@ fn demo_grant() -> t.Grant {
   }
 }
 
-fn run() -> [net, io, sql, fs_write, time] Unit {
+fn run() -> [net, sense, actuate, io, sql, fs_write, time] Unit {
   let robot := { sidecar_url: "http://localhost:8900", grant: demo_grant() }
   # use_policy=false → fast structural pass; set true to gate on a real
   # LeRobot policy solving the task (needs the gym sidecar + lerobot).

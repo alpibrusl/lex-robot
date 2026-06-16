@@ -13,10 +13,10 @@ PORT="${LEX_ROBOT_SIDECAR_PORT:-8900}"
 PY="${PYTHON:-python3}"
 
 case "$DEMO" in
-  grant) SIDECAR=sim_sidecar;   FILE=examples/demo.lex;             EFF="net,io" ;;
-  llm)   SIDECAR=sim_sidecar;   FILE=examples/llm_planner_demo.lex; EFF="fs_write,io,net,sql,time" ;;
-  task)  SIDECAR=sim_sidecar;   FILE=examples/task_demo.lex;        EFF="net,io,sql,fs_write,time" ;;
-  depot) SIDECAR=depot_sidecar; FILE=examples/depot_demo.lex;       EFF="env,net,io" ;;
+  grant) SIDECAR=sim_sidecar;   FILE=examples/demo.lex;             EFF="net,sense,actuate,io" ;;
+  llm)   SIDECAR=sim_sidecar;   FILE=examples/llm_planner_demo.lex; EFF="fs_write,io,net,sense,actuate,sql,time" ;;
+  task)  SIDECAR=sim_sidecar;   FILE=examples/task_demo.lex;        EFF="net,sense,actuate,io,sql,fs_write,time" ;;
+  depot) SIDECAR=depot_sidecar; FILE=examples/depot_demo.lex;       EFF="env,net,sense,actuate,io" ;;
   *) echo "unknown demo '$DEMO' (use: grant | llm | task | depot)" >&2; exit 2 ;;
 esac
 

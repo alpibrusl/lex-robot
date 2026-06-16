@@ -95,7 +95,7 @@ box/             lex-os agent programs + the three-layer enforcement guide
 ```bash
 LEX=/path/to/lex
 $LEX check src/skills.lex
-$LEX run --allow-effects net,io examples/demo.lex run
+$LEX run --allow-effects net,sense,actuate,io examples/demo.lex run
 # move_to in-bounds   → stalled: ... Connection refused   (allowed → tried sidecar)
 # move_to out-bounds  → denied: target outside granted workspace   (blocked, never sent)
 # grasp(99N→clamped)  → ...   (allowed; force clamped to the grant ceiling)
@@ -115,7 +115,7 @@ MuJoCo) → **hardware** (LeRobot). The Lex side is identical across all three.
 ```sh
 pip install -r sidecar/requirements.txt   # gym backend
 python3 sidecar/gym_sidecar.py &
-lex run --allow-effects net,io examples/demo.lex run
+lex run --allow-effects net,sense,actuate,io examples/demo.lex run
 ```
 
 ## Why Lex, not vanilla LeRobot? (a demo where Lex does real work)
@@ -128,7 +128,7 @@ declared. The *same* learned policy runs two ways against real physics:
 
 ```sh
 .venv312/bin/python sidecar/gym_sidecar.py &
-lex run --allow-effects net,io examples/safe_rollout.lex run
+lex run --allow-effects net,sense,actuate,io examples/safe_rollout.lex run
 # UNGOVERNED (raw policy):  57/80 unsafe commands EXECUTED into the keep-out zone
 # GOVERNED   (Lex grant):   60 unsafe commands BLOCKED, 0 executed
 # → same policy; the Lex grant is the only difference
@@ -151,7 +151,7 @@ grant **before** it can reach the actuators:
 
 ```sh
 python3 sidecar/sim_sidecar.py &
-lex run --allow-effects fs_write,io,net,sql,time examples/llm_planner_demo.lex run
+lex run --allow-effects fs_write,io,net,sense,actuate,sql,time examples/llm_planner_demo.lex run
 #   [ALLOW] move_to (0.5,0.1,0.2) — task: approach the cup
 #   [CLAMP] grasp 250N -> 20N — llm: grip it hard so it won't slip
 #   [BLOCK] move_to (0.45,0.5,0.2) — hallucination — enters keep-out (bystander) zone; NOT SENT
@@ -177,7 +177,7 @@ charging connector to a truck, and the charging **session** is the Verify gate:
 
 ```sh
 python3 sidecar/depot_sidecar.py &
-lex run --allow-effects net,io examples/depot_demo.lex run
+lex run --allow-effects env,net,sense,actuate,io examples/depot_demo.lex run
 #   [ok ] perceive — inlet at (0.7,0.5,0.3)
 #   [ok ] plan — approach the inlet
 #   [ok ] execute.move — reached
@@ -205,7 +205,7 @@ env vars. `src/charge.lex` uses the header-capable `http.send` + `http.with_auth
 python3 sidecar/depot_sidecar.py &                          # physical depot (:8900)
 # (ev-fleet stack up; lex-charge published to host on :18000; JWT minted for JWT_SECRET)
 LEX_CHARGE_URL=http://127.0.0.1:18000 LEX_CHARGE_TOKEN=<jwt> LEX_DEPOT_CP=CP-RTM-01 \
-  lex run --allow-effects env,io,net examples/depot_demo.lex run
+  lex run --allow-effects env,net,sense,actuate,io examples/depot_demo.lex run
 #   [ok ] verify.start   — lex-charge accepted (sent)            ← real remote_start → CSMS
 #   [ok ] verify.confirm — active OCPP session for CP-RTM-01     ← real /v1/sessions/active
 #   task SUCCESS — truck charging
@@ -226,7 +226,7 @@ runs `mj_step`, `connect` checks site alignment).
 ```sh
 pip install mujoco
 python3 sidecar/depot_mujoco_sidecar.py &
-lex run --allow-effects env,io,net examples/depot_demo.lex run
+lex run --allow-effects env,net,sense,actuate,io examples/depot_demo.lex run
 ```
 
 ![MuJoCo depot: connector approaching the truck inlet](media/depot_mujoco.gif)
@@ -259,7 +259,7 @@ git clone --depth 1 --filter=blob:none --sparse \
 git -C /tmp/menagerie sparse-checkout set unitree_g1
 export LEX_G1_DIR=/tmp/menagerie/unitree_g1
 python3 sidecar/depot_g1_sidecar.py &
-lex run --allow-effects env,net,io examples/depot_demo.lex run
+lex run --allow-effects env,net,sense,actuate,io examples/depot_demo.lex run
 #   [ok ] execute.move — reached            ← the G1 right arm reaches the inlet
 #   [ok ] execute.connect (req 99N->clamped 15N) — reached   ← grant clamps + weld seats
 #   [ok ] verify.confirm — active OCPP session
@@ -276,7 +276,7 @@ little closer so the reach stays inside the balance envelope (CoM over the feet)
 
 ```sh
 LEX_G1_BALANCE=1 python3 sidecar/depot_g1_sidecar.py &
-lex run --allow-effects env,net,io examples/depot_demo.lex run   # same demo, unchanged
+lex run --allow-effects env,net,sense,actuate,io examples/depot_demo.lex run   # same demo, unchanged
 ```
 
 ![Unitree G1 balancing on its own legs while plugging in the charge connector](media/depot_g1_balance.gif)
@@ -294,7 +294,7 @@ the Lex side doesn't change a line.
 
 ```sh
 python3 sidecar/depot_hw_sidecar.py &                            # stub (no hardware)
-lex run --allow-effects env,net,io examples/depot_demo.lex run   # same demo, unchanged
+lex run --allow-effects env,net,sense,actuate,io examples/depot_demo.lex run   # same demo, unchanged
 ```
 
 ### A *learned* controller (not the scripted servo)
@@ -333,7 +333,7 @@ against any sidecar.
 
 ```sh
 .venv312/bin/python sidecar/gym_sidecar.py &     # real PushT physics
-lex run --allow-effects net,io examples/task_demo.lex run
+lex run --allow-effects net,sense,actuate,io,sql,fs_write,time examples/task_demo.lex run
 # attempt 1:
 #   [ok ] perceive — agent_pos [...]   (real sensor read)
 #   [ok ] plan — target (...)
@@ -345,6 +345,40 @@ lex run --allow-effects net,io examples/task_demo.lex run
 Set `use_policy=true` in `task_demo.lex` to gate Verify on a real LeRobot policy
 solving the task (`run_policy`, verified ~0.9 peak coverage on MPS — needs the
 gym sidecar + `lerobot`).
+
+## The effect wall: `actuate` / `sense` are types
+
+The judgment-vs-authority split isn't a runtime convention here — it's in the
+type system. Every skill declares what it does to the world (DESIGN.md §4):
+
+| effect | skills | meaning |
+|---|---|---|
+| `[sense]` | `read_joints`, `read_camera`, `policy_action`, `read_inlet` | reads a sensor — no physical output |
+| `[actuate]` | `move_to`, `grasp`, `run_policy`, `connect_charger`, `apply_action` | drives a physical output — gated by the grant |
+| `[net]` | all of the above | the transport (a localhost call to the sidecar) |
+
+Because Lex effects **propagate**, this buys two enforcement layers for free:
+
+**Compile time** — a "look but don't touch" routine that secretly actuates does
+not type-check. `lex check` rejects it before it ever runs:
+
+```sh
+# a calibration fn typed [net, sense] that calls move_to ([actuate]):
+lex check calibrate.lex
+#   effect `actuate` not declared   (effect-not-declared)   ← REFUSED
+```
+
+**Run time** — `--allow-effects` is the grant's authority. Withhold `actuate`
+and the *same* program becomes unreachable before a single command leaves the box:
+
+```sh
+lex run --allow-effects net,sense,io examples/demo.lex run
+#   effect `actuate` not in --allow-effects   ← BLOCKED at the call site
+```
+
+`scripts/smoke.sh` asserts both (the `== effect wall ==` checks), so a skill that
+quietly actuates under a `[sense]` signature fails CI. This is the property the
+whole project rests on, made mechanical rather than aspirational.
 
 ## Running under lex-os (the capability box)
 
@@ -387,9 +421,6 @@ an unbypassable Firecracker microVM as a lex-os guest agent (lex-robot#1).
 - **lex-llm** — high-level planner / skill selector.
 
 ## Known gaps (intentional / next)
-- `actuate` / `sense` are **not** first-class Lex effects yet (compiler-defined
-  set); skills carry `[net]` and capability is enforced at runtime via `grant.lex`
-  + the lex-os grant. Promoting them to real effects is a lex-lang change (DESIGN.md §4).
 - JSON is hand-built with `std.str`; could swap to `lex-schema/json_value`.
 - No WebSocket streaming of sensor/state yet (HTTP request/response only).
 - The robot task doesn't yet run *inside* a Firecracker microVM as a lex-os
