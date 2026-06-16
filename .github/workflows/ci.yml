@@ -38,5 +38,5 @@ jobs:
       - name: README in sync with code
         run: bash scripts/check_readme.sh
 
-      - name: Smoke (type-check + 4 governance demos)
+      - name: Smoke (type-check + 5 governance demos)
         run: bash scripts/smoke.sh

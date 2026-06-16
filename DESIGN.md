@@ -161,6 +161,15 @@ The supervisor (lex-os, outside the box) holds this. A skill call that violates
 it returns `Denied(...)` and is logged; the supervisor can also hard-kill on
 budget/liveness breach.
 
+**Implemented in-box.** The two budget caps (`budgets.actions`, `budgets.wall_ms`)
+are also enforced *inside* the task loop, so a plain `lex run` self-limits with
+no lex-os / KVM in the loop. The grant carries `budget_actions` + `budget_wall_ms`
+(`src/types.lex`); a pure ledger (`src/budget.lex`) is checked **before** each
+command leaves the box; on breach the run is `Killed(reason)` — a distinct
+`Outcome` from a capability `Denied` — and a `killed` event is appended to the
+lex-trail. `examples/budget_demo.lex` (a zero-action grant) and the
+`== budget kill ==` checks in `scripts/smoke.sh` assert it in CI.
+
 ---
 
 ## 7. LeRobot integration points
@@ -195,4 +204,7 @@ budget/liveness breach.
 4. lex-trail recording the full episode; export one LeRobotDataset episode.
 5. Run it as a lex-os box with the §6 grant; demonstrate a `Denied` on an
    out-of-workspace target and a supervisor budget kill.
+   **Done** — `Denied` is the `make grant` demo; the in-box budget kill is
+   `make budget` (`examples/budget_demo.lex`), with lex-os's external
+   `BudgetExhausted` enforcement shown in `box/README.md`. See §6.
 ```

@@ -14,21 +14,28 @@ import "std.int" as int
 
 import "lex-trail/src/log" as tlog
 
+import "std.time" as time
+
 import "./types" as t
 
 import "./skills" as skills
 
 import "./policy" as policy
 
+import "./budget" as budget
+
 type StepLog = { phase :: Str, ok :: Bool, detail :: Str }
 
-type TaskResult = { success :: Bool, attempts :: Int, last_event :: Str }
+# killed = the supervisor stopped the run on a budget breach (see budget.lex),
+# as opposed to success=false from exhausting retries.
+type TaskResult = { success :: Bool, attempts :: Int, killed :: Bool, last_event :: Str }
 
 fn outcome_str(o :: t.Outcome) -> Str {
   match o {
     Reached => "reached",
     Stalled(m) => str.concat("stalled: ", m),
     Denied(m) => str.concat("denied: ", m),
+    Killed(m) => str.concat("killed: ", m),
     Timeout => "timeout",
   }
 }
@@ -120,16 +127,29 @@ fn attempt(r :: t.Robot, n :: Int, use_policy :: Bool, log :: tlog.Log, parent :
   }
 }
 
-fn loop(r :: t.Robot, max :: Int, n :: Int, use_policy :: Bool, log :: tlog.Log, parent :: Str) -> [net, sense, actuate, io, sql, time] TaskResult {
-  let a := attempt(r, n, use_policy, log, parent)
-  if a.ok {
-    { success: true, attempts: n, last_event: a.parent }
-  } else {
-    if n >= max {
-      { success: false, attempts: n, last_event: a.parent }
-    } else {
-      loop(r, max, n + 1, use_policy, log, a.parent)
-    }
+# The budget supervisor runs BEFORE each attempt: if the run is out of actions
+# or wall-clock, no further command leaves the box — the run is killed and the
+# breach is recorded as a `killed` event in the trail. Otherwise the attempt
+# runs and is charged one action against the ledger before any retry.
+fn loop(r :: t.Robot, max :: Int, n :: Int, use_policy :: Bool, led :: budget.Ledger, log :: tlog.Log, parent :: Str) -> [net, sense, actuate, io, sql, time] TaskResult {
+  match budget.breach(led, time.now_ms()) {
+    Some(reason) => {
+      let __k := io.print(str.concat("  [KILL] supervisor — ", reason))
+      let e_k := trail(log, parent, "killed", reason)
+      { success: false, attempts: n - 1, killed: true, last_event: e_k }
+    },
+    None => {
+      let a := attempt(r, n, use_policy, log, parent)
+      if a.ok {
+        { success: true, attempts: n, killed: false, last_event: a.parent }
+      } else {
+        if n >= max {
+          { success: false, attempts: n, killed: false, last_event: a.parent }
+        } else {
+          loop(r, max, n + 1, use_policy, budget.spend(led), log, a.parent)
+        }
+      }
+    },
   }
 }
 
@@ -138,14 +158,15 @@ fn run(r :: t.Robot, max_attempts :: Int, use_policy :: Bool, trail_path :: Str)
   match tlog.open(trail_path) {
     Err(e) => {
       let __e := io.print(str.concat("trail open failed: ", e))
-      { success: false, attempts: 0, last_event: "" }
+      { success: false, attempts: 0, killed: false, last_event: "" }
     },
     Ok(log) => match tlog.append(log, "task_started", None, "{}") {
       Err(e) => {
         let __e := io.print(str.concat("trail root failed: ", e))
-        { success: false, attempts: 0, last_event: "" }
+        { success: false, attempts: 0, killed: false, last_event: "" }
       },
-      Ok(root) => loop(r, max_attempts, 1, use_policy, log, root.id),
+      # Open the budget ledger from the grant; the loop self-limits against it.
+      Ok(root) => loop(r, max_attempts, 1, use_policy, budget.start(r.grant, time.now_ms()), log, root.id),
     },
   }
 }

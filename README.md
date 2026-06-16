@@ -47,8 +47,9 @@ program, and stops the sidecar:
 make demo      # ← start here: untrusted LLM planner, Lex on the rails
 make grant     # grant gate: in-bounds allowed, out-of-bounds denied, force clamped
 make task      # evidence-gated Perceive → Plan → Execute → Verify
+make budget    # budget supervisor: a zero-action grant kills the run before any command
 make depot     # OCPP-gated depot connect
-make smoke     # type-check everything + run all four, asserting the output (CI-ready)
+make smoke     # type-check everything + run all five, asserting the output (CI-ready)
 ```
 
 (No `make`? Use `bash scripts/demo.sh llm`.) The only Lex dependency, `lex-trail`,
@@ -58,7 +59,7 @@ is public and fetched automatically on first run.
 
 | demo | command | needs |
 |---|---|---|
-| LLM planner / grant / task / depot | `make demo` / `grant` / `task` / `depot` | **`lex` + `python3` only** (stdlib sidecars) |
+| LLM planner / grant / task / budget / depot | `make demo` / `grant` / `task` / `budget` / `depot` | **`lex` + `python3` only** (stdlib sidecars) |
 | keep-out (learned policy vs. grant) | `make keepout` | + `pip install -r sidecar/requirements.txt` (gym-pusht, lerobot) |
 | MuJoCo depot (Tier-2 / Tier-3 G1) | `python3 sidecar/depot_mujoco_sidecar.py` · `depot_g1_sidecar.py` | + `mujoco` (+ G1 model via `LEX_G1_DIR`) |
 | learned reach policy (behaviour cloning) | `python3 sidecar/g1_bc_reach.py` | + `torch` (+ G1 model) |
@@ -76,13 +77,15 @@ lex.toml         package manifest (depends on lex-trail)
 src/
   types.lex      Pose, JointState, Frame, Outcome, Grant, Robot
   grant.lex      pure capability checks (workspace, force/velocity clamps)
+  budget.lex     pure budget supervisor (action + wall-clock caps; Killed on breach)
   client.lex     HTTP bridge to the LeRobot sidecar (localhost)
   skills.lex     bounded skill API (move_to, grasp, read_*, record_episode)
   policy.lex     run_policy + async polling (kept off the core surface; needs [time])
   task.lex       evidence-gated Perceive→Plan→Execute→Verify graph + lex-trail audit
 examples/
-  demo.lex       grant gate in action (Denied vs. allowed)
-  task_demo.lex  the full gated task graph end to end
+  demo.lex         grant gate in action (Denied vs. allowed)
+  task_demo.lex    the full gated task graph end to end
+  budget_demo.lex  the budget supervisor killing a zero-action run
 sidecar/         3 backends behind one protocol: sim_sidecar (stub) →
                  gym_sidecar (real PushT + LeRobot policy) → hardware
 manifests/       lex-os grant for the task (pick_place.capsule.json)
@@ -392,6 +395,31 @@ lex run --allow-effects net,sense,io examples/demo.lex run
 `scripts/smoke.sh` asserts both (the `== effect wall ==` checks), so a skill that
 quietly actuates under a `[sense]` signature fails CI. This is the property the
 whole project rests on, made mechanical rather than aspirational.
+
+## The budget wall: the grant caps how much a run may do
+
+The effect wall says *whether* a skill may actuate. The budget says *how much*:
+the grant carries `budget_actions` (max actuating commands) and `budget_wall_ms`
+(max wall-clock), mirroring the lex-os manifest's `budget.max_commands` /
+`budget.wall_clock_secs`. The in-box supervisor ([`src/budget.lex`](src/budget.lex),
+pure) opens a ledger from the grant, charges one action per actuating step, and
+is checked **before** each command leaves the box. On breach the run is `Killed`
+(distinct from a grant `Denied`) and the breach is recorded in the trail.
+
+`examples/budget_demo.lex` runs the same task as `make task` but with a
+zero-action grant, so it is killed before a single command is sent:
+
+```sh
+make budget
+#   [KILL] supervisor — action budget exhausted: 0/0 actions used
+#   task KILLED after 0 attempt(s)
+```
+
+The trail then chains `task_started → killed` (with the breach reason), so the
+kill is auditable, not just logged. `scripts/smoke.sh` asserts this (the
+`== budget kill ==` checks). This is the runtime twin of the effect wall: the
+effect wall stops actuation that was never granted; the budget stops actuation
+that has run out of allowance — without lex-os or KVM in the loop.
 
 ## Running under lex-os (the capability box)
 
