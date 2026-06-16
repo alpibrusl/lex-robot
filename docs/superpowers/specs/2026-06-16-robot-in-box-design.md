@@ -195,12 +195,16 @@ manifest.
 
 The lex-os hash-chained `AuditLog` (already exists, already verified by
 `audit_verified: true`) is the source of truth for mediation, now also recording
-observed `SkillOutcome`s. **`lex-trail` is not in this workspace** (no sibling
-checkout), so full lex-trail integration cannot be done here. Reconciliation is
-therefore scoped to: the sidecar emits an episode log (command + observation,
-hash-chained) and a reconcile check asserts the two sequences corroborate. True
-lex-trail wiring is deferred until that crate is present. This is called out
-rather than pretended-done.
+observed `SkillOutcome`s. **`lex-trail` has been cloned into the workspace**
+(`alpibrusl/lex-trail`, a Lex library) — its event format is
+`Event = { id, kind, parent, payload_json, ts_ms }` with
+`id = sha256(join([kind, parent, payload_json, ts_ms], " "))`, chained via
+`parent`. The standard kinds `cap.invoked` / `cap.completed` map directly onto
+robot skills. The sidecar emits a genuine lex-trail chain (a small Python mirror
+of `lex-trail/src/event.lex`, so no Lex runtime is needed in-line), and a
+reconcile check asserts the lex-os audit chain and the lex-trail episode chain
+corroborate on skill sequence + outcomes. (lex-trail is Lex, lex-os audit is
+Rust — reconciliation is intentionally cross-language at the data level.)
 
 ## Verification (maps 1:1 to issue #1's checklist)
 
