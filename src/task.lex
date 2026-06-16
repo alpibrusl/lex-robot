@@ -18,6 +18,8 @@ import "./types" as t
 
 import "./skills" as skills
 
+import "./policy" as policy
+
 type StepLog = { phase :: Str, ok :: Bool, detail :: Str }
 
 type TaskResult = { success :: Bool, attempts :: Int, last_event :: Str }
@@ -67,19 +69,17 @@ fn plan_target() -> t.Pose {
 
 # use_policy=true gates on real task completion via a learned LeRobot policy;
 # false uses a single grant-checked move (fast, structural).
-fn execute(r :: t.Robot, target :: t.Pose, use_policy :: Bool) -> [net, sense, actuate] t.Outcome {
+fn execute(r :: t.Robot, target :: t.Pose, use_policy :: Bool) -> [net, sense, actuate, time] t.Outcome {
   if use_policy {
     # budget_ms maps to a step cap in the gym sidecar (≈100ms/step, capped at the
     # 300-step PushT episode). 8000 → only 80 steps, too few to reach peak
     # coverage; 30000 → a full episode so the Verify gate sees the real outcome.
     #
-    # CAVEAT: this monolithic call blocks for the whole rollout (≈15–40s), which
-    # exceeds the std.http client's hard ~10s timeout (see client.lex) — so on the
-    # current toolchain use_policy=true reports `timeout` here. The closed-loop
-    # gating that *does* work today is the step-wise path (examples/safe_rollout.lex:
-    # policy_action → grant check → apply_action, each a sub-10s call). Making this
-    # path work needs an async/polling run_policy in the sidecar.
-    skills.run_policy(r, "lerobot/diffusion_pusht", "solve pusht", 30000)
+    # skills.run_policy hands the rollout to the sidecar asynchronously and polls
+    # to completion (each poll sub-10s), so it returns a real outcome — Reached
+    # when the policy clears the solve threshold, Timeout otherwise — rather than
+    # tripping the http client's ~10s ceiling. See skills.lex / client.lex.
+    policy.run_policy(r, "lerobot/diffusion_pusht", "solve pusht", 30000)
   } else {
     skills.move_to(r, target)
   }

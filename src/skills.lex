@@ -18,8 +18,6 @@ import "std.str" as str
 
 import "std.float" as flt
 
-import "std.int" as int
-
 import "std.list" as list
 
 import "./types" as t
@@ -172,20 +170,9 @@ fn grasp(r :: t.Robot, force :: Float) -> [net, sense, actuate] t.Outcome {
   }
 }
 
-# Hands the high-rate loop to LeRobot; the lex-os supervisor enforces the budget.
-fn run_policy(r :: t.Robot, name :: Str, goal :: Str, budget_ms :: Int) -> [net, sense, actuate] t.Outcome {
-  if grant.skill_allowed(r.grant, "run_policy") {
-    let body := str.join([
-      "{\"name\":\"", name, "\",\"goal\":\"", goal, "\",\"budget_ms\":", int.to_str(budget_ms), "}"
-    ], "")
-    match client.call(r.sidecar_url, "run_policy", body) {
-      Err(e) => Stalled(e),
-      Ok(resp) => parse_outcome(resp),
-    }
-  } else {
-    Denied("skill run_policy not in grant")
-  }
-}
+# run_policy + its async polling live in ./policy (policy.lex) so the [time]
+# effect they need stays off the core skill surface — a plain move/grasp program
+# that imports this module does not inherit `time`.
 
 # Captures a LeRobotDataset episode: reads sensors ([sense]); the file write
 # happens in the sidecar (Python), so it is not a Lex [fs_write].

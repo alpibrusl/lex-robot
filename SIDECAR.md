@@ -19,8 +19,19 @@ only caller; it adds effect typing, grant enforcement, and the audit trail.
 | `read_camera` | `{ "name": "wrist" }` | `{ "width": N, "height": N, "jpeg_b64": "..." }` |
 | `move_to` | `{ "x","y","z","rx","ry","rz" }` | `{ "outcome": "reached\|stalled\|timeout", "detail": "" }` |
 | `grasp` | `{ "force": 12.0 }` | `{ "outcome": "...", "detail": "" }` |
-| `run_policy` | `{ "name","goal","budget_ms" }` | `{ "outcome": "...", "detail": "" }` |
+| `run_policy` | `{ "name","goal","budget_ms" }` | `{ "status": "started" }` (async — see below) |
+| `policy_status` | `{}` | `{ "status": "running" }` or `{ "status": "done", "outcome": "...", "detail": "" }` |
 | `record_episode` | `{ "task": "..." }` | `{ "episode_id": "...", "frames": N, "path": "..." }` |
+
+### `run_policy` is asynchronous
+A full closed-loop rollout runs tens of seconds — longer than the Lex `std.http`
+client's hard ~10s timeout. So `run_policy` **starts the rollout in the
+background and returns immediately** with `{ "status": "started" }`; the Lex side
+(`skills.run_policy`) then polls `policy_status` — each call sub-10s — until it
+reports `{ "status": "done", ... }`. `policy_status` is handled *without* the
+sidecar's per-skill lock, so it stays responsive while the rollout holds it.
+A simpler synchronous sidecar (the stdlib stub) may instead return an `outcome`
+inline from `run_policy`; the Lex side accepts either shape.
 
 ### Outcome vocabulary
 `reached` → goal met · `stalled` → could not progress (detail explains) ·
@@ -50,5 +61,6 @@ hold.
 ## Reference skeleton (not included; build target)
 
 A FastAPI app: one route per skill, each wrapping a LeRobot call, returning the
-JSON above. `run_policy` runs LeRobot's policy loop until goal/timeout and
-reports the outcome. Keep it dumb — all judgment and policy live on the Lex side.
+JSON above. `run_policy` kicks off LeRobot's policy loop on a background worker
+and returns at once; `policy_status` reports progress until the worker finishes.
+Keep it dumb — all judgment and policy live on the Lex side.
