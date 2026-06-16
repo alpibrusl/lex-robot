@@ -77,7 +77,8 @@ src/
   types.lex      Pose, JointState, Frame, Outcome, Grant, Robot
   grant.lex      pure capability checks (workspace, force/velocity clamps)
   client.lex     HTTP bridge to the LeRobot sidecar (localhost)
-  skills.lex     bounded skill API (move_to, grasp, run_policy, read_*, record_episode)
+  skills.lex     bounded skill API (move_to, grasp, read_*, record_episode)
+  policy.lex     run_policy + async polling (kept off the core surface; needs [time])
   task.lex       evidence-gated Perceive→Plan→Execute→Verify graph + lex-trail audit
 examples/
   demo.lex       grant gate in action (Denied vs. allowed)
@@ -348,12 +349,15 @@ Two honest caveats (measured on MPS, lerobot 0.5.1 + `lerobot/diffusion_pusht`):
   Verify will often legitimately report FAILED. Normalization is mostly working
   (a broken-norm policy scores ~0 every episode — we see 0.7+), but the
   `normalize_inputs.buffer_*` warning suggests the last ~0.1 is recoverable.
-- **The monolithic `run_policy` can't complete via Lex** on the current toolchain:
-  a full rollout (≈15–40s) exceeds `std.http`'s hard ~10s client timeout, so it
-  reports `timeout` (see `src/client.lex`). The closed-loop gating that **works
-  today** is the step-wise path — `examples/safe_rollout.lex` runs the same policy
-  against real physics, one grant-checked command at a time (verified live: 64/80
-  unsafe commands blocked, 0 executed). Needs the gym sidecar + `lerobot`.
+- **`run_policy` runs asynchronously** to dodge a real toolchain limit: `std.http`
+  enforces a hard ~10s client timeout (lex 0.9.8/0.9.10) that `with_timeout_ms`
+  does not raise, but a full rollout takes ≈15–40s. So the sidecar runs the
+  rollout in the background and `skills.run_policy` polls `policy_status` to
+  completion (each poll sub-10s) — returning a real `Reached`/`Timeout` the Verify
+  gate acts on (verified end-to-end on MPS: three full rollouts, ~42s each, gated
+  correctly). The step-wise path (`examples/safe_rollout.lex`, one grant-checked
+  command at a time) is the other real-policy route — verified live, 64/80 unsafe
+  commands blocked, 0 executed. Both need the gym sidecar + `lerobot`.
 
 ## The effect wall: `actuate` / `sense` are types
 
