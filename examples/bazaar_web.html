@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Robot Bazaar — A2A Demo</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: #0f0f1a; color: #e2e8f0; font-family: 'Courier New', monospace; min-height: 100vh; }
+
+header {
+  padding: 12px 24px; background: #12122a; border-bottom: 1px solid #3730a3;
+  display: flex; align-items: center; gap: 16px;
+}
+header h1 { font-size: 1rem; color: #818cf8; letter-spacing: 0.06em; }
+#meta { color: #64748b; font-size: 0.8rem; }
+#meta span { color: #94a3b8; }
+#conn { margin-left: auto; display: flex; align-items: center; gap: 6px; font-size: 0.75rem; color: #4b5563; }
+#dot { width: 8px; height: 8px; border-radius: 50%; background: #374151; }
+#dot.live  { background: #4ade80; box-shadow: 0 0 6px #4ade80; }
+#dot.run   { background: #f59e0b; box-shadow: 0 0 6px #f59e0b; animation: blink 1s infinite; }
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+main { padding: 18px; display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 800px) { main { grid-template-columns: 1fr; } }
+
+.card { background: #1a1a30; border: 1px solid #2e2e5a; border-radius: 8px; padding: 14px; }
+.card h2 { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.1em; color: #6366f1; margin-bottom: 10px; }
+.full { grid-column: 1 / -1; }
+
+/* ── Map ── */
+#map-svg { width: 100%; height: 150px; display: block; }
+.s-box { fill: #12122a; stroke: #3b4fd8; stroke-width: 1.5; }
+.s-box.active { stroke: #818cf8; stroke-width: 2.5; filter: drop-shadow(0 0 7px #818cf8); }
+.s-box.sold   { stroke: #4ade80; fill: #0b2010; }
+.s-box.empty  { stroke: #374151; }
+.s-lbl  { fill: #94a3b8; font: 10px 'Courier New',monospace; text-anchor: middle; dominant-baseline: middle; }
+.s-lbl.hi { fill: #c7d2fe; }
+.s-lbl.sold { fill: #4ade80; }
+.s-lbl.empty { fill: #4b5563; }
+.dash-line { stroke: #2e2e5a; stroke-width: 1; stroke-dasharray: 4,4; }
+#robot { fill: #f59e0b; filter: drop-shadow(0 0 7px #f59e0b); transition: cx .9s ease, cy .9s ease; }
+#robot-lbl { fill: #f59e0b; font: 9px 'Courier New',monospace; text-anchor: middle; transition: x .9s ease; }
+
+/* ── Stall cards ── */
+#stall-row { display: flex; gap: 10px; }
+.sc { flex: 1; background: #0f0f22; border: 1px solid #2e2e5a; border-radius: 6px; padding: 10px; }
+.sc h3 { font-size: 0.7rem; color: #6366f1; margin-bottom: 6px; }
+.sc-status { font-size: 0.78rem; }
+.sc-status.wait { color: #4b5563; }
+.sc-status.busy { color: #f59e0b; }
+.sc-status.sold { color: #4ade80; }
+.sc-status.miss { color: #6b7280; }
+.sc-item { font-size: 0.7rem; color: #64748b; margin-top: 4px; }
+
+/* ── LLM safety ── */
+#llm-row { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
+.badge { padding: 3px 9px; border-radius: 4px; font-size: 0.72rem; }
+.badge.pend { background: #1e293b; color: #64748b; border: 1px solid #374151; }
+.badge.ok   { background: #052e16; color: #4ade80; border: 1px solid #16a34a; }
+.badge.drop { background: #2d0808; color: #ef4444; border: 1px solid #b91c1c; text-decoration: line-through; }
+#llm-verdict { font-size: 0.75rem; color: #64748b; margin-top: 6px; }
+
+/* ── Trail ── */
+#trail-hash { font-size: 0.68rem; color: #374151; word-break: break-all; margin-top: 4px; }
+
+/* ── Log ── */
+#log { max-height: 150px; overflow-y: auto; display: flex; flex-direction: column-reverse; gap: 1px; }
+.le { font-size: 0.72rem; padding: 2px 0; border-bottom: 1px solid #1a1a30; }
+.le.info { color: #64748b; }
+.le.hi   { color: #94a3b8; }
+.le.ok   { color: #4ade80; }
+.le.warn { color: #f59e0b; }
+.le.dim  { color: #374151; }
+</style>
+</head>
+<body>
+<header>
+  <h1>ROBOT BAZAAR — A2A Demo</h1>
+  <div id="meta">search: <span id="h-search">—</span> &nbsp;·&nbsp; budget: <span id="h-budget">—</span></div>
+  <div id="conn">live <div id="dot"></div></div>
+</header>
+
+<main>
+
+  <!-- Map -->
+  <div class="card full">
+    <h2>Bazaar Map</h2>
+    <svg id="map-svg" viewBox="0 0 820 130">
+      <line class="dash-line" x1="130" y1="65" x2="410" y2="65"/>
+      <line class="dash-line" x1="410" y1="65" x2="690" y2="65"/>
+
+      <!-- Spice Garden :8903 -->
+      <rect id="box-spices"   class="s-box" x="20"  y="12" width="220" height="96" rx="8"/>
+      <text class="s-lbl" x="130" y="42">SPICE GARDEN</text>
+      <text class="s-lbl" x="130" y="57" style="fill:#2e2e5a;font-size:9px">:8903</text>
+      <text id="txt-spices"   class="s-lbl" x="130" y="75">waiting</text>
+
+      <!-- Textile Traders :8902 -->
+      <rect id="box-textile"  class="s-box" x="300" y="12" width="220" height="96" rx="8"/>
+      <text class="s-lbl" x="410" y="42">TEXTILE TRADERS</text>
+      <text class="s-lbl" x="410" y="57" style="fill:#2e2e5a;font-size:9px">:8902</text>
+      <text id="txt-textile"  class="s-lbl" x="410" y="75">waiting</text>
+
+      <!-- Pottery Palace :8901 -->
+      <rect id="box-pottery"  class="s-box" x="580" y="12" width="220" height="96" rx="8"/>
+      <text class="s-lbl" x="690" y="42">POTTERY PALACE</text>
+      <text class="s-lbl" x="690" y="57" style="fill:#2e2e5a;font-size:9px">:8901</text>
+      <text id="txt-pottery"  class="s-lbl" x="690" y="75">waiting</text>
+
+      <!-- Customer robot -->
+      <circle id="robot" cx="130" cy="65" r="11"/>
+      <text   id="robot-lbl"  x="130" y="115">customer</text>
+    </svg>
+  </div>
+
+  <!-- Stall status cards -->
+  <div class="card full">
+    <h2>Stall Status</h2>
+    <div id="stall-row">
+      <div class="sc" id="sc-spices">
+        <h3>SPICE GARDEN :8903</h3>
+        <div class="sc-status wait" id="st-spices">waiting</div>
+        <div class="sc-item"        id="si-spices"></div>
+      </div>
+      <div class="sc" id="sc-textile">
+        <h3>TEXTILE TRADERS :8902</h3>
+        <div class="sc-status wait" id="st-textile">waiting</div>
+        <div class="sc-item"        id="si-textile"></div>
+      </div>
+      <div class="sc" id="sc-pottery">
+        <h3>POTTERY PALACE :8901</h3>
+        <div class="sc-status wait" id="st-pottery">waiting</div>
+        <div class="sc-item"        id="si-pottery"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- LLM safety -->
+  <div class="card">
+    <h2>LLM Safety Filter</h2>
+    <div style="font-size:.72rem;color:#374151">Grant drops unauthorized actions before any execution.</div>
+    <div id="llm-row">
+      <span class="badge pend">move_to</span>
+      <span class="badge pend">grasp</span>
+      <span class="badge pend">self_destruct</span>
+    </div>
+    <div id="llm-verdict"></div>
+  </div>
+
+  <!-- Trail -->
+  <div class="card">
+    <h2>Lex Trail</h2>
+    <div style="font-size:.72rem;color:#374151">Tamper-evident audit log of every A2A step.</div>
+    <div id="trail-hash">—</div>
+  </div>
+
+  <!-- Log -->
+  <div class="card full">
+    <h2>Event Log</h2>
+    <div id="log"></div>
+  </div>
+
+</main>
+
+<script>
+const CX = { 'Spice Garden': 130, 'Textile Traders': 410, 'Pottery Palace': 690 };
+const KEY = { 'Spice Garden': 'spices', 'Textile Traders': 'textile', 'Pottery Palace': 'pottery' };
+
+const dot  = document.getElementById('dot');
+const robot = document.getElementById('robot');
+const robotLbl = document.getElementById('robot-lbl');
+
+function log(msg, cls='info') {
+  const d = document.createElement('div');
+  d.className = 'le ' + cls;
+  const t = new Date().toLocaleTimeString('en-GB', { hour12: false });
+  d.textContent = t + '  ' + msg;
+  document.getElementById('log').prepend(d);
+}
+
+function moveRobot(stall) {
+  const cx = CX[stall] ?? 130;
+  robot.setAttribute('cx', cx);
+  robotLbl.setAttribute('x', cx);
+}
+
+function setActive(stall) {
+  ['spices','textile','pottery'].forEach(k => {
+    document.getElementById('box-' + k).className.baseVal = 's-box';
+    document.getElementById('txt-' + k).className.baseVal = 's-lbl';
+  });
+  const k = KEY[stall];
+  if (!k) return;
+  document.getElementById('box-' + k).classList.add('active');
+  document.getElementById('txt-' + k).classList.add('hi');
+}
+
+function setStall(stall, status, itemText, cls) {
+  const k = KEY[stall];
+  if (!k) return;
+  const st = document.getElementById('st-' + k);
+  st.textContent = status;
+  st.className = 'sc-status ' + cls;
+  const si = document.getElementById('si-' + k);
+  si.textContent = itemText || '';
+  const txt = document.getElementById('txt-' + k);
+  txt.textContent = status;
+  txt.className = 's-lbl ' + (cls === 'sold' ? 'sold' : cls === 'miss' ? 'empty' : 'hi');
+  if (cls === 'sold') {
+    document.getElementById('box-' + k).classList.remove('active');
+    document.getElementById('box-' + k).classList.add('sold');
+  } else if (cls === 'miss') {
+    document.getElementById('box-' + k).classList.remove('active');
+    document.getElementById('box-' + k).classList.add('empty');
+  }
+}
+
+function handle(ev) {
+  if (ev.kind === 'start') {
+    document.getElementById('h-search').textContent = '"' + ev.search + '"';
+    document.getElementById('h-budget').textContent = ev.budget + ' credits';
+    dot.className = 'run';
+    log('Demo started  search="' + ev.search + '"  budget=' + ev.budget, 'hi');
+  }
+  else if (ev.kind === 'visit') {
+    moveRobot(ev.stall);
+    setActive(ev.stall);
+    setStall(ev.stall, 'querying…', '', 'busy');
+    log('→ visiting ' + ev.stall, 'warn');
+  }
+  else if (ev.kind === 'result') {
+    const sold = (ev.tx || '').startsWith('SOLD');
+    setStall(ev.stall, sold ? 'SOLD' : 'not found', ev.tx, sold ? 'sold' : 'miss');
+    log('  ' + ev.stall + ': ' + ev.tx, sold ? 'ok' : 'dim');
+  }
+  else if (ev.kind === 'llm_start') {
+    log('[LLM safety] testing grant filter on pottery session…', 'warn');
+    document.getElementById('llm-row').innerHTML =
+      '<span class="badge pend">move_to</span>' +
+      '<span class="badge pend">grasp</span>' +
+      '<span class="badge pend">self_destruct</span>';
+    document.getElementById('llm-verdict').textContent = '';
+  }
+  else if (ev.kind === 'llm_result') {
+    const dropped = (ev.dropped || '').split(',').map(s => s.trim()).filter(Boolean);
+    document.getElementById('llm-row').innerHTML =
+      '<span class="badge ok">move_to</span>' +
+      dropped.map(d => `<span class="badge drop">${d}</span>`).join('');
+    document.getElementById('llm-verdict').textContent =
+      'executed=' + ev.executed + '  dropped=' + dropped.length +
+      '  (' + dropped.join(', ') + ' blocked by grant)';
+    log('[LLM safety] executed=' + ev.executed + '  dropped: ' + dropped.join(', '), 'dim');
+  }
+  else if (ev.kind === 'done') {
+    document.getElementById('trail-hash').textContent = ev.trail || '—';
+    dot.className = 'live';
+    log('Done  trail=' + (ev.trail || '—'), 'ok');
+  }
+}
+
+function connect() {
+  const es = new EventSource('/events');
+  es.onopen = () => { dot.className = 'live'; log('connected', 'dim'); };
+  es.onmessage = e => {
+    try { handle(JSON.parse(e.data)); } catch(err) { console.warn(err, e.data); }
+  };
+  es.onerror = () => { dot.className = ''; setTimeout(connect, 3000); };
+}
+connect();
+</script>
+</body>
+</html>

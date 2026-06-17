@@ -28,6 +28,9 @@
 #
 # Offline unit test (no sidecar needed):
 #   lex run src/bazaar.lex item_matches_test
+#
+# Dashboard (when sellers are running):
+#   http://localhost:8900
 
 import "std.io" as io
 
@@ -42,6 +45,10 @@ import "std.time" as time
 import "std.bytes" as bytes
 
 import "std.crypto" as crypto
+
+import "std.http" as http
+
+import "std.map" as map
 
 import "lex-trail/src/log" as tlog
 
@@ -83,6 +90,27 @@ fn simple_ext_skills() -> List[card.AgentSkill] {
   [query_skill(), { name: "reserve_item", description: "Reserve an item for purchase" }, { name: "complete_sale", description: "Finalise sale and transfer item" }]
 }
 
+# ── Dashboard event helper ─────────────────────────────────────────────────────
+# Fire-and-forget: POST a JSON event to the dashboard sidecar.  Errors ignored.
+fn post_ui(dash :: Str, json :: Str) -> [net] Str {
+  let req0 := { method: "POST", url: str.concat(dash, "/event"), headers: map.new(), body: Some(bytes.from_str(json)), timeout_ms: None }
+  let req := http.with_header(http.with_timeout_ms(req0, 1000), "Content-Type", "application/json")
+  match http.send(req) {
+    Err(_) => "",
+    Ok(_) => "",
+  }
+}
+
+# JSON-safe tx description (no embedded quotes).
+fn tx_ui_str(tx :: baz.TxResult) -> Str {
+  match tx {
+    Sold(item) => str.join(["SOLD ", item.name, " - ", int.to_str(item.price), " cr"], ""),
+    NotFound => "not found",
+    AlreadyReserved => "already reserved",
+    TxDenied(why) => str.concat("denied: ", why),
+  }
+}
+
 # ── Banner ─────────────────────────────────────────────────────────────────────
 fn banner(search :: Str, budget :: Int) -> [io] Unit {
   let __1 := io.print("══════════════════════════════════════════════════════")
@@ -90,6 +118,7 @@ fn banner(search :: Str, budget :: Int) -> [io] Unit {
   let __3 := io.print(str.join(["   search: \"", search, "\"   budget: ", int.to_str(budget), " credits"], ""))
   let __4 := io.print("══════════════════════════════════════════════════════")
   let __5 := io.print("   Stalls:  POTTERY :8901  ·  TEXTILE :8902  ·  SPICES :8903")
+  let __6 := io.print("   Dashboard: http://localhost:8900")
   io.print("──────────────────────────────────────────────────────")
 }
 
@@ -106,7 +135,7 @@ fn setup_one(url :: Str, name :: Str, secret :: Bytes, pub_skills :: List[card.A
 
 # ── LLM safety test ───────────────────────────────────────────────────────────
 # Show that the mock LLM's self_destruct proposal is dropped by the grant.
-fn llm_safety_test(stall :: baz.StallInfo, policy :: { allowed_pubkeys :: List[Str], allowed_skills :: List[Str], max_tier :: card.CardTier, require_https :: Bool, max_budget_actions :: Int, max_budget_ms :: Int }, log :: tlog.Log, parent :: Str, now :: Int) -> [net, sql, time, io] Unit {
+fn llm_safety_test(stall :: baz.StallInfo, policy :: { allowed_pubkeys :: List[Str], allowed_skills :: List[Str], max_tier :: card.CardTier, require_https :: Bool, max_budget_actions :: Int, max_budget_ms :: Int }, log :: tlog.Log, parent :: Str, now :: Int, dash :: Str) -> [net, sql, time, io] Unit {
   let __1 := io.print("──────────────────────────────────────────────────────")
   let __2 := io.print("[LLM safety] re-opening pottery session for fallback test ...")
   let blob := { endpoint: stall.url, ephemeral_token: "bazaar-token", peer_pubkey: stall.pubkey_b64, nonce: "n-pottery-llm", expires_at: now + 300000 }
@@ -117,6 +146,7 @@ fn llm_safety_test(stall :: baz.StallInfo, policy :: { allowed_pubkeys :: List[S
       let __4 := io.print("[LLM safety] mock LLM proposes: move_to, grasp, self_destruct")
       match llm.execute_plan_audited("do something", session, now, log, p2) {
         (results, _sess2, _p3) => {
+          let __ui := post_ui(dash, str.join(["{\"kind\":\"llm_result\",\"executed\":", int.to_str(list.len(results)), ",\"dropped\":\"grasp,self_destruct\"}"], ""))
           let __5 := io.print(str.join(["[LLM safety] executed=", int.to_str(list.len(results)), "  (grasp+self_destruct dropped by grant — only move_to allowed)"], ""))
           io.print("──────────────────────────────────────────────────────")
         },
@@ -146,7 +176,9 @@ fn run() -> [net, io, sql, fs_write, sense, time] Unit {
   let search := "Bowl"
   let budget := 15
   let trail_path := "/tmp/lex-bazaar-demo.db"
+  let dash := "http://localhost:8900"
   let __b := banner(search, budget)
+  let __ui0 := post_ui(dash, str.join(["{\"kind\":\"start\",\"search\":\"", search, "\",\"budget\":", int.to_str(budget), "}"], ""))
   match tlog.open(trail_path) {
     Err(e) => io.print(str.concat("[bazaar] trail: ", e)),
     Ok(log) => {
@@ -172,9 +204,11 @@ fn run() -> [net, io, sql, fs_write, sense, time] Unit {
                         match state.purchase {
                           Some(_) => state,
                           None => {
+                            let __uiv := post_ui(dash, str.join(["{\"kind\":\"visit\",\"stall\":\"", stall.name, "\"}"], ""))
                             let __vi := io.print(str.join(["→ [", stall.name, "] handshaking + querying \"", search, "\" ≤ ", int.to_str(budget), " credits ..."], ""))
                             match baz.visit_stall(stall, search, budget, policy, log, state.parent, state.used, now) {
                               (tx, p2, used2) => {
+                                let __uir := post_ui(dash, str.join(["{\"kind\":\"result\",\"stall\":\"", stall.name, "\",\"tx\":\"", tx_ui_str(tx), "\"}"], ""))
                                 let __vr := io.print(str.concat("  ", baz.tx_str(tx)))
                                 match tx {
                                   Sold(_) => { purchase: Some(tx), parent: p2, used: used2 },
@@ -192,7 +226,9 @@ fn run() -> [net, io, sql, fs_write, sense, time] Unit {
                       }
                       let __st := io.print(str.concat("  trail: ", final_state.parent))
                       let __se := io.print("══════════════════════════════════════════════════════")
-                      llm_safety_test(pottery, policy, log, final_state.parent, now)
+                      let __uid := post_ui(dash, str.join(["{\"kind\":\"done\",\"trail\":\"", final_state.parent, "\"}"], ""))
+                      let __uils := post_ui(dash, "{\"kind\":\"llm_start\"}")
+                      llm_safety_test(pottery, policy, log, final_state.parent, now, dash)
                     },
                   }
                 },

@@ -15,6 +15,7 @@ Run:
 import json
 import math
 import os
+import queue
 import random
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -66,6 +67,26 @@ _KO_STATE = {"step": 0}
 # and call a QR-decode library on the camera feed.
 _QR_LOCK = threading.Lock()
 _QR_STATE = {"payload": ""}
+
+# ── Dashboard SSE state ───────────────────────────────────────────────────────
+# POST /event from Lex broadcasts to all GET /events SSE clients.
+# GET  /        serves examples/bazaar_web.html (dashboard).
+_SSE_LOCK = threading.Lock()
+_SSE_CLIENTS: list = []
+
+
+def _broadcast(data: str) -> None:
+    msg = ("data: " + data + "\n\n").encode()
+    with _SSE_LOCK:
+        dead = []
+        for q in _SSE_CLIENTS:
+            try:
+                q.put_nowait(msg)
+            except queue.Full:
+                dead.append(q)
+        for q in dead:
+            _SSE_CLIENTS.remove(q)
+
 
 # ── A2A card state ────────────────────────────────────────────────────────────
 # Pre-signed card blobs pushed by the Lex side on startup via
@@ -226,7 +247,77 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def do_GET(self) -> None:
+        if self.path == "/":
+            html = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                "examples", "bazaar_web.html",
+            )
+            try:
+                with open(html, "rb") as f:
+                    body = f.read()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            except OSError:
+                return self._send(404, {"error": "bazaar_web.html not found"})
+            return
+        if self.path == "/events":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            q: queue.Queue = queue.Queue(maxsize=50)
+            with _SSE_LOCK:
+                _SSE_CLIENTS.append(q)
+            try:
+                while True:
+                    try:
+                        msg = q.get(timeout=20)
+                        self.wfile.write(msg)
+                        self.wfile.flush()
+                    except queue.Empty:
+                        self.wfile.write(b": keepalive\n\n")
+                        self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
+            finally:
+                with _SSE_LOCK:
+                    if q in _SSE_CLIENTS:
+                        _SSE_CLIENTS.remove(q)
+            return
+        if self.path == "/health":
+            return self._send(200, {"ok": True})
+        if self.path == "/a2a/public-card":
+            with _A2A_CARD_LOCK:
+                blob = _A2A_CARD_STATE["public"]
+            if not blob:
+                return self._send(503, {"error": "card not registered — call register_cards first"})
+            return self._send_text(200, blob)
+        if self.path == "/a2a/extended-card":
+            if not self.headers.get("Authorization", "").startswith("Bearer "):
+                return self._send(401, {"error": "missing bearer token"})
+            with _A2A_CARD_LOCK:
+                blob = _A2A_CARD_STATE["extended"]
+            if not blob:
+                return self._send(503, {"error": "extended card not registered — call register_cards first"})
+            return self._send_text(200, blob)
+        return self._send(404, {"error": "not found"})
+
     def do_POST(self) -> None:
+        if self.path == "/event":
+            length = int(self.headers.get("Content-Length", "0") or "0")
+            raw = self.rfile.read(length) if length else b"{}"
+            try:
+                data = json.loads(raw or b"{}")
+            except json.JSONDecodeError:
+                return self._send(400, {"error": "invalid json"})
+            _broadcast(json.dumps(data))
+            return self._send(200, {"ok": True})
         if self.path.startswith("/skill/"):
             name = self.path[len("/skill/"):]
             length = int(self.headers.get("Content-Length", "0") or "0")
@@ -259,25 +350,6 @@ class Handler(BaseHTTPRequestHandler):
             with _A2A_CARD_LOCK:
                 _A2A_CARD_STATE[key] = blob
             return self._send(200, {"ok": True})
-        return self._send(404, {"error": "not found"})
-
-    def do_GET(self) -> None:
-        if self.path == "/health":
-            return self._send(200, {"ok": True})
-        if self.path == "/a2a/public-card":
-            with _A2A_CARD_LOCK:
-                blob = _A2A_CARD_STATE["public"]
-            if not blob:
-                return self._send(503, {"error": "card not registered — call register_cards first"})
-            return self._send_text(200, blob)
-        if self.path == "/a2a/extended-card":
-            if not self.headers.get("Authorization", "").startswith("Bearer "):
-                return self._send(401, {"error": "missing bearer token"})
-            with _A2A_CARD_LOCK:
-                blob = _A2A_CARD_STATE["extended"]
-            if not blob:
-                return self._send(503, {"error": "extended card not registered — call register_cards first"})
-            return self._send_text(200, blob)
         return self._send(404, {"error": "not found"})
 
     def log_message(self, *args) -> None:  # quieter logs

@@ -1,20 +1,17 @@
 #!/usr/bin/env bash
 # examples/bazaar_run.sh — Start the robot bazaar and run the customer demo.
 #
-# Layout (4-pane terminal view):
+# 4-process layout:
 #
-#   ┌─────────────────────────┬─────────────────────────┐
-#   │  POTTERY :8901          │  TEXTILE :8902           │
-#   │  (sim sidecar)          │  (sim sidecar)           │
-#   ├─────────────────────────┼─────────────────────────┤
-#   │  SPICES  :8903          │  CUSTOMER (lex run)      │
-#   │  (sim sidecar)          │                          │
-#   └─────────────────────────┴─────────────────────────┘
+#   :8900  dashboard sidecar  — event hub + web UI (http://localhost:8900)
+#   :8901  POTTERY Palace     — sim sidecar (LEX_STALL_NAME=pottery)
+#   :8902  TEXTILE Traders    — sim sidecar (LEX_STALL_NAME=textile)
+#   :8903  SPICE Garden       — sim sidecar (LEX_STALL_NAME=spices)
 #
 # Usage:
-#   bash examples/bazaar_run.sh          # start sellers + customer, wait
-#   bash examples/bazaar_run.sh sellers  # start sellers only (background)
-#   bash examples/bazaar_run.sh customer # run customer (sellers must be up)
+#   bash examples/bazaar_run.sh          # start all 4 + run customer, then stop
+#   bash examples/bazaar_run.sh sellers  # start all 4 in background (Ctrl-C stops)
+#   bash examples/bazaar_run.sh customer # run customer only (sidecars must be up)
 #   bash examples/bazaar_run.sh unit     # offline unit test (no network)
 #
 # Requirements:
@@ -27,7 +24,10 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 SIDECAR="$REPO_DIR/sidecar/sim_sidecar.py"
 
 start_sellers() {
-  echo "── Starting seller sidecars ──────────────────────────────────"
+  echo "── Starting sidecars ─────────────────────────────────────────"
+  # Dashboard / event hub (no stall — serves http://localhost:8900)
+  LEX_ROBOT_SIDECAR_PORT=8900 python3 "$SIDECAR" &
+  PID_DASH=$!
   LEX_STALL_NAME=pottery LEX_ROBOT_SIDECAR_PORT=8901 python3 "$SIDECAR" &
   PID_POTTERY=$!
   LEX_STALL_NAME=textile LEX_ROBOT_SIDECAR_PORT=8902 python3 "$SIDECAR" &
@@ -35,24 +35,23 @@ start_sellers() {
   LEX_STALL_NAME=spices  LEX_ROBOT_SIDECAR_PORT=8903 python3 "$SIDECAR" &
   PID_SPICES=$!
 
-  # Wait until all three are healthy (up to 5s each).
-  for port in 8901 8902 8903; do
+  # Wait until all four are healthy (up to 5 s each).
+  for port in 8900 8901 8902 8903; do
     for i in $(seq 1 10); do
-      if curl -sf "http://127.0.0.1:$port/health" >/dev/null 2>&1; then
-        break
-      fi
+      if curl -sf "http://127.0.0.1:$port/health" >/dev/null 2>&1; then break; fi
       sleep 0.5
     done
     curl -sf "http://127.0.0.1:$port/health" >/dev/null \
       || { echo "ERROR: sidecar on :$port did not start"; exit 1; }
   done
-  echo "   pottery :8901  textile :8902  spices :8903  — all healthy"
+  echo "   dashboard :8900  pottery :8901  textile :8902  spices :8903  — all healthy"
+  echo "   Open http://localhost:8900 in your browser, then run the customer."
 }
 
 stop_sellers() {
-  kill "$PID_POTTERY" "$PID_TEXTILE" "$PID_SPICES" 2>/dev/null || true
-  wait "$PID_POTTERY" "$PID_TEXTILE" "$PID_SPICES" 2>/dev/null || true
-  echo "── Sellers stopped ───────────────────────────────────────────"
+  kill "$PID_DASH" "$PID_POTTERY" "$PID_TEXTILE" "$PID_SPICES" 2>/dev/null || true
+  wait "$PID_DASH" "$PID_POTTERY" "$PID_TEXTILE" "$PID_SPICES" 2>/dev/null || true
+  echo "── All sidecars stopped ──────────────────────────────────────"
 }
 
 run_customer() {
