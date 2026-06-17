@@ -1,0 +1,652 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Emergency Triage Command</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:     #0f0500;
+  --bg2:    #160800;
+  --bg3:    #1c0b00;
+  --border: #3a1500;
+  --text:   #f0c090;
+  --muted:  #6a3a1a;
+  --red:    #ff3333;
+  --orange: #ff8c00;
+  --yellow: #ffd700;
+  --green:  #4ade80;
+  --cyan:   #22d3ee;
+  --amber:  #fbbf24;
+  --purple: #a78bfa;
+}
+
+html, body { height: 100%; overflow: hidden; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 12px;
+  line-height: 1.4;
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+}
+
+header {
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  padding: 0 16px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-shrink: 0;
+  height: 40px;
+}
+header h1 { font-size: 13px; color: var(--red); letter-spacing: .1em; font-weight: bold; white-space: nowrap; }
+#h-meta   { color: var(--muted); font-size: 11px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#h-conn   { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); white-space: nowrap; }
+#h-dot    { width: 8px; height: 8px; border-radius: 50%; background: #3a1500; flex-shrink: 0; }
+#h-dot.live { background: var(--green); box-shadow: 0 0 8px var(--green); }
+#h-dot.run  { background: var(--red); box-shadow: 0 0 8px var(--red); animation: blink 1s infinite; }
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:.25} }
+@keyframes pulse-critical { 0%,100%{box-shadow:0 0 6px 2px #ff333366} 50%{box-shadow:0 0 18px 5px #ff3333cc} }
+@keyframes pulse-high     { 0%,100%{box-shadow:0 0 6px 2px #ff8c0066} 50%{box-shadow:0 0 14px 4px #ff8c00cc} }
+@keyframes pulse-moderate { 0%,100%{box-shadow:0 0 4px 2px #ffd70044} 50%{box-shadow:0 0 10px 3px #ffd70088} }
+
+#game-container {
+  flex-shrink: 0; height: 240px; overflow: hidden;
+  background: var(--bg); border-bottom: 1px solid var(--border);
+}
+#game-container canvas { display: block; }
+
+#middle {
+  flex: 1; min-height: 0; display: grid;
+  grid-template-columns: 280px 1fr; background: var(--border); gap: 1px; overflow: hidden;
+}
+
+#left-col {
+  display: flex; flex-direction: column; gap: 1px;
+  background: var(--border); overflow: hidden;
+}
+.panel {
+  background: var(--bg); padding: 8px 10px; overflow: hidden;
+  display: flex; flex-direction: column; gap: 5px; min-height: 0;
+}
+.panel-title {
+  font-size: 9px; text-transform: uppercase; letter-spacing: .14em; color: var(--muted);
+  border-bottom: 1px solid var(--border); padding-bottom: 4px; flex-shrink: 0;
+}
+
+#questions-panel { flex-shrink: 0; border: 1px solid var(--amber); border-radius: 4px; margin: 4px; padding: 6px 8px; background: #1a1500; display: none; }
+#questions-panel .panel-title { color: var(--amber); border-color: #44370066; }
+.q-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px; margin-bottom: 5px; flex-shrink: 0; }
+.q-robot { font-size: 9px; font-weight: bold; padding: 1px 5px; border-radius: 8px; margin-bottom: 4px; display: inline-block; }
+.q-text { font-size: 10px; color: var(--text); margin-bottom: 5px; word-break: break-word; }
+.q-reply { display: flex; gap: 5px; }
+.q-input { flex: 1; background: var(--bg3); border: 1px solid var(--border); color: var(--text); font-family: 'Courier New', monospace; font-size: 11px; padding: 3px 7px; border-radius: 4px; outline: none; }
+.q-input:focus { border-color: var(--amber); }
+.btn { background: var(--bg3); border: 1px solid var(--border); color: var(--text); font-family: 'Courier New', monospace; font-size: 11px; padding: 3px 10px; border-radius: 4px; cursor: pointer; white-space: nowrap; transition: border-color .15s, color .15s; flex-shrink: 0; }
+.btn:hover { border-color: var(--orange); color: var(--orange); }
+
+/* Zone status cards */
+.zone-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 5px; padding: 6px 8px; flex-shrink: 0; }
+.zone-name { font-size: 11px; font-weight: bold; margin-bottom: 3px; }
+.zone-severity { font-size: 9px; font-weight: bold; padding: 1px 6px; border-radius: 8px; display: inline-block; margin-bottom: 4px; }
+.zone-severity.critical { background: #ff333333; color: var(--red); border: 1px solid var(--red); animation: pulse-critical 1.4s infinite; }
+.zone-severity.high     { background: #ff8c0033; color: var(--orange); border: 1px solid var(--orange); animation: pulse-high 1.8s infinite; }
+.zone-severity.moderate { background: #ffd70033; color: var(--yellow); border: 1px solid var(--yellow); animation: pulse-moderate 2s infinite; }
+.zone-severity.clear    { background: #4ade8033; color: var(--green); border: 1px solid var(--green); }
+.zone-count { font-size: 9px; color: var(--muted); }
+.zone-count strong { color: var(--text); }
+
+/* Activity log */
+#activity-log-panel { flex: 1; min-height: 0; }
+#activity-log { overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 2px; }
+.al-row { font-size: 9px; padding: 2px 0; border-bottom: 1px solid #1c0b00; flex-shrink: 0; }
+.al-ts { color: #3a1500; margin-right: 5px; }
+
+/* A2A feed */
+#a2a-panel {
+  background: var(--bg); padding: 8px 10px;
+  display: flex; flex-direction: column; gap: 5px; overflow: hidden;
+}
+#a2a-feed { overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 4px; }
+.msg { padding: 5px 9px; border-radius: 4px; font-size: 10px; max-width: 92%; word-break: break-word; border: 1px solid transparent; flex-shrink: 0; line-height: 1.5; }
+.msg-header { display: flex; align-items: center; gap: 4px; margin-bottom: 2px; }
+.msg-who { font-size: 8px; font-weight: bold; padding: 1px 4px; border-radius: 7px; }
+.msg-kind { font-size: 8px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+.msg-body { color: var(--text); }
+.msg-call     { background: #160800; border-color: #3a1500; align-self: flex-start; }
+.msg-dispatch { background: #051005; border-color: var(--green); }
+.msg-critical { background: #1a0505; border-color: var(--red); }
+.msg-heli     { background: #0a0a20; border-color: var(--cyan); }
+.msg-evac     { background: #1a1000; border-color: var(--orange); }
+.msg-think    { background: #160800; border-color: #3a2500; align-self: flex-start; }
+.msg-question { background: #1a1500; border-color: var(--amber); align-self: flex-start; }
+
+#log-section {
+  flex-shrink: 0; height: 108px; background: var(--bg);
+  border-top: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden;
+}
+#log-hdr { font-size: 9px; text-transform: uppercase; letter-spacing: .14em; color: var(--muted); padding: 4px 11px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+#log     { overflow-y: auto; flex: 1; padding: 3px 11px; }
+.ll      { font-size: 10px; color: var(--muted); white-space: nowrap; line-height: 1.6; }
+.ll .ts  { color: #3a1500; margin-right: 7px; }
+.ll .ev  { color: var(--orange); margin-right: 5px; }
+.ll .cu  { font-weight: bold; margin-right: 4px; }
+.ll .ok  { color: var(--green); }
+.ll .er  { color: var(--red); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>EMERGENCY TRIAGE COMMAND</h1>
+  <span id="h-meta">all units standby — awaiting incident report</span>
+  <div id="h-conn"><div id="h-dot"></div><span id="h-status">connecting</span></div>
+</header>
+
+<div id="game-container"></div>
+
+<div id="middle">
+  <div id="left-col">
+
+    <div id="questions-panel">
+      <div class="panel-title">⚠ Mayoral Authorization Required</div>
+      <div id="questions-list"></div>
+    </div>
+
+    <div class="panel" style="flex-shrink:0">
+      <div class="panel-title">Zone Status</div>
+      <div class="zone-card" id="zone-Alpha">
+        <div class="zone-name" style="color:var(--red)">Zone Alpha</div>
+        <span class="zone-severity critical" id="sev-Alpha">CRITICAL</span>
+        <div class="zone-count">Casualties: <strong id="cas-Alpha">—</strong> | Survivors: <strong id="surv-Alpha">—</strong></div>
+      </div>
+      <div class="zone-card" id="zone-Beta">
+        <div class="zone-name" style="color:var(--orange)">Zone Beta</div>
+        <span class="zone-severity high" id="sev-Beta">HIGH</span>
+        <div class="zone-count">Casualties: <strong id="cas-Beta">—</strong> | Survivors: <strong id="surv-Beta">—</strong></div>
+      </div>
+      <div class="zone-card" id="zone-Gamma">
+        <div class="zone-name" style="color:var(--yellow)">Zone Gamma</div>
+        <span class="zone-severity moderate" id="sev-Gamma">MODERATE</span>
+        <div class="zone-count">Casualties: <strong id="cas-Gamma">—</strong> | Survivors: <strong id="surv-Gamma">—</strong></div>
+      </div>
+    </div>
+
+    <div class="panel" id="activity-log-panel">
+      <div class="panel-title">Field Report</div>
+      <div id="activity-log"></div>
+    </div>
+  </div>
+
+  <div id="a2a-panel">
+    <div class="panel-title">Operations Feed</div>
+    <div id="a2a-feed">
+      <div style="color:var(--muted);font-size:11px;text-align:center;margin-top:24px">Standing by — incident not yet reported</div>
+    </div>
+  </div>
+</div>
+
+<div id="log-section">
+  <div id="log-hdr">Event Log</div>
+  <div id="log"></div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/phaser@3.70.0/dist/phaser.min.js"></script>
+<script>
+'use strict';
+
+const ZONES = {
+  Alpha: { x: 0.18, y: 0.55, color: 0xff3333, severity: 'critical' },
+  Beta:  { x: 0.50, y: 0.55, color: 0xff8c00, severity: 'high'     },
+  Gamma: { x: 0.82, y: 0.55, color: 0xffd700, severity: 'moderate' },
+};
+const HOSPITAL = { x: 0.80, y: 0.18 };
+const ambulanceColors = [0x22d3ee, 0x4ade80, 0xa78bfa, 0xfbbf24];
+let ambulanceIdx = 0;
+
+let gameScene = null;
+const eventQueue = [];
+
+class TriageScene extends Phaser.Scene {
+  constructor() {
+    super({ key: 'TriageScene' });
+    this.zones      = {};
+    this.agents     = {};
+    this.ambulances = [];
+  }
+
+  create() {
+    const W = this.scale.width, H = this.scale.height;
+    this.W = W; this.H = H;
+    this.R = 11;
+
+    this._drawBg(W, H);
+    this._buildZones(W, H);
+    this._buildHospital(W, H);
+
+    gameScene = this;
+    while (eventQueue.length) this.handleEvent(eventQueue.shift());
+  }
+
+  _drawBg(W, H) {
+    const g = this.add.graphics().setDepth(0);
+    // City map bg
+    g.fillStyle(0x0f0500, 1); g.fillRect(0, 0, W, H);
+    // Streets grid
+    g.lineStyle(2, 0x1c0b00, 1);
+    for (let x = 0; x < W; x += 80) { g.moveTo(x, 0); g.lineTo(x, H); }
+    for (let y = 0; y < H; y += 60) { g.moveTo(0, y); g.lineTo(W, y); }
+    g.strokePath();
+    // City blocks
+    g.fillStyle(0x160800, 0.6);
+    for (let x = 10; x < W; x += 80) {
+      for (let y = 8; y < H; y += 60) {
+        g.fillRect(x, y, 60, 42);
+      }
+    }
+    // Roads outline
+    g.lineStyle(1, 0x3a1500, 0.4);
+    for (let x = 0; x < W; x += 80) { g.moveTo(x, 0); g.lineTo(x, H); }
+    for (let y = 0; y < H; y += 60) { g.moveTo(0, y); g.lineTo(W, y); }
+    g.strokePath();
+  }
+
+  _buildZones(W, H) {
+    const ZW = 130, ZH = 80;
+    const colors = { critical: 0xff3333, high: 0xff8c00, moderate: 0xffd700 };
+
+    Object.entries(ZONES).forEach(([name, def]) => {
+      const cx = W * def.x, cy = H * def.y;
+      const x0 = cx - ZW/2, y0 = cy - ZH/2;
+      const col = def.color;
+
+      const g = this.add.graphics().setDepth(3);
+      g.fillStyle(0x0f0500, 0.9); g.fillRect(x0, y0, ZW, ZH);
+      g.fillStyle(col, 0.12); g.fillRect(x0, y0, ZW, ZH);
+      g.lineStyle(2, col, 0.7); g.strokeRect(x0, y0, ZW, ZH);
+
+      // Corner tick marks
+      g.lineStyle(3, col, 1);
+      g.moveTo(x0, y0+12); g.lineTo(x0, y0); g.lineTo(x0+12, y0);
+      g.moveTo(x0+ZW-12, y0); g.lineTo(x0+ZW, y0); g.lineTo(x0+ZW, y0+12);
+      g.moveTo(x0, y0+ZH-12); g.lineTo(x0, y0+ZH); g.lineTo(x0+12, y0+ZH);
+      g.moveTo(x0+ZW-12, y0+ZH); g.lineTo(x0+ZW, y0+ZH); g.lineTo(x0+ZW, y0+ZH-12);
+      g.strokePath();
+
+      this.add.text(cx, y0 + 11, `ZONE ${name.toUpperCase()}`, {
+        fontSize: '9px', color: '#' + col.toString(16).padStart(6,'0'), fontFamily: 'Courier New', fontStyle: 'bold', align: 'center', letterSpacing: 3
+      }).setOrigin(0.5, 0.5).setDepth(4);
+
+      const casualtyText = this.add.text(cx, cy + 12, '? survivors', {
+        fontSize: '8px', color: '#6a3a1a', fontFamily: 'Courier New', align: 'center'
+      }).setOrigin(0.5, 0.5).setDepth(4);
+
+      const borderPulse = this.add.graphics().setDepth(5);
+      let pTween = this.tweens.addCounter({
+        from: 0.3, to: 1, duration: 1000 + (name === 'Alpha' ? 0 : name === 'Beta' ? 400 : 800), yoyo: true, repeat: -1, ease: 'Sine.easeInOut',
+        onUpdate: tween => {
+          borderPulse.clear();
+          borderPulse.lineStyle(2.5, col, tween.getValue());
+          borderPulse.strokeRect(x0, y0, ZW, ZH);
+        }
+      });
+
+      this.zones[name] = { cx, cy, x0, y0, ZW, ZH, g, casualtyText, borderPulse, pTween, color: col };
+    });
+  }
+
+  _buildHospital(W, H) {
+    const cx = W * HOSPITAL.x, cy = H * HOSPITAL.y;
+    const HW = 120, HH = 70;
+    const x0 = cx - HW/2, y0 = cy - HH/2;
+    const g = this.add.graphics().setDepth(3);
+    g.fillStyle(0x051505, 1); g.fillRect(x0, y0, HW, HH);
+    g.lineStyle(2, 0x4ade80, 0.8); g.strokeRect(x0, y0, HW, HH);
+    // Red cross
+    const crossX = cx, crossY = cy;
+    g.fillStyle(0xff3333, 0.9); g.fillRect(crossX-3, crossY-10, 6, 20); g.fillRect(crossX-10, crossY-3, 20, 6);
+    this.add.text(cx, y0 + 9, 'HOSPITAL HQ', {
+      fontSize: '8px', color: '#4ade80', fontFamily: 'Courier New', fontStyle: 'bold', letterSpacing: 2
+    }).setOrigin(0.5, 0.5).setDepth(5);
+    this.hospitalX = cx; this.hospitalY = cy;
+  }
+
+  _dispatchAmbulance(zoneName) {
+    const zone = this.zones[zoneName]; if (!zone) return;
+    const col = ambulanceColors[ambulanceIdx % ambulanceColors.length]; ambulanceIdx++;
+    // Start from hospital
+    const startX = this.hospitalX, startY = this.hospitalY;
+    const amb = this.add.graphics().setDepth(20);
+    amb.fillStyle(col, 1); amb.fillRect(-8, -5, 16, 10);
+    amb.fillStyle(0xffffff, 0.8); amb.fillRect(-3, -8, 6, 5);
+    amb.setPosition(startX, startY);
+
+    // Go to zone
+    this.tweens.add({
+      targets: amb, x: zone.cx, y: zone.cy - zone.ZH * 0.4, duration: 900, ease: 'Cubic.easeInOut',
+      onComplete: () => {
+        // Flash zone
+        const flash = this.add.graphics().setDepth(8);
+        flash.fillStyle(col, 0.2); flash.fillRect(zone.x0, zone.y0, zone.ZW, zone.ZH);
+        this.tweens.add({ targets: flash, alpha: 0, duration: 700, onComplete: () => flash.destroy() });
+        // Return to hospital
+        this.tweens.add({ targets: amb, x: startX, y: startY, duration: 750, ease: 'Sine.easeInOut', delay: 500, onComplete: () => amb.destroy() });
+      }
+    });
+
+    // Siren dot
+    const siren = this.add.graphics().setDepth(25);
+    siren.fillStyle(0xff3333, 1); siren.fillCircle(8, -6, 3);
+    siren.setPosition(startX, startY);
+    this.tweens.add({ targets: siren, x: zone.cx, y: zone.cy - zone.ZH * 0.4, duration: 900, ease: 'Cubic.easeInOut',
+      onComplete: () => {
+        this.tweens.add({ targets: siren, x: startX, y: startY, duration: 750, ease: 'Sine.easeInOut', delay: 500, onComplete: () => siren.destroy() });
+      }
+    });
+  }
+
+  _dispatchHelicopter(zoneName) {
+    const zone = this.zones[zoneName] || { cx: this.W * 0.5, cy: this.H * 0.5 };
+    const heli = this.add.graphics().setDepth(30);
+    heli.fillStyle(0x22d3ee, 1);
+    // Body
+    heli.fillEllipse(0, 0, 28, 14);
+    heli.fillStyle(0xffffff, 0.8); heli.fillRect(-18, -2, 36, 2);
+    heli.setPosition(this.hospitalX, this.hospitalY);
+    heli.setScale(0.8);
+
+    // Spin blades tween
+    const bladeText = this.add.text(this.hospitalX, this.hospitalY - 12, '⊕', { fontSize: '14px', color: '#22d3ee', fontFamily: 'Courier New' }).setOrigin(0.5, 0.5).setDepth(31);
+    this.tweens.add({ targets: bladeText, angle: 360, duration: 300, repeat: -1 });
+
+    this.tweens.add({
+      targets: [heli, bladeText], x: zone.cx, y: zone.cy - 35, duration: 1100, ease: 'Cubic.easeInOut',
+      onComplete: () => {
+        const pop = this.add.text(zone.cx, zone.cy - 40, '🚁 HELI ARRIVED', { fontSize: '9px', color: '#22d3ee', fontFamily: 'Courier New' }).setOrigin(0.5, 1).setDepth(35);
+        this.tweens.add({ targets: pop, y: pop.y - 20, alpha: 0, duration: 1500, onComplete: () => { pop.destroy(); heli.destroy(); bladeText.destroy(); } });
+      }
+    });
+  }
+
+  _updateZone(name, survivors, casualties, severity) {
+    const zone = this.zones[name]; if (!zone) return;
+    if (survivors !== undefined) zone.casualtyText.setText(`${survivors} survivors`).setColor('#f0c090');
+    if (severity) {
+      // Stop old pulse, change color
+      zone.pTween.stop(); zone.borderPulse.clear();
+      const colMap = { critical: 0xff3333, high: 0xff8c00, moderate: 0xffd700, clear: 0x4ade80 };
+      const newCol = colMap[severity] || zone.color;
+      const dur = severity === 'critical' ? 800 : severity === 'high' ? 1200 : 2000;
+      zone.pTween = this.tweens.addCounter({
+        from: 0.2, to: 1, duration: dur, yoyo: true, repeat: -1,
+        onUpdate: tween => {
+          zone.borderPulse.clear();
+          zone.borderPulse.lineStyle(2.5, newCol, tween.getValue());
+          zone.borderPulse.strokeRect(zone.x0, zone.y0, zone.ZW, zone.ZH);
+        }
+      });
+    }
+  }
+
+  _onThink(name) {
+    if (!this.agents[name]) {
+      const x = this.hospitalX + (Math.random() - 0.5) * 40;
+      const y = this.hospitalY + (Math.random() - 0.5) * 20;
+      const con = this._makeAgent(x, y, (name[0] || 'A'), 0xfbbf24, '#000');
+      this.agents[name] = { container: con, homeX: x, homeY: y, thinkTween: null, thinkRing: null, bubble: null };
+    }
+    const agent = this.agents[name]; if (!agent) return;
+    const ring = this.add.graphics().setDepth(18);
+    ring.lineStyle(2, 0xff8c00, 1); ring.strokeCircle(0, 0, 14);
+    ring.setPosition(agent.container.x, agent.container.y);
+    agent.thinkRing = ring;
+    agent.thinkTween = this.tweens.add({ targets: ring, scaleX: 2.5, scaleY: 2.5, alpha: 0, duration: 900, repeat: -1, ease: 'Sine.easeOut',
+      onRepeat: () => ring.setPosition(agent.container.x, agent.container.y).setAlpha(1).setScale(1)
+    });
+    const bub = this.add.text(agent.container.x, agent.container.y - 18, '· · ·', { fontSize: '9px', color: '#ff8c00', fontFamily: 'Courier New' }).setOrigin(0.5, 1).setDepth(25);
+    agent.bubble = bub;
+    this.tweens.add({ targets: bub, y: bub.y - 9, duration: 700, repeat: -1, yoyo: true });
+  }
+
+  _makeAgent(x, y, label, color, tc) {
+    const r = this.R;
+    const g = this.add.graphics();
+    g.fillStyle(0x000000, 0.3); g.fillEllipse(1, r+3, r*1.5, r*0.5);
+    g.fillStyle(color, 1); g.fillCircle(0, 0, r);
+    g.fillStyle(0xffffff, 0.2); g.fillCircle(-r*0.28, -r*0.32, r*0.38);
+    const t = this.add.text(0, 0, label, { fontSize: '9px', color: tc, fontFamily: 'Courier New', fontStyle: 'bold' }).setOrigin(0.5, 0.5);
+    return this.add.container(x, y, [g, t]).setDepth(20);
+  }
+
+  _clearThink(name) {
+    const r = this.agents[name]; if (!r) return;
+    if (r.thinkTween) { r.thinkTween.stop(); r.thinkTween = null; }
+    if (r.thinkRing)  { r.thinkRing.destroy(); r.thinkRing = null; }
+    if (r.bubble)     { r.bubble.destroy(); r.bubble = null; }
+  }
+
+  handleEvent(ev) {
+    const k = ev.kind;
+    const agent = ev.agent || ev.robot || '';
+    const zone  = ev.zone || ev.area || '';
+
+    if (k === 'start') {
+      Object.keys(this.agents).forEach(n => this._clearThink(n));
+    }
+    else if (k === 'zone_surveyed') {
+      this._updateZone(zone, ev.survivors, ev.casualties, ev.severity);
+    }
+    else if (k === 'agent_think') {
+      this._onThink(agent);
+    }
+    else if (k === 'unit_dispatched') {
+      if (zone) this._dispatchAmbulance(zone);
+    }
+    else if (k === 'helicopter_requested') {
+      this._dispatchHelicopter(zone);
+    }
+    else if (k === 'evacuation_ordered') {
+      // Flash all zones green
+      Object.values(this.zones).forEach(z => {
+        const flash = this.add.graphics().setDepth(9);
+        flash.fillStyle(0x4ade80, 0.2); flash.fillRect(z.x0, z.y0, z.ZW, z.ZH);
+        this.tweens.add({ targets: flash, alpha: 0, duration: 1500, onComplete: () => flash.destroy() });
+      });
+    }
+    else if (k === 'agent_done') {
+      if (agent) this._clearThink(agent);
+    }
+    else if (k === 'done') {
+      const txt = this.add.text(this.W/2, this.H/2, 'ALL CLEAR', {
+        fontSize: '16px', color: '#4ade80', fontFamily: 'Courier New', fontStyle: 'bold',
+        backgroundColor: '#0f0500ee', padding: { x: 18, y: 9 }
+      }).setOrigin(0.5, 0.5).setDepth(50).setAlpha(0);
+      this.tweens.add({ targets: txt, alpha: 1, duration: 500,
+        onComplete: () => this.tweens.add({ targets: txt, alpha: 0, duration: 600, delay: 3500, onComplete: () => txt.destroy() })
+      });
+    }
+  }
+}
+
+window.addEventListener('load', () => {
+  const container = document.getElementById('game-container');
+  const W = Math.max(container.clientWidth || 900, 400);
+  new Phaser.Game({
+    type: Phaser.AUTO, parent: 'game-container', width: W, height: 232,
+    backgroundColor: 0x0f0500, scene: TriageScene,
+    scale: { mode: Phaser.Scale.NONE }, render: { antialias: true, pixelArt: false }
+  });
+});
+
+async function answerQuestion(qid, btn) {
+  const card = document.getElementById('qcard-' + qid);
+  if (!card) return;
+  const answer = card.querySelector('.q-input').value.trim();
+  if (!answer) return;
+  btn.disabled = true;
+  try {
+    await fetch('/answer-human', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: qid, answer })
+    });
+  } catch(e) { btn.disabled = false; }
+}
+
+function ts() { return new Date().toTimeString().slice(0, 8); }
+
+function addLog(kind, agent, body, cls) {
+  const el = document.createElement('div'); el.className = 'll';
+  const agHtml = agent ? `<span class="cu">${agent}</span>` : '';
+  el.innerHTML = `<span class="ts">${ts()}</span><span class="ev">${kind}</span>${agHtml}<span class="${cls||''}">${body}</span>`;
+  const log = document.getElementById('log');
+  log.appendChild(el); log.scrollTop = log.scrollHeight;
+}
+
+function addActivity(text, color) {
+  const el = document.createElement('div'); el.className = 'al-row';
+  el.style.color = color || 'var(--muted)';
+  el.innerHTML = `<span class="al-ts">${ts()}</span>${text}`;
+  const log = document.getElementById('activity-log');
+  log.appendChild(el); log.scrollTop = log.scrollHeight;
+}
+
+function addMsg(type, who, kind, body) {
+  const feed = document.getElementById('a2a-feed');
+  if (feed.firstElementChild && !feed.firstElementChild.classList.contains('msg')) feed.innerHTML = '';
+  const el = document.createElement('div'); el.className = `msg ${type}`;
+  el.innerHTML = `<div class="msg-header"><span class="msg-who" style="background:#3a1500;color:var(--orange)">${who}</span><span class="msg-kind">${kind}</span></div><div class="msg-body">${body}</div>`;
+  feed.appendChild(el); feed.scrollTop = feed.scrollHeight;
+  while (feed.children.length > 80) feed.removeChild(feed.firstChild);
+}
+
+function updateZoneUI(zone, survivors, casualties, severity) {
+  const sevEl  = document.getElementById('sev-' + zone);
+  const casEl  = document.getElementById('cas-' + zone);
+  const survEl = document.getElementById('surv-' + zone);
+  if (sevEl && severity) { sevEl.className = 'zone-severity ' + severity; sevEl.textContent = severity.toUpperCase(); }
+  if (casEl  && casualties !== undefined) casEl.textContent  = casualties;
+  if (survEl && survivors  !== undefined) survEl.textContent = survivors;
+}
+
+function addQuestion(qid, agent, question) {
+  const panel = document.getElementById('questions-panel');
+  const list  = document.getElementById('questions-list');
+  if (document.getElementById('qcard-' + qid)) return;
+  panel.style.display = '';
+  const card = document.createElement('div'); card.className = 'q-card'; card.id = 'qcard-' + qid;
+  card.innerHTML = `
+    <span class="q-robot" style="background:#ff8c0033;color:#ff8c00;border:1px solid #ff8c00">MAYOR OFFICE</span>
+    <div class="q-text">${question}</div>
+    <div class="q-reply">
+      <input class="q-input" type="text" placeholder="Mayor's decision…">
+      <button class="btn" style="padding:3px 8px;font-size:10px;border-color:var(--orange);color:var(--orange)" onclick="answerQuestion('${qid}', this)">Authorize</button>
+    </div>`;
+  list.appendChild(card);
+  card.querySelector('.q-input').addEventListener('keydown', e => { if (e.key === 'Enter') card.querySelector('.btn').click(); });
+}
+
+function removeQuestion(qid) {
+  const card = document.getElementById('qcard-' + qid); if (card) card.remove();
+  const list = document.getElementById('questions-list');
+  if (!list.children.length) document.getElementById('questions-panel').style.display = 'none';
+}
+
+function handleEvent(ev) {
+  const k     = ev.kind;
+  const agent = ev.agent || ev.robot || '';
+  const zone  = ev.zone  || ev.area  || '';
+
+  if (gameScene) gameScene.handleEvent(ev);
+  else eventQueue.push(ev);
+
+  if (k === 'start') {
+    document.getElementById('h-meta').textContent = 'Incident declared — all units responding';
+    document.getElementById('h-dot').className = 'run';
+    document.getElementById('h-status').textContent = 'EMERGENCY';
+    addActivity('Incident declared — triage initiated', 'var(--red)');
+    addLog('start', '', 'Emergency response activated', '');
+    return;
+  }
+  if (k === 'zone_surveyed') {
+    updateZoneUI(zone, ev.survivors, ev.casualties, ev.severity);
+    addMsg('msg-critical', agent || 'FIELD', 'zone survey', `Zone ${zone}: ${ev.survivors||0} survivors, severity ${ev.severity||'?'}`);
+    addActivity(`Zone ${zone} surveyed — ${ev.survivors||0} survivors`, 'var(--orange)');
+    addLog('zone_surveyed', agent, `Zone ${zone}: ${ev.survivors||0} survivors`, '');
+    return;
+  }
+  if (k === 'survivors_tagged') {
+    addActivity(`${ev.count||0} survivors tagged in ${zone}`, 'var(--yellow)');
+    addMsg('msg-call', agent, 'survivors tagged', `${ev.count||0} individuals tagged in Zone ${zone}`);
+    addLog('survivors_tagged', agent, `${zone}: ${ev.count||0}`, '');
+    return;
+  }
+  if (k === 'unit_dispatched') {
+    addMsg('msg-dispatch', 'DISPATCH', '🚑 ambulance', `Unit dispatched to Zone ${zone} — ETA ${ev.eta || '3 min'}`);
+    addActivity(`Ambulance → Zone ${zone}`, 'var(--green)');
+    addLog('unit_dispatched', agent, `→ Zone ${zone}`, 'ok');
+    return;
+  }
+  if (k === 'helicopter_requested') {
+    addMsg('msg-heli', agent, '🚁 helicopter', `Medevac helicopter requested for Zone ${zone}`);
+    addActivity(`Helicopter requested → Zone ${zone}`, 'var(--cyan)');
+    addLog('helicopter_requested', agent, `Zone ${zone}`, '');
+    return;
+  }
+  if (k === 'evacuation_ordered') {
+    addMsg('msg-evac', 'COMMAND', '⚠ evacuation', `Mass evacuation ordered — all zones clearing`);
+    addActivity('EVACUATION ORDERED — all zones', 'var(--amber)');
+    updateZoneUI('Alpha', undefined, undefined, 'clear');
+    updateZoneUI('Beta',  undefined, undefined, 'clear');
+    updateZoneUI('Gamma', undefined, undefined, 'clear');
+    addLog('evacuation_ordered', agent, 'mass evacuation', '');
+    return;
+  }
+  if (k === 'agent_think') {
+    addLog('agent_think', agent, 'planning response', '');
+    return;
+  }
+  if (k === 'human_question') {
+    addQuestion(ev.id, agent, ev.question || '');
+    addMsg('msg-question', agent, '❓ mayoral authorization', ev.question || '');
+    addLog('human_question', agent, (ev.question||'').slice(0,80), '');
+    return;
+  }
+  if (k === 'human_answered') {
+    removeQuestion(ev.id);
+    addLog('human_answered', agent, `replied to ${ev.id}`, 'ok');
+    return;
+  }
+  if (k === 'agent_done') {
+    addMsg('msg-dispatch', agent, 'done', `${agent} reporting complete`);
+    addLog('agent_done', agent, 'done', 'ok');
+    return;
+  }
+  if (k === 'done') {
+    document.getElementById('h-dot').className = 'live';
+    document.getElementById('h-status').textContent = 'resolved';
+    addMsg('msg-dispatch', 'COMMAND', '✓ all clear', '<strong>Emergency response complete — all zones stabilised</strong>');
+    addActivity('INCIDENT RESOLVED — all clear', 'var(--green)');
+    addLog('done', '', 'Emergency resolved', 'ok');
+    return;
+  }
+  addLog(k, agent, JSON.stringify(ev).slice(0, 100), '');
+}
+
+function connect() {
+  const dot = document.getElementById('h-dot'), sts = document.getElementById('h-status');
+  dot.className = ''; sts.textContent = 'connecting';
+  const es = new EventSource('/events');
+  es.onopen = () => { dot.className = 'live'; sts.textContent = 'connected'; };
+  es.onmessage = e => { try { handleEvent(JSON.parse(e.data)); } catch(err) { console.warn('bad event', e.data, err); } };
+  es.onerror = () => { dot.className = ''; sts.textContent = 'reconnecting…'; es.close(); setTimeout(connect, 2000); };
+}
+connect();
+</script>
+</body>
+</html>

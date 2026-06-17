@@ -1,0 +1,583 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Robot Trading Terminal</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:     #000000;
+  --bg2:    #050505;
+  --bg3:    #0a0a0a;
+  --border: #1a2a1a;
+  --text:   #c0d0c0;
+  --muted:  #4a5a4a;
+  --green:  #00ff41;
+  --red:    #ff3333;
+  --cyan:   #22d3ee;
+  --yellow: #ffd700;
+  --blue:   #4488ff;
+  --amber:  #fbbf24;
+  --purple: #a78bfa;
+}
+
+html, body { height: 100%; overflow: hidden; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 12px;
+  line-height: 1.4;
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+}
+
+header {
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  padding: 0 16px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-shrink: 0;
+  height: 40px;
+}
+header h1 { font-size: 13px; color: var(--green); letter-spacing: .1em; font-weight: bold; white-space: nowrap; }
+#h-meta   { color: var(--muted); font-size: 11px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#h-conn   { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); white-space: nowrap; }
+#h-dot    { width: 8px; height: 8px; border-radius: 50%; background: #1a2a1a; flex-shrink: 0; }
+#h-dot.live { background: var(--green); box-shadow: 0 0 8px var(--green); }
+#h-dot.run  { background: var(--amber); box-shadow: 0 0 8px var(--amber); animation: blink 1s infinite; }
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:.25} }
+
+/* Ticker */
+#ticker-bar {
+  flex-shrink: 0; background: var(--bg2); border-bottom: 1px solid var(--border);
+  padding: 4px 16px; display: flex; align-items: center; gap: 20px; height: 32px; overflow: hidden;
+}
+.tick-item { display: flex; align-items: center; gap: 6px; font-size: 10px; white-space: nowrap; }
+.tick-name { color: var(--muted); font-size: 9px; }
+.tick-bid  { color: var(--green); }
+.tick-ask  { color: var(--red); }
+.tick-sep  { color: var(--muted); }
+.tick-chg  { font-size: 9px; }
+.tick-chg.up   { color: var(--green); }
+.tick-chg.down { color: var(--red); }
+
+#game-container {
+  flex-shrink: 0; height: 220px; overflow: hidden;
+  background: var(--bg); border-bottom: 1px solid var(--border);
+}
+#game-container canvas { display: block; }
+
+#middle {
+  flex: 1; min-height: 0; display: grid;
+  grid-template-columns: 260px 1fr; background: var(--border); gap: 1px; overflow: hidden;
+}
+
+#left-col {
+  display: flex; flex-direction: column; gap: 1px;
+  background: var(--border); overflow: hidden;
+}
+.panel {
+  background: var(--bg); padding: 8px 10px; overflow: hidden;
+  display: flex; flex-direction: column; gap: 5px; min-height: 0;
+}
+.panel-title {
+  font-size: 9px; text-transform: uppercase; letter-spacing: .14em; color: var(--muted);
+  border-bottom: 1px solid var(--border); padding-bottom: 4px; flex-shrink: 0;
+}
+
+/* Budget bars */
+.trader-row { display: flex; align-items: center; gap: 7px; padding: 3px 0; flex-shrink: 0; }
+.trader-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+.trader-name { font-size: 10px; font-weight: bold; width: 40px; flex-shrink: 0; }
+.budget-bar-wrap { flex: 1; background: #1a1a1a; border: 1px solid var(--border); border-radius: 3px; height: 10px; overflow: hidden; }
+.budget-bar { height: 100%; background: var(--green); transition: width .4s ease, background .4s; }
+.budget-val { font-size: 9px; color: var(--muted); width: 32px; text-align: right; flex-shrink: 0; }
+
+/* Order book */
+#orderbook-panel { flex: 1; min-height: 0; }
+#orderbook-list { overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 2px; }
+.ob-row { display: grid; grid-template-columns: 55px 40px 1fr; gap: 4px; font-size: 9px; padding: 2px 0; border-bottom: 1px solid #0a0a0a; flex-shrink: 0; }
+.ob-time { color: var(--muted); }
+.ob-side-buy  { color: var(--green); font-weight: bold; }
+.ob-side-sell { color: var(--red); font-weight: bold; }
+.ob-body { color: var(--text); }
+
+/* A2A feed */
+#a2a-panel {
+  background: var(--bg); padding: 8px 10px;
+  display: flex; flex-direction: column; gap: 5px; overflow: hidden;
+}
+#a2a-feed { overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 4px; }
+.msg { padding: 5px 9px; border-radius: 4px; font-size: 10px; max-width: 92%; word-break: break-word; border: 1px solid transparent; flex-shrink: 0; line-height: 1.5; }
+.msg-header { display: flex; align-items: center; gap: 4px; margin-bottom: 2px; }
+.msg-who { font-size: 8px; font-weight: bold; padding: 1px 4px; border-radius: 7px; }
+.msg-kind { font-size: 8px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+.msg-body { color: var(--text); }
+.msg-call    { background: #001a00; border-color: #002a00; align-self: flex-start; }
+.msg-buy     { background: #001a00; border-color: var(--green); align-self: flex-start; }
+.msg-sell    { background: #1a0000; border-color: var(--red); align-self: flex-start; }
+.msg-think   { background: #050a05; border-color: #1a2a1a; align-self: flex-start; }
+
+#log-section {
+  flex-shrink: 0; height: 110px; background: var(--bg);
+  border-top: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden;
+}
+#log-hdr { font-size: 9px; text-transform: uppercase; letter-spacing: .14em; color: var(--muted); padding: 4px 11px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+#log     { overflow-y: auto; flex: 1; padding: 3px 11px; }
+.ll      { font-size: 10px; color: var(--muted); white-space: nowrap; line-height: 1.6; }
+.ll .ts  { color: #1a2a1a; margin-right: 7px; }
+.ll .ev  { color: var(--green); margin-right: 5px; }
+.ll .cu  { font-weight: bold; margin-right: 4px; }
+.ll .ok  { color: var(--green); }
+.ll .er  { color: var(--red); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>ROBOT TRADING TERMINAL</h1>
+  <span id="h-meta">markets offline — awaiting session</span>
+  <div id="h-conn"><div id="h-dot"></div><span id="h-status">connecting</span></div>
+</header>
+
+<div id="ticker-bar">
+  <div class="tick-item">
+    <span class="tick-name">QUANTUM</span>
+    <span class="tick-bid" id="tick-quantum-bid">—</span>
+    <span class="tick-sep">/</span>
+    <span class="tick-ask" id="tick-quantum-ask">—</span>
+    <span class="tick-chg" id="tick-quantum-chg"></span>
+  </div>
+  <div class="tick-item">
+    <span class="tick-name">SOLAR</span>
+    <span class="tick-bid" id="tick-solar-bid">—</span>
+    <span class="tick-sep">/</span>
+    <span class="tick-ask" id="tick-solar-ask">—</span>
+    <span class="tick-chg" id="tick-solar-chg"></span>
+  </div>
+  <div class="tick-item">
+    <span class="tick-name">WATER</span>
+    <span class="tick-bid" id="tick-water-bid">—</span>
+    <span class="tick-sep">/</span>
+    <span class="tick-ask" id="tick-water-ask">—</span>
+    <span class="tick-chg" id="tick-water-chg"></span>
+  </div>
+</div>
+
+<div id="game-container"></div>
+
+<div id="middle">
+  <div id="left-col">
+
+    <div class="panel" id="budget-panel" style="flex-shrink:0">
+      <div class="panel-title">Trader Budgets</div>
+      <div class="trader-row">
+        <div class="trader-dot" style="background:#22d3ee"></div>
+        <span class="trader-name" style="color:#22d3ee">Axon</span>
+        <div class="budget-bar-wrap"><div class="budget-bar" id="bar-Axon" style="width:100%"></div></div>
+        <span class="budget-val" id="bval-Axon">500</span>
+      </div>
+      <div class="trader-row">
+        <div class="trader-dot" style="background:#ffd700"></div>
+        <span class="trader-name" style="color:#ffd700">Byte</span>
+        <div class="budget-bar-wrap"><div class="budget-bar" id="bar-Byte" style="width:100%"></div></div>
+        <span class="budget-val" id="bval-Byte">500</span>
+      </div>
+      <div class="trader-row">
+        <div class="trader-dot" style="background:#a78bfa"></div>
+        <span class="trader-name" style="color:#a78bfa">Coil</span>
+        <div class="budget-bar-wrap"><div class="budget-bar" id="bar-Coil" style="width:100%"></div></div>
+        <span class="budget-val" id="bval-Coil">500</span>
+      </div>
+      <div class="trader-row">
+        <div class="trader-dot" style="background:#f87171"></div>
+        <span class="trader-name" style="color:#f87171">Dusk</span>
+        <div class="budget-bar-wrap"><div class="budget-bar" id="bar-Dusk" style="width:100%"></div></div>
+        <span class="budget-val" id="bval-Dusk">500</span>
+      </div>
+    </div>
+
+    <div class="panel" id="orderbook-panel">
+      <div class="panel-title">Order Book</div>
+      <div id="orderbook-list">
+        <div style="color:var(--muted);font-size:10px">No trades yet</div>
+      </div>
+    </div>
+  </div>
+
+  <div id="a2a-panel">
+    <div class="panel-title">Trading Feed</div>
+    <div id="a2a-feed">
+      <div style="color:var(--muted);font-size:11px;text-align:center;margin-top:24px">Markets closed — awaiting session start</div>
+    </div>
+  </div>
+</div>
+
+<div id="log-section">
+  <div id="log-hdr">Event Log</div>
+  <div id="log"></div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/phaser@3.70.0/dist/phaser.min.js"></script>
+<script>
+'use strict';
+
+const TRADERS = {
+  Axon: { color: 0x22d3ee, hex: '#22d3ee', tc: '#000' },
+  Byte: { color: 0xffd700, hex: '#ffd700', tc: '#000' },
+  Coil: { color: 0xa78bfa, hex: '#a78bfa', tc: '#000' },
+  Dusk: { color: 0xf87171, hex: '#f87171', tc: '#000' },
+};
+
+const MARKETS = {
+  Quantum: { color: 0x22d3ee, label: 'QUANTUM' },
+  Solar:   { color: 0xffd700, label: 'SOLAR'   },
+  Water:   { color: 0x4488ff, label: 'WATER'   },
+};
+
+const budgets = { Axon: 500, Byte: 500, Coil: 500, Dusk: 500 };
+const BUDGET_MAX = 500;
+
+let gameScene = null;
+const eventQueue = [];
+
+class TradingScene extends Phaser.Scene {
+  constructor() {
+    super({ key: 'TradingScene' });
+    this.booths  = {};
+    this.traders = {};
+  }
+
+  create() {
+    const W = this.scale.width, H = this.scale.height;
+    this.W = W; this.H = H;
+    this.R = 12;
+
+    this._drawBg(W, H);
+    this._buildBooths(W, H);
+    this._buildTraders(W, H);
+
+    gameScene = this;
+    while (eventQueue.length) this.handleEvent(eventQueue.shift());
+  }
+
+  _drawBg(W, H) {
+    const g = this.add.graphics().setDepth(0);
+    g.fillStyle(0x000000, 1); g.fillRect(0, 0, W, H);
+    g.lineStyle(1, 0x030603, 1);
+    for (let x = 0; x < W; x += 50) { g.moveTo(x, 0); g.lineTo(x, H); }
+    for (let y = 0; y < H; y += 50) { g.moveTo(0, y); g.lineTo(W, y); }
+    g.strokePath();
+    // Floor line
+    g.lineStyle(1, 0x1a2a1a, 1);
+    g.moveTo(0, H - 55); g.lineTo(W, H - 55);
+    g.strokePath();
+    this.add.text(W/2, H - 50, 'TRADING FLOOR', { fontSize: '8px', color: '#1a3a1a', fontFamily: 'Courier New', letterSpacing: 6 }).setOrigin(0.5, 0).setDepth(1);
+  }
+
+  _buildBooths(W, H) {
+    const BW = 140, BH = 55;
+    const y = H - 30;
+    const positions = { Quantum: W * 0.22, Solar: W * 0.5, Water: W * 0.78 };
+    const colors    = { Quantum: 0x22d3ee, Solar: 0xffd700, Water: 0x4488ff };
+
+    Object.entries(positions).forEach(([name, cx]) => {
+      const col = colors[name];
+      const x0 = cx - BW/2, y0 = y - BH;
+      const g = this.add.graphics().setDepth(3);
+      g.fillStyle(0x000000, 0.3); g.fillRect(x0+3, y0+3, BW, BH);
+      g.fillStyle(0x050505, 1); g.fillRect(x0, y0, BW, BH);
+      g.fillStyle(col, 0.9); g.fillRect(x0, y0, BW, 13);
+      g.lineStyle(1.5, col, 0.6); g.strokeRect(x0, y0, BW, BH);
+
+      this.add.text(cx, y0 + 6.5, name.toUpperCase() + ' MARKET', {
+        fontSize: '8px', color: '#000', fontFamily: 'Courier New', fontStyle: 'bold', align: 'center'
+      }).setOrigin(0.5, 0.5).setDepth(4);
+
+      const priceText = this.add.text(cx, y0 + 32, 'BID — / ASK —', {
+        fontSize: '8px', color: '#4a5a4a', fontFamily: 'Courier New', align: 'center'
+      }).setOrigin(0.5, 0.5).setDepth(4);
+
+      this.booths[name] = { cx, cy: y0 + BH/2, y0, x0, BW, BH, priceText, color: col };
+    });
+  }
+
+  _buildTraders(W, H) {
+    const H2 = H - 80;
+    const starts = [
+      { name: 'Axon', x: W * 0.15, y: H2 * 0.35 },
+      { name: 'Byte', x: W * 0.38, y: H2 * 0.35 },
+      { name: 'Coil', x: W * 0.62, y: H2 * 0.35 },
+      { name: 'Dusk', x: W * 0.85, y: H2 * 0.35 },
+    ];
+    starts.forEach(s => {
+      const cfg = TRADERS[s.name];
+      const con = this._makeTrader(s.x, s.y, s.name[0], cfg.color, cfg.tc);
+      this.traders[s.name] = { container: con, homeX: s.x, homeY: s.y, color: cfg.color, thinkTween: null, thinkRing: null, bubble: null };
+    });
+  }
+
+  _makeTrader(x, y, label, color, tc) {
+    const r = this.R;
+    const g = this.add.graphics();
+    g.fillStyle(0x000000, 0.3); g.fillEllipse(1, r+3, r*1.5, r*0.5);
+    g.fillStyle(color, 1); g.fillCircle(0, 0, r);
+    g.fillStyle(0xffffff, 0.18); g.fillCircle(-r*0.28, -r*0.32, r*0.38);
+    const t = this.add.text(0, 0, label, { fontSize: '9px', color: tc, fontFamily: 'Courier New', fontStyle: 'bold' }).setOrigin(0.5, 0.5);
+    return this.add.container(x, y, [g, t]).setDepth(20);
+  }
+
+  _moveToMarket(name, market) {
+    const trader = this.traders[name];
+    const booth  = this.booths[market];
+    if (!trader || !booth) return;
+    this._clearThink(name);
+    this.tweens.add({
+      targets: trader.container,
+      x: booth.cx + (Math.random() - 0.5) * 30,
+      y: booth.y0 - 10,
+      duration: 650, ease: 'Cubic.easeInOut',
+      onComplete: () => this._bounce(name)
+    });
+  }
+
+  _returnHome(name) {
+    const trader = this.traders[name]; if (!trader) return;
+    this._clearThink(name);
+    this.tweens.add({ targets: trader.container, x: trader.homeX, y: trader.homeY, duration: 500, ease: 'Sine.easeInOut' });
+  }
+
+  _onThink(name) {
+    const trader = this.traders[name]; if (!trader) return;
+    this._clearThink(name);
+    const ring = this.add.graphics().setDepth(18);
+    ring.lineStyle(2, 0x00ff41, 1); ring.strokeCircle(0, 0, 15);
+    ring.setPosition(trader.container.x, trader.container.y);
+    trader.thinkRing = ring;
+    trader.thinkTween = this.tweens.add({
+      targets: ring, scaleX: 2.5, scaleY: 2.5, alpha: 0, duration: 900, repeat: -1, ease: 'Sine.easeOut',
+      onRepeat: () => ring.setPosition(trader.container.x, trader.container.y).setAlpha(1).setScale(1)
+    });
+    const bub = this.add.text(trader.container.x, trader.container.y - 20, '· · ·', { fontSize: '9px', color: '#00ff41', fontFamily: 'Courier New' }).setOrigin(0.5, 1).setDepth(25);
+    trader.bubble = bub;
+    this.tweens.add({ targets: bub, y: bub.y - 9, duration: 700, repeat: -1, yoyo: true, ease: 'Sine.easeInOut' });
+  }
+
+  _flashTrade(market, isBuy) {
+    const booth = this.booths[market]; if (!booth) return;
+    const col = isBuy ? 0x00ff41 : 0xff3333;
+    const flash = this.add.graphics().setDepth(10);
+    flash.fillStyle(col, 0.2); flash.fillRect(booth.x0, booth.y0, booth.BW, booth.BH);
+    this.tweens.add({ targets: flash, alpha: 0, duration: 600, onComplete: () => flash.destroy() });
+    const pop = this.add.text(booth.cx, booth.y0 - 8, isBuy ? '▲ BUY' : '▼ SELL', {
+      fontSize: '10px', color: isBuy ? '#00ff41' : '#ff3333', fontFamily: 'Courier New', fontStyle: 'bold'
+    }).setOrigin(0.5, 1).setDepth(30);
+    this.tweens.add({ targets: pop, y: pop.y - 25, alpha: 0, duration: 1000, onComplete: () => pop.destroy() });
+  }
+
+  _updatePrice(market, bid, ask) {
+    const booth = this.booths[market]; if (!booth) return;
+    booth.priceText.setText(`B ${bid}  /  A ${ask}`).setColor('#c0d0c0');
+  }
+
+  _bounce(name) {
+    const r = this.traders[name]; if (!r) return;
+    this.tweens.add({ targets: r.container, y: r.container.y - 7, duration: 120, yoyo: true, ease: 'Sine.easeOut' });
+  }
+
+  _clearThink(name) {
+    const r = this.traders[name]; if (!r) return;
+    if (r.thinkTween) { r.thinkTween.stop(); r.thinkTween = null; }
+    if (r.thinkRing)  { r.thinkRing.destroy(); r.thinkRing = null; }
+    if (r.bubble)     { r.bubble.destroy(); r.bubble = null; }
+  }
+
+  handleEvent(ev) {
+    const k = ev.kind;
+    const name = ev.trader || ev.agent || '';
+    const market = ev.market || '';
+
+    if (k === 'start' || k === 'trader_start') {
+      if (name && this.traders[name]) {
+        this._clearThink(name);
+        this.traders[name].container.setAlpha(1);
+      }
+    }
+    else if (k === 'agent_think') {
+      if (name) this._onThink(name);
+    }
+    else if (k === 'a2a_call') {
+      if (name && market) this._moveToMarket(name, market);
+    }
+    else if (k === 'trade_executed') {
+      const isBuy = (ev.side || '').toLowerCase() === 'buy';
+      if (market) this._flashTrade(market, isBuy);
+      if (ev.bid !== undefined) this._updatePrice(market, ev.bid, ev.ask);
+      if (name) this._bounce(name);
+    }
+    else if (k === 'agent_done') {
+      if (name) this._returnHome(name);
+    }
+    else if (k === 'done') {
+      const txt = this.add.text(this.W/2, this.H/2, 'SESSION CLOSED', {
+        fontSize: '15px', color: '#00ff41', fontFamily: 'Courier New', fontStyle: 'bold',
+        backgroundColor: '#000000ee', padding: { x: 18, y: 9 }
+      }).setOrigin(0.5, 0.5).setDepth(50).setAlpha(0);
+      this.tweens.add({ targets: txt, alpha: 1, duration: 500,
+        onComplete: () => this.tweens.add({ targets: txt, alpha: 0, duration: 600, delay: 3500, onComplete: () => txt.destroy() })
+      });
+    }
+  }
+}
+
+window.addEventListener('load', () => {
+  const container = document.getElementById('game-container');
+  const W = Math.max(container.clientWidth || 900, 400);
+  new Phaser.Game({
+    type: Phaser.AUTO, parent: 'game-container', width: W, height: 212,
+    backgroundColor: 0x000000, scene: TradingScene,
+    scale: { mode: Phaser.Scale.NONE }, render: { antialias: true, pixelArt: false }
+  });
+});
+
+const prevPrices = {};
+
+function updateTicker(market, bid, ask) {
+  const key = market.toLowerCase();
+  const bidEl = document.getElementById(`tick-${key}-bid`);
+  const askEl = document.getElementById(`tick-${key}-ask`);
+  const chgEl = document.getElementById(`tick-${key}-chg`);
+  if (!bidEl) return;
+  const prev = prevPrices[key];
+  if (prev !== undefined) {
+    const dir = bid > prev ? 'up' : bid < prev ? 'down' : '';
+    chgEl.className = 'tick-chg ' + dir;
+    chgEl.textContent = dir === 'up' ? '▲' : dir === 'down' ? '▼' : '';
+  }
+  prevPrices[key] = bid;
+  bidEl.textContent = bid;
+  askEl.textContent = ask;
+}
+
+function updateBudget(name, amount) {
+  budgets[name] = Math.max(0, amount);
+  const bar = document.getElementById('bar-' + name);
+  const val = document.getElementById('bval-' + name);
+  if (!bar || !val) return;
+  const pct = (budgets[name] / BUDGET_MAX) * 100;
+  bar.style.width = pct + '%';
+  bar.style.background = pct > 50 ? 'var(--green)' : pct > 20 ? '#ffd700' : '#ff3333';
+  val.textContent = budgets[name];
+}
+
+function addOrderBook(side, trader, market, price, qty) {
+  const list = document.getElementById('orderbook-list');
+  if (list.firstElementChild && !list.firstElementChild.classList.contains('ob-row')) list.innerHTML = '';
+  const el = document.createElement('div'); el.className = 'ob-row';
+  const isBuy = side.toLowerCase() === 'buy';
+  el.innerHTML = `
+    <span class="ob-time">${ts()}</span>
+    <span class="${isBuy ? 'ob-side-buy' : 'ob-side-sell'}">${side.toUpperCase()}</span>
+    <span class="ob-body">[${trader}] ${market} ${qty||1}×${price}</span>`;
+  list.appendChild(el); list.scrollTop = list.scrollHeight;
+  while (list.children.length > 40) list.removeChild(list.firstChild);
+}
+
+function ts() { return new Date().toTimeString().slice(0, 8); }
+
+function addLog(kind, agent, body, cls) {
+  const el = document.createElement('div'); el.className = 'll';
+  const agHtml = agent ? `<span class="cu">${agent}</span>` : '';
+  el.innerHTML = `<span class="ts">${ts()}</span><span class="ev">${kind}</span>${agHtml}<span class="${cls||''}">${body}</span>`;
+  const log = document.getElementById('log');
+  log.appendChild(el); log.scrollTop = log.scrollHeight;
+}
+
+function addMsg(type, who, kind, body) {
+  const feed = document.getElementById('a2a-feed');
+  if (feed.firstElementChild && !feed.firstElementChild.classList.contains('msg')) feed.innerHTML = '';
+  const el = document.createElement('div'); el.className = `msg ${type}`;
+  el.innerHTML = `<div class="msg-header"><span class="msg-who" style="background:#001a00;color:var(--green)">${who}</span><span class="msg-kind">${kind}</span></div><div class="msg-body">${body}</div>`;
+  feed.appendChild(el); feed.scrollTop = feed.scrollHeight;
+  while (feed.children.length > 80) feed.removeChild(feed.firstChild);
+}
+
+function handleEvent(ev) {
+  const k = ev.kind;
+  const name   = ev.trader || ev.agent || '';
+  const market = ev.market || '';
+
+  if (gameScene) gameScene.handleEvent(ev);
+  else eventQueue.push(ev);
+
+  if (k === 'start') {
+    document.getElementById('h-meta').textContent = 'Markets open — trading session active';
+    document.getElementById('h-dot').className = 'run';
+    document.getElementById('h-status').textContent = 'running';
+    addLog('start', '', 'Trading session started', '');
+    return;
+  }
+  if (k === 'trader_start') {
+    addMsg('msg-call', name || 'SYS', 'trader online', `${name} ready to trade`);
+    addLog('trader_start', name, 'online', '');
+    return;
+  }
+  if (k === 'agent_think') {
+    addLog('agent_think', name, 'analyzing markets', '');
+    return;
+  }
+  if (k === 'a2a_call') {
+    const args = ev.args ? JSON.stringify(ev.args) : '{}';
+    addMsg('msg-call', name, ev.skill + ' →', `<code>${args}</code>`);
+    addLog('a2a_call', name, ev.skill, '');
+    return;
+  }
+  if (k === 'trade_executed') {
+    const isBuy = (ev.side || '').toLowerCase() === 'buy';
+    const price  = ev.price || ev.bid || 0;
+    const qty    = ev.qty || ev.quantity || 1;
+    const cost   = price * qty;
+
+    if (isBuy && name) {
+      updateBudget(name, (budgets[name] || BUDGET_MAX) - cost);
+    }
+    if (ev.bid !== undefined) updateTicker(market, ev.bid, ev.ask);
+    addOrderBook(ev.side || 'buy', name, market, price, qty);
+    addMsg(isBuy ? 'msg-buy' : 'msg-sell', name, isBuy ? '▲ BUY' : '▼ SELL', `${market} × ${qty} @ ${price}`);
+    addLog('trade_executed', name, `${ev.side} ${market} ${qty}×${price}`, isBuy ? 'ok' : 'er');
+    return;
+  }
+  if (k === 'agent_done') {
+    const total = budgets[name] !== undefined ? (BUDGET_MAX - budgets[name]) : '?';
+    addMsg('msg-think', name, 'done', `Session complete — spent ${total} credits`);
+    addLog('agent_done', name, 'done', 'ok');
+    return;
+  }
+  if (k === 'done') {
+    document.getElementById('h-dot').className = 'live';
+    document.getElementById('h-status').textContent = 'closed';
+    addMsg('msg-think', 'SYS', 'session closed', '<strong>All traders done</strong>');
+    addLog('done', '', 'Session closed', 'ok');
+    return;
+  }
+  addLog(k, name, JSON.stringify(ev).slice(0, 100), '');
+}
+
+function connect() {
+  const dot = document.getElementById('h-dot'), sts = document.getElementById('h-status');
+  dot.className = ''; sts.textContent = 'connecting';
+  const es = new EventSource('/events');
+  es.onopen = () => { dot.className = 'live'; sts.textContent = 'connected'; };
+  es.onmessage = e => { try { handleEvent(JSON.parse(e.data)); } catch(err) { console.warn('bad event', e.data, err); } };
+  es.onerror = () => { dot.className = ''; sts.textContent = 'reconnecting…'; es.close(); setTimeout(connect, 2000); };
+}
+connect();
+</script>
+</body>
+</html>

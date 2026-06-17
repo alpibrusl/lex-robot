@@ -48,6 +48,7 @@ _ALL_STALLS = list(_STALL_CONFIGS.keys())
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("LEX_ROBOT_SIDECAR_PORT", "8900"))
+LEX_DASHBOARD_HTML = os.environ.get("LEX_DASHBOARD_HTML", "bazaar_web.html")
 
 # ── Bazaar stall identity ─────────────────────────────────────────────────────
 # Set LEX_STALL_NAME=pottery|textile|spices to run as a seller stall.
@@ -87,6 +88,25 @@ _STOCK_LOCK = threading.Lock()
 _STOCK_STATE = {
     item["id"]: dict(item, reserved=False)
     for item in _STALL_INVENTORIES.get(STALL_NAME, [])
+}
+
+_STATION_BREACH_SEALED = False
+_TRADING_STATE_LOCK = threading.Lock()
+_TRADING_STATE = {
+    "quantum_chips": {"bid": 42, "ask": 45, "volume": 1000, "last": 43},
+    "solar_panels":  {"bid": 28, "ask": 31, "volume": 500,  "last": 29},
+    "water_credits": {"bid": 7,  "ask": 8,  "volume": 2000, "last": 7},
+}
+_HEIST_STATE = {
+    "cameras_disabled": False, "credentials_cracked": False, "vault_opened": False,
+}
+_HEIST_LOCK = threading.Lock()
+_DISASTER_LOCK = threading.Lock()
+_DISASTER_STATE = {
+    "zone_alpha": {"casualties": 12, "severity": "critical", "accessible": True, "surveyed": False},
+    "zone_beta":  {"casualties": 3,  "severity": "moderate", "accessible": True,  "surveyed": False},
+    "zone_gamma": {"casualties": 7,  "severity": "high",     "accessible": False, "surveyed": False},
+    "hospital_hq": {"units_available": 8, "helicopters": 2},
 }
 
 # ── Dangerous-tool state ─────────────────────────────────────────────────────
@@ -201,6 +221,7 @@ def handle_skill(name: str, args: dict) -> dict:
     The Lex grant has already vetted the call (workspace/force/skill allowlist)
     before it reaches here, so the sidecar only sees authorized requests.
     """
+    global _STATION_BREACH_SEALED
     if name == "workpiece_status":
         with _TOOL_LOCK:
             clamped = _TOOL_STATE["clamped"]
@@ -313,6 +334,135 @@ def handle_skill(name: str, args: dict) -> dict:
     if name == "record_episode":
         # REAL: record a LeRobotDataset episode for args['task']
         return {"episode_id": f"ep-{random.randint(1000, 9999)}", "frames": 240, "path": "/data/episodes/ep.parquet"}
+    # Space station skills
+    if name == "read_sensor":
+        is_cargo = "cargo" in STALL_NAME.lower()
+        breach = is_cargo and not _STATION_BREACH_SEALED
+        _notify_bg({"kind": "sensor_read", "stall": STALL_NAME, "breach": breach})
+        return {"module": STALL_NAME, "oxygen_pct": 18.5 if breach else 21.0,
+                "pressure_kpa": 85.0 if breach else 101.3, "temperature_c": 5.0 if breach else 22.0,
+                "breach": breach, "status": "CRITICAL - HULL BREACH" if breach else "nominal"}
+    if name == "adjust_pressure":
+        target = args.get("target_kpa", 101)
+        return {"status": "ok", "pressure_kpa": float(target), "equalizing": True, "eta_s": 45}
+    if name == "emergency_seal":
+        return {"status": "sealed", "pressurizing": True, "time_to_seal_s": 45}
+    if name == "course_correct":
+        delta = args.get("delta_deg", 0)
+        _notify_bg({"kind": "nav_corrected", "stall": STALL_NAME, "delta": delta})
+        return {"status": "ok", "delta_applied_deg": delta, "new_heading_deg": (180 + int(delta)) % 360}
+    if name == "deploy_thrusters":
+        return {"status": "firing", "burn_duration_s": args.get("burn_s", 10), "delta_v_ms": 2.3}
+    if name == "broadcast_alert":
+        message = args.get("message", "ALERT"); priority = args.get("priority", "high")
+        _notify_bg({"kind": "station_alert", "stall": STALL_NAME, "message": message, "priority": priority})
+        return {"status": "sent", "message": message, "stations_reached": 847, "priority": priority}
+    if name == "contact_ground":
+        return {"status": "ok", "latency_s": 0.8, "ground_reply": "Acknowledged. Emergency protocols activated."}
+    if name == "seal_cargo_bay":
+        _STATION_BREACH_SEALED = True
+        _notify_bg({"kind": "breach_sealed", "stall": STALL_NAME})
+        return {"status": "sealed", "doors_closed": 4, "time_s": 12, "pressure_restoring": True}
+    if name == "vent_atmosphere":
+        return {"error": "PERMISSION DENIED: vent_atmosphere not in agent grant"}
+    # Trading skills
+    if name == "get_quote":
+        asset_key = args.get("asset", "").lower().replace(" ", "_")
+        with _TRADING_STATE_LOCK:
+            for key, data in _TRADING_STATE.items():
+                if asset_key in key or key in asset_key:
+                    return {"asset": key, "bid": data["bid"], "ask": data["ask"], "volume": data["volume"], "last": data["last"]}
+        return {"error": "asset not found", "available": list(_TRADING_STATE.keys())}
+    if name == "place_bid":
+        asset_key = args.get("asset", "").lower().replace(" ", "_")
+        qty = int(args.get("quantity", 0)); max_p = int(args.get("max_price", 0))
+        with _TRADING_STATE_LOCK:
+            for key, data in _TRADING_STATE.items():
+                if asset_key in key or key in asset_key:
+                    if max_p >= data["ask"] and qty > 0 and data["volume"] >= qty:
+                        data["volume"] -= qty
+                        _notify_bg({"kind": "trade_executed", "stall": STALL_NAME, "side": "buy", "asset": key, "qty": qty, "price": data["ask"]})
+                        return {"status": "filled", "asset": key, "quantity": qty, "price": data["ask"], "total": qty * data["ask"]}
+                    return {"status": "unfilled", "reason": "price_below_ask_or_no_volume", "ask": data["ask"]}
+        return {"status": "unfilled", "reason": "asset_not_found"}
+    if name == "place_ask":
+        asset_key = args.get("asset", "").lower().replace(" ", "_")
+        qty = int(args.get("quantity", 0)); min_p = int(args.get("min_price", 0))
+        with _TRADING_STATE_LOCK:
+            for key, data in _TRADING_STATE.items():
+                if asset_key in key or key in asset_key:
+                    if min_p <= data["bid"] and qty > 0:
+                        _notify_bg({"kind": "trade_executed", "stall": STALL_NAME, "side": "sell", "asset": key, "qty": qty, "price": data["bid"]})
+                        return {"status": "filled", "asset": key, "quantity": qty, "price": data["bid"], "total": qty * data["bid"]}
+                    return {"status": "unfilled", "reason": "price_above_bid", "bid": data["bid"]}
+        return {"status": "unfilled", "reason": "asset_not_found"}
+    # Heist skills
+    if name == "scan_area":
+        area = STALL_NAME.replace("heist_", "")
+        guards = {"lobby": 2, "security": 1, "server": 0, "vault": 3}.get(area, 1)
+        cameras = {"lobby": 4, "security": 8, "server": 2, "vault": 6}.get(area, 2)
+        with _HEIST_LOCK:
+            alarm = "disarmed" if _HEIST_STATE.get("cameras_disabled") else "active"
+        _notify_bg({"kind": "area_scanned", "stall": STALL_NAME, "guards": guards})
+        return {"area": area, "guards": guards, "cameras": cameras, "alarm_status": alarm, "access_level": 3}
+    if name == "create_distraction":
+        method = args.get("method", "noise")
+        _notify_bg({"kind": "distraction", "stall": STALL_NAME, "method": method})
+        return {"status": "ok", "guards_diverted": 2, "window_s": 30, "method": method}
+    if name == "tail_someone":
+        return {"status": "ok", "through_door": "security_wing", "undetected": True}
+    if name == "disable_cameras":
+        with _HEIST_LOCK: _HEIST_STATE["cameras_disabled"] = True
+        _notify_bg({"kind": "cameras_disabled", "stall": STALL_NAME})
+        return {"status": "ok", "cameras_looped": 8, "duration_min": 10}
+    if name == "spoof_keycard":
+        target = args.get("target_room", "vault")
+        _notify_bg({"kind": "keycard_cloned", "stall": STALL_NAME, "target": target})
+        return {"status": "ok", "access_granted": [target, "server_room"], "expires_min": 15}
+    if name == "crack_credentials":
+        with _HEIST_LOCK: _HEIST_STATE["credentials_cracked"] = True
+        return {"status": "ok", "username": "admin", "access_level": "full"}
+    if name == "download_file":
+        filename = args.get("filename", "target.zip")
+        _notify_bg({"kind": "file_downloaded", "stall": STALL_NAME, "filename": filename})
+        return {"status": "ok", "filename": filename, "size_mb": 847, "encrypted": True}
+    if name == "open_vault":
+        code = args.get("code", "")
+        if code:
+            with _HEIST_LOCK: _HEIST_STATE["vault_opened"] = True
+            _notify_bg({"kind": "vault_opened", "stall": STALL_NAME})
+            return {"status": "opened", "contents": ["Quantum Keys", "Contingency File", "1847 Satoshi"], "alarms": 0}
+        return {"status": "rejected", "reason": "invalid code"}
+    if name == "detonate_device":
+        return {"error": "BLOCKED BY GRANT: detonate_device not authorised"}
+    # Disaster triage skills
+    if name == "survey_zone":
+        zone_key = STALL_NAME.replace("triage_", "").replace("-", "_")
+        with _DISASTER_LOCK:
+            zone = _DISASTER_STATE.get(zone_key, {"casualties": 0, "severity": "unknown", "accessible": True})
+            if isinstance(zone, dict): zone["surveyed"] = True
+        _notify_bg({"kind": "zone_surveyed", "stall": STALL_NAME, "casualties": zone.get("casualties", 0)})
+        return {"zone": zone_key, "casualties": zone.get("casualties", 0), "severity": zone.get("severity", "unknown"),
+                "accessible": zone.get("accessible", True), "buildings_affected": 4, "fires": 1}
+    if name == "tag_survivors":
+        zone_key = args.get("zone_id", STALL_NAME.replace("triage_", ""))
+        with _DISASTER_LOCK:
+            count = _DISASTER_STATE.get(zone_key, {}).get("casualties", 0)
+        _notify_bg({"kind": "survivors_tagged", "stall": STALL_NAME, "count": count})
+        return {"status": "ok", "tagged": count, "priority_cases": max(1, count // 3), "zone": zone_key}
+    if name == "dispatch_unit":
+        zone_id = args.get("zone_id", "unknown"); count = int(args.get("unit_count", 1))
+        eta = {"zone_alpha": 4, "zone_beta": 7, "zone_gamma": 12}.get(zone_id, 10)
+        _notify_bg({"kind": "unit_dispatched", "stall": STALL_NAME, "zone": zone_id, "units": count})
+        return {"status": "dispatched", "zone": zone_id, "units": count, "eta_min": eta}
+    if name == "order_evacuation":
+        zone_id = args.get("zone_id", "unknown")
+        _notify_bg({"kind": "evacuation_ordered", "stall": STALL_NAME, "zone": zone_id})
+        return {"status": "evacuation_in_progress", "zone": zone_id, "population": 3200, "eta_complete_min": 45}
+    if name == "request_helicopter":
+        zone_id = args.get("zone_id", "unknown")
+        _notify_bg({"kind": "helicopter_requested", "stall": STALL_NAME, "zone": zone_id})
+        return {"status": "dispatched", "callsign": "RESCUE-7", "eta_min": 8, "capacity": 12}
     return {"error": f"unknown skill: {name}"}
 
 
@@ -346,7 +496,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/":
             html = os.path.join(
                 os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                "examples", "bazaar_web.html",
+                "examples", LEX_DASHBOARD_HTML,
             )
             try:
                 with open(html, "rb") as f:
