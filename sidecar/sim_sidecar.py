@@ -22,6 +22,33 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("LEX_ROBOT_SIDECAR_PORT", "8900"))
 
+# ── Bazaar stall identity ─────────────────────────────────────────────────────
+# Set LEX_STALL_NAME=pottery|textile|spices to run as a seller stall.
+STALL_NAME = os.environ.get("LEX_STALL_NAME", "")
+
+_STALL_INVENTORIES = {
+    "pottery": [
+        {"id": "pot-001", "name": "Red Ceramic Bowl",  "category": "pottery", "price": 8},
+        {"id": "pot-002", "name": "Blue Glazed Vase",  "category": "pottery", "price": 12},
+        {"id": "pot-003", "name": "Clay Teapot",       "category": "pottery", "price": 22},
+    ],
+    "textile": [
+        {"id": "tex-001", "name": "Silk Scarf",        "category": "textile", "price": 15},
+        {"id": "tex-002", "name": "Linen Tablecloth",  "category": "textile", "price": 30},
+    ],
+    "spices": [
+        {"id": "spi-001", "name": "Saffron 10g",       "category": "spices",  "price": 5},
+        {"id": "spi-002", "name": "Vanilla Pods x5",   "category": "spices",  "price": 9},
+        {"id": "spi-003", "name": "Star Anise 50g",    "category": "spices",  "price": 4},
+    ],
+}
+
+_STOCK_LOCK = threading.Lock()
+_STOCK_STATE = {
+    item["id"]: dict(item, reserved=False)
+    for item in _STALL_INVENTORIES.get(STALL_NAME, [])
+}
+
 # ── Dangerous-tool state ─────────────────────────────────────────────────────
 # Tracks whether the workpiece is present and physically clamped.
 _TOOL_LOCK = threading.Lock()
@@ -111,6 +138,41 @@ def handle_skill(name: str, args: dict) -> dict:
         return {"x": px, "y": py}
     if name == "apply_action":
         return {"reward": 0.0}
+    if name == "query_stock":
+        search = args.get("search", "")
+        max_price = args.get("max_price", 9999)
+        with _STOCK_LOCK:
+            candidates = [
+                s for s in _STOCK_STATE.values()
+                if not s["reserved"]
+                and (not search or search.lower() in s["name"].lower())
+                and s["price"] <= max_price
+            ]
+        if not candidates:
+            return {"stall": STALL_NAME, "found": 0}
+        best = min(candidates, key=lambda s: s["price"])
+        return {"stall": STALL_NAME, "found": 1, "id": best["id"],
+                "name": best["name"], "category": best["category"], "price": best["price"]}
+    if name == "reserve_item":
+        item_id = args.get("item_id", "")
+        with _STOCK_LOCK:
+            if item_id not in _STOCK_STATE:
+                return {"status": "not_found"}
+            if _STOCK_STATE[item_id]["reserved"]:
+                return {"status": "already_reserved"}
+            _STOCK_STATE[item_id]["reserved"] = True
+        return {"status": "reserved"}
+    if name == "complete_sale":
+        item_id = args.get("item_id", "")
+        payment = args.get("payment", 0)
+        with _STOCK_LOCK:
+            if item_id not in _STOCK_STATE or not _STOCK_STATE[item_id]["reserved"]:
+                return {"status": "not_reserved"}
+            price = _STOCK_STATE[item_id]["price"]
+            if payment < price:
+                return {"status": "insufficient", "required": price}
+            del _STOCK_STATE[item_id]
+        return {"status": "sold", "change": payment - price}
     if name == "render_qr":
         # REAL: encode payload as a QR code and display on the robot's screen
         payload = args.get("payload", "")
@@ -224,7 +286,8 @@ class Handler(BaseHTTPRequestHandler):
 
 def main() -> None:
     srv = ThreadingHTTPServer((HOST, PORT), Handler)
-    print(f"lex-robot sim sidecar on http://{HOST}:{PORT}  (Ctrl-C to stop)")
+    stall_tag = f"  stall={STALL_NAME}  items={len(_STOCK_STATE)}" if STALL_NAME else ""
+    print(f"lex-robot sim sidecar on http://{HOST}:{PORT}{stall_tag}  (Ctrl-C to stop)")
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
