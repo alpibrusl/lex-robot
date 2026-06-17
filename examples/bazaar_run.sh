@@ -9,7 +9,8 @@
 #   :8903  SPICE Garden       — sim sidecar (LEX_STALL_NAME=spices)
 #
 # Usage:
-#   bash examples/bazaar_run.sh          # start all 4 + run customer, then stop
+#   bash examples/bazaar_run.sh          # start all 4 + run customer; sidecars stay
+#                                        # alive until Ctrl-C so dashboard can be viewed
 #   bash examples/bazaar_run.sh sellers  # start all 4 in background (Ctrl-C stops)
 #   bash examples/bazaar_run.sh customer # run customer only (sidecars must be up)
 #   bash examples/bazaar_run.sh unit     # offline unit test (no network)
@@ -56,8 +57,10 @@ stop_sellers() {
 
 run_customer() {
   echo "── Running customer ──────────────────────────────────────────"
+  # Filter the trailing "null" that lex run prints for Unit-returning functions.
   lex run --allow-effects fs_write,io,net,sense,sql,time \
-      "$REPO_DIR/examples/bazaar_demo.lex" run
+      "$REPO_DIR/examples/bazaar_demo.lex" run \
+    | grep -v '^null$' || true
 }
 
 run_unit() {
@@ -84,6 +87,11 @@ case "$CMD" in
     start_sellers
     trap stop_sellers EXIT INT TERM
     run_customer
+    echo ""
+    echo "── Customer done ─────────────────────────────────────────────"
+    echo "   Dashboard still live at http://localhost:8900"
+    echo "   Ctrl-C to stop all sidecars."
+    wait
     ;;
   *)
     echo "Usage: $0 [sellers|customer|unit|all]"
