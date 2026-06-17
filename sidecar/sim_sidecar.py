@@ -12,11 +12,13 @@ Run:
     LEX_ROBOT_SIDECAR_PORT=9001 python3 ...   # override port
 """
 
+import base64 as _b64
 import json
 import math
 import os
 import random
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HOST = "127.0.0.1"
@@ -32,6 +34,87 @@ _TOOL_STATE = {"clamped": False}
 # read_bystander reads it without advancing (both see the same step per loop).
 _KO_LOCK = threading.Lock()
 _KO_STATE = {"step": 0}
+
+# ── QR bootstrap state ────────────────────────────────────────────────────────
+# Simulates a QR display + camera pair: render_qr stores the payload and
+# scan_qr returns it. A real implementation would drive an OLED/e-ink display
+# and call a QR-decode library on the camera feed.
+_QR_LOCK = threading.Lock()
+_QR_STATE = {"payload": ""}
+
+# ── A2A identity ──────────────────────────────────────────────────────────────
+# Fixed 32-byte seed for the sim keypair — deterministic so the pubkey_b64 is
+# stable across restarts (useful for CachedChannel tests in Lex).
+# In production, generate with os.urandom(32) and persist.
+_A2A_SEED = b"lex-robot-sim-key-00000000000000"  # exactly 32 bytes
+
+try:
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat as _PF
+
+    _A2A_PRIV = Ed25519PrivateKey.from_private_bytes(_A2A_SEED)
+    _A2A_PUB_B64 = _b64.urlsafe_b64encode(
+        _A2A_PRIV.public_key().public_bytes(Encoding.Raw, _PF.Raw)
+    ).rstrip(b"=").decode()
+    _A2A_OK = True
+except ImportError:
+    _A2A_PRIV = None
+    _A2A_PUB_B64 = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    _A2A_OK = False
+
+_A2A_PUBLIC_SKILLS = [
+    {"name": "move_to",     "description": "Move end-effector to xyz"},
+    {"name": "grasp",       "description": "Close gripper with force"},
+    {"name": "read_joints", "description": "Read joint states"},
+    {"name": "read_camera", "description": "Capture camera frame"},
+]
+_A2A_EXTENDED_SKILLS = _A2A_PUBLIC_SKILLS + [
+    {"name": "run_policy",     "description": "Run a named LeRobot policy"},
+    {"name": "record_episode", "description": "Record a LeRobot dataset episode"},
+    {"name": "reset_episode",  "description": "Reset episode state"},
+]
+
+
+def _skills_json(skills: list) -> str:
+    parts = [
+        f'{{"name":"{s["name"]}","description":"{s["description"]}"}}'
+        for s in skills
+    ]
+    return "[" + ",".join(parts) + "]"
+
+
+def _card_json(tier: str, skills: list, supports_extended: bool) -> str:
+    """Canonical card JSON matching a2a_card.lex card_to_json field order."""
+    endpoint = f"http://{HOST}:{PORT}"
+    sup = "true" if supports_extended else "false"
+    return (
+        f'{{"name":"sim-robot","endpoint":"{endpoint}",'
+        f'"pubkey_b64":"{_A2A_PUB_B64}","tier":"{tier}",'
+        f'"supports_extended":{sup},"skills":{_skills_json(skills)}}}'
+    )
+
+
+def _sign_card(card_json: str) -> str:
+    sig = _A2A_PRIV.sign(card_json.encode())
+    return _b64.urlsafe_b64encode(sig).rstrip(b"=").decode()
+
+
+def _card_response(tier: str, skills: list, supports_extended: bool) -> str:
+    """Wire format: <card_json>\n<sig_b64>  (as expected by a2a_handshake.lex)."""
+    cj = _card_json(tier, skills, supports_extended)
+    return cj + "\n" + _sign_card(cj)
+
+
+def _sim_bootstrap_blob() -> str:
+    """Build a base64url bootstrap blob for this sidecar (for CachedChannel tests)."""
+    endpoint = f"http://{HOST}:{PORT}"
+    nonce = f"sim-{random.randint(100000, 999999)}"
+    expires_at = int(time.time() * 1000) + 365 * 24 * 60 * 60 * 1000  # +1 year
+    blob_json = (
+        f'{{"endpoint":"{endpoint}","ephemeral_token":"sim-token",'
+        f'"peer_pubkey":"{_A2A_PUB_B64}","nonce":"{nonce}","expires_at":{expires_at}}}'
+    )
+    return _b64.urlsafe_b64encode(blob_json.encode()).rstrip(b"=").decode()
 
 
 def _bystander_xy(step: int) -> tuple:
@@ -97,6 +180,17 @@ def handle_skill(name: str, args: dict) -> dict:
         return {"x": px, "y": py}
     if name == "apply_action":
         return {"reward": 0.0}
+    if name == "render_qr":
+        # REAL: encode payload as a QR code and display on the robot's screen
+        payload = args.get("payload", "")
+        with _QR_LOCK:
+            _QR_STATE["payload"] = payload
+        return {"ok": "displayed", "payload": payload}
+    if name == "scan_qr":
+        # REAL: capture camera frame, decode QR code, return payload string
+        with _QR_LOCK:
+            payload = _QR_STATE["payload"]
+        return {"payload": payload}
     if name == "read_joints":
         # REAL: robot.read_joints()
         return {
@@ -131,21 +225,55 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_text(self, code: int, payload: str) -> None:
+        body = payload.encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_POST(self) -> None:
-        if not self.path.startswith("/skill/"):
-            return self._send(404, {"error": "not found"})
-        name = self.path[len("/skill/"):]
-        length = int(self.headers.get("Content-Length", "0") or "0")
-        raw = self.rfile.read(length) if length else b"{}"
-        try:
-            args = json.loads(raw or b"{}")
-        except json.JSONDecodeError:
-            return self._send(400, {"error": "invalid json"})
-        self._send(200, handle_skill(name, args))
+        if self.path.startswith("/skill/"):
+            name = self.path[len("/skill/"):]
+            length = int(self.headers.get("Content-Length", "0") or "0")
+            raw = self.rfile.read(length) if length else b"{}"
+            try:
+                args = json.loads(raw or b"{}")
+            except json.JSONDecodeError:
+                return self._send(400, {"error": "invalid json"})
+            return self._send(200, handle_skill(name, args))
+        if self.path == "/a2a/task":
+            length = int(self.headers.get("Content-Length", "0") or "0")
+            raw = self.rfile.read(length) if length else b"{}"
+            try:
+                body = json.loads(raw or b"{}")
+            except json.JSONDecodeError:
+                return self._send(400, {"error": "invalid json"})
+            rpc_id = body.get("id", "")
+            task = body.get("params", {}).get("task", {})
+            skill = task.get("skill", "")
+            args = task.get("args", {})
+            result = handle_skill(skill, args)
+            return self._send(200, {
+                "jsonrpc": "2.0", "id": rpc_id,
+                "result": {"kind": "artifact", "output": result},
+            })
+        return self._send(404, {"error": "not found"})
 
     def do_GET(self) -> None:
         if self.path == "/health":
             return self._send(200, {"ok": True})
+        if self.path == "/a2a/public-card":
+            if not _A2A_OK:
+                return self._send(503, {"error": "pip install cryptography to enable A2A"})
+            return self._send_text(200, _card_response("public", _A2A_PUBLIC_SKILLS, True))
+        if self.path == "/a2a/extended-card":
+            if not _A2A_OK:
+                return self._send(503, {"error": "pip install cryptography to enable A2A"})
+            if not self.headers.get("Authorization", "").startswith("Bearer "):
+                return self._send(401, {"error": "missing bearer token"})
+            return self._send_text(200, _card_response("extended", _A2A_EXTENDED_SKILLS, True))
         return self._send(404, {"error": "not found"})
 
     def log_message(self, *args) -> None:  # quieter logs
@@ -153,6 +281,13 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
+    if not _A2A_OK:
+        print("[sidecar] WARNING: 'cryptography' not installed — /a2a/* endpoints disabled")
+        print("[sidecar]          pip install cryptography  to enable A2A handshake sim")
+    else:
+        with _QR_LOCK:
+            _QR_STATE["payload"] = _sim_bootstrap_blob()
+        print(f"[sidecar] A2A pubkey_b64: {_A2A_PUB_B64}")
     srv = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"lex-robot sim sidecar on http://{HOST}:{PORT}  (Ctrl-C to stop)")
     try:

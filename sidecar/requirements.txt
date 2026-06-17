@@ -9,7 +9,9 @@ numpy
 # run_policy only — pretrained LeRobot policies. Heavier; pulls torch.
 # lerobot
 
-# sim_sidecar.py needs nothing (Python standard library only).
+# sim_sidecar.py — core is Python standard library only.
+# For A2A handshake sim (/a2a/public-card, /a2a/extended-card, /a2a/task):
+cryptography
 
 # depot_mujoco_sidecar.py (Tier-2 MuJoCo depot scene)
 mujoco
