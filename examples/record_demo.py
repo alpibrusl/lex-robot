@@ -38,42 +38,43 @@ DEMOS_CFG = {
         "html":    "bazaar_web.html",
         "script":  "bazaar_demo.lex",
         "stalls": [(8900, ""), (8901, "pottery"), (8902, "textile"), (8903, "spices")],
-        "wait_s":  15,
+        "record_s": 40,   # covers demo run (~20 s) + post-completion view
     },
     "bazaar_rush": {
         "html":    "bazaar_web.html",
         "script":  "bazaar_rush.lex",
         "stalls": [(8900, ""), (8901, "pottery"), (8902, "textile"), (8903, "spices"),
                    (8904, "clay"), (8905, "fabric"), (8906, "herb")],
-        "wait_s":  20,
+        "record_s": 55,
     },
     "heist": {
         "html":    "heist_web.html",
         "script":  "heist_demo.lex",
         "stalls": [(8900, ""), (8901, "heist_lobby"), (8902, "heist_security"),
                    (8903, "heist_server"), (8904, "heist_vault")],
-        "wait_s":  15,
+        "record_s": 70,   # clipped to 65 s in GIF (vault ask_human timeout)
+        "clip_s":   65,
     },
     "station": {
         "html":    "station_web.html",
         "script":  "station_demo.lex",
         "stalls": [(8900, ""), (8901, "station_life_support"), (8902, "station_navigation"),
                    (8903, "station_comms"), (8904, "station_cargo")],
-        "wait_s":  15,
+        "record_s": 35,
     },
     "trading": {
         "html":    "trading_web.html",
         "script":  "trading_demo.lex",
         "stalls": [(8900, ""), (8901, "trading_quantum"),
                    (8902, "trading_solar"), (8903, "trading_water")],
-        "wait_s":  15,
+        "record_s": 40,
     },
     "triage": {
         "html":    "triage_web.html",
         "script":  "triage_demo.lex",
         "stalls": [(8900, ""), (8901, "triage_zone_alpha"), (8902, "triage_zone_beta"),
                    (8903, "triage_zone_gamma"), (8904, "triage_hospital_hq")],
-        "wait_s":  15,
+        "record_s": 35,
     },
 }
 
@@ -98,19 +99,20 @@ def kill_ports(*ports):
         )
 
 
-def webm_to_gif(webm: Path, gif: Path, fps: int = 3, width: int = 640,
+def webm_to_gif(webm: Path, gif: Path, fps: int = 5, width: int = 720,
                 clip_to: float | None = None):
     """Convert WebM to palette-optimised GIF. clip_to trims to N seconds."""
     palette = gif.with_suffix(".palette.png")
-    trim = ["-to", str(clip_to)] if clip_to else []
+    # -t before -i = input duration limit (reliable across ffmpeg versions)
+    trim = ["-t", str(clip_to)] if clip_to else []
     vf_gen = f"fps={fps},scale={width}:-1:flags=lanczos,palettegen=stats_mode=diff"
     vf_use = f"fps={fps},scale={width}:-1:flags=lanczos[x];[x][1:v]paletteuse=dither=bayer"
     subprocess.run(
-        ["ffmpeg", "-y", "-i", str(webm)] + trim + ["-vf", vf_gen, str(palette)],
+        ["ffmpeg", "-y"] + trim + ["-i", str(webm), "-vf", vf_gen, str(palette)],
         check=True, capture_output=True,
     )
     subprocess.run(
-        ["ffmpeg", "-y", "-i", str(webm)] + trim + ["-i", str(palette),
+        ["ffmpeg", "-y"] + trim + ["-i", str(webm), "-i", str(palette),
          "-filter_complex", vf_use, "-loop", "0", str(gif)],
         check=True, capture_output=True,
     )
@@ -167,7 +169,7 @@ def record_demo(name: str, cfg: dict, base_env: dict):
             )
             page = ctx.new_page()
             page.goto("http://localhost:8900")
-            time.sleep(2)  # let SSE connect and initial state render
+            time.sleep(1)  # let SSE connect
 
             print(f"  Dashboard open — running {cfg['script']} …")
             demo = subprocess.Popen(
@@ -176,9 +178,14 @@ def record_demo(name: str, cfg: dict, base_env: dict):
                  str(REPO / "examples" / cfg["script"]), "run"],
                 env=base_env,
             )
-            demo.wait()
-            print(f"  Demo finished — waiting {cfg['wait_s']}s for dashboard …")
-            time.sleep(cfg["wait_s"])
+            # Record for record_s from demo start (overlaps with demo running)
+            time.sleep(cfg["record_s"])
+            try:
+                demo.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                demo.terminate()
+                demo.wait()
+            print(f"  Recording window ({cfg['record_s']}s) done.")
 
             page.close()
             ctx.close()
@@ -194,8 +201,7 @@ def record_demo(name: str, cfg: dict, base_env: dict):
         print(f"  WebM → {webm_out}  ({size_mb:.1f} MB)")
 
         print("  Converting to GIF …")
-        # Heist has 2×60 s human-escalation timeouts — clip to first 65 s
-        clip = 65.0 if name == "heist" else None
+        clip = cfg.get("clip_s")
         webm_to_gif(webm_out, gif_out, clip_to=clip)
 
     finally:

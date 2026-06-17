@@ -117,6 +117,7 @@ fn shop_customer(name :: Str, goal :: Str, stalls :: List[baz.StallInfo], policy
       None => {
         let _uiv := post_ui(dash, str.join(["{\"kind\":\"visit\",\"customer\":\"", name, "\",\"stall\":\"", stall.name, "\"}"], ""))
         let _vi := io.print(str.join(["  [", name, "] → ", stall.name], ""))
+        let _slv := time.sleep_ms(1500)
         match bll.shop_with_llm(stall, goal, policy, log, state.parent, state.used, now, provider, model, dash, name, ask_human_enabled) {
           (tx, p2, used2) => {
             let _uir := post_ui(dash, str.join(["{\"kind\":\"result\",\"customer\":\"", name, "\",\"stall\":\"", stall.name, "\",\"tx\":\"", tx_ui_str(tx), "\"}"], ""))

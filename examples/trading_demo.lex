@@ -377,6 +377,7 @@ fn run() -> [net, io, sql, fs_write, sense, time, env, llm, proc] Unit {
                         let market_state := list.fold(markets, tstate, fn (mstate :: TraderState, market :: baz.StallInfo) -> [net, sql, time, llm, io, proc] TraderState {
                           let _uiv := post_ui(dash, str.join(["{\"kind\":\"visit\",\"trader\":\"", trader, "\",\"market\":\"", market.name, "\"}"], ""))
                           let _vi := io.print(str.join(["  [", trader, "] → ", market.name], ""))
+                          let _slv := time.sleep_ms(1500)
                           match run_trader(trader, market, budget, policy, log, mstate.parent, mstate.used, now, provider, model, dash) {
                             (res, p2, used2) => {
                               let _sl := time.sleep_ms(1000)

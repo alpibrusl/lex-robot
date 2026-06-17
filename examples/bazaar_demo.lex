@@ -229,6 +229,7 @@ fn run() -> [net, io, sql, fs_write, sense, time, env, llm, proc] Unit {
                           None => {
                             let __uiv := post_ui(dash, str.join(["{\"kind\":\"visit\",\"stall\":\"", stall.name, "\"}"], ""))
                             let __vi := io.print(str.join(["→ [", stall.name, "] LLM agent handshaking + shopping for \"", search, "\" ≤ ", int.to_str(budget), " credits ..."], ""))
+                            let __slv := time.sleep_ms(2500)
                             let __goal := str.join(["Find and buy \"", search, "\" for at most ", int.to_str(budget), " credits"], "")
                             match bll.shop_with_llm(stall, __goal, policy, log, state.parent, state.used, now, vtx_provider, vtx_model, dash, "", false) {
                               (tx, p2, used2) => {
