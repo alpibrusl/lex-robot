@@ -19,19 +19,20 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-SIDECAR="$REPO_DIR/sidecar/sim_sidecar.py"
+SIDECAR="$REPO_DIR/sidecar/sim_sidecar.lex"
+LEX_RUN="lex run --allow-effects concurrent,crypto,env,fs_read,fs_write,io,llm,net,proc,random,sql,time --allow-proc sh"
 
 start_modules() {
   echo "── Starting 5 sidecars ──────────────────────────────────────"
-  LEX_ROBOT_SIDECAR_PORT=8900 LEX_DASHBOARD_HTML=station_web.html  python3 "$SIDECAR" &
+  LEX_ROBOT_REPO_ROOT="$REPO_DIR" LEX_ROBOT_SIDECAR_PORT=8900 LEX_DASHBOARD_HTML=station_web.html $LEX_RUN "$SIDECAR" run &
   PID_DASH=$!
-  LEX_STALL_NAME=station_life_support   LEX_ROBOT_SIDECAR_PORT=8901 python3 "$SIDECAR" &
+  LEX_ROBOT_REPO_ROOT="$REPO_DIR" LEX_STALL_NAME=station_life_support   LEX_ROBOT_SIDECAR_PORT=8901 $LEX_RUN "$SIDECAR" run &
   PID_LIFE=$!
-  LEX_STALL_NAME=station_navigation     LEX_ROBOT_SIDECAR_PORT=8902 python3 "$SIDECAR" &
+  LEX_ROBOT_REPO_ROOT="$REPO_DIR" LEX_STALL_NAME=station_navigation     LEX_ROBOT_SIDECAR_PORT=8902 $LEX_RUN "$SIDECAR" run &
   PID_NAV=$!
-  LEX_STALL_NAME=station_comms          LEX_ROBOT_SIDECAR_PORT=8903 python3 "$SIDECAR" &
+  LEX_ROBOT_REPO_ROOT="$REPO_DIR" LEX_STALL_NAME=station_comms          LEX_ROBOT_SIDECAR_PORT=8903 $LEX_RUN "$SIDECAR" run &
   PID_COMMS=$!
-  LEX_STALL_NAME=station_cargo          LEX_ROBOT_SIDECAR_PORT=8904 python3 "$SIDECAR" &
+  LEX_ROBOT_REPO_ROOT="$REPO_DIR" LEX_STALL_NAME=station_cargo          LEX_ROBOT_SIDECAR_PORT=8904 $LEX_RUN "$SIDECAR" run &
   PID_CARGO=$!
 
   for port in 8900 8901 8902 8903 8904; do

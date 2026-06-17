@@ -2,6 +2,9 @@
 target/
 *.tsbuildinfo
 
+# CLI config (per-machine)
+.cli/
+
 # Python sidecar
 __pycache__/
 *.pyc

@@ -19,19 +19,20 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-SIDECAR="$REPO_DIR/sidecar/sim_sidecar.py"
+SIDECAR="$REPO_DIR/sidecar/sim_sidecar.lex"
+LEX_RUN="lex run --allow-effects concurrent,crypto,env,fs_read,fs_write,io,llm,net,proc,random,sql,time --allow-proc sh"
 
 start_sidecars() {
   echo "── Starting 5 sidecars ──────────────────────────────────────"
-  LEX_DASHBOARD_HTML=triage_web.html  LEX_ROBOT_SIDECAR_PORT=8900               python3 "$SIDECAR" &
+  LEX_ROBOT_REPO_ROOT="$REPO_DIR" LEX_DASHBOARD_HTML=triage_web.html  LEX_ROBOT_SIDECAR_PORT=8900 $LEX_RUN "$SIDECAR" run &
   PID_DASH=$!
-  LEX_STALL_NAME=triage_zone_alpha    LEX_ROBOT_SIDECAR_PORT=8901               python3 "$SIDECAR" &
+  LEX_ROBOT_REPO_ROOT="$REPO_DIR" LEX_STALL_NAME=triage_zone_alpha    LEX_ROBOT_SIDECAR_PORT=8901 $LEX_RUN "$SIDECAR" run &
   PID_ALPHA=$!
-  LEX_STALL_NAME=triage_zone_beta     LEX_ROBOT_SIDECAR_PORT=8902               python3 "$SIDECAR" &
+  LEX_ROBOT_REPO_ROOT="$REPO_DIR" LEX_STALL_NAME=triage_zone_beta     LEX_ROBOT_SIDECAR_PORT=8902 $LEX_RUN "$SIDECAR" run &
   PID_BETA=$!
-  LEX_STALL_NAME=triage_zone_gamma    LEX_ROBOT_SIDECAR_PORT=8903               python3 "$SIDECAR" &
+  LEX_ROBOT_REPO_ROOT="$REPO_DIR" LEX_STALL_NAME=triage_zone_gamma    LEX_ROBOT_SIDECAR_PORT=8903 $LEX_RUN "$SIDECAR" run &
   PID_GAMMA=$!
-  LEX_STALL_NAME=triage_hospital_hq   LEX_ROBOT_SIDECAR_PORT=8904               python3 "$SIDECAR" &
+  LEX_ROBOT_REPO_ROOT="$REPO_DIR" LEX_STALL_NAME=triage_hospital_hq   LEX_ROBOT_SIDECAR_PORT=8904 $LEX_RUN "$SIDECAR" run &
   PID_HQ=$!
 
   for port in 8900 8901 8902 8903 8904; do

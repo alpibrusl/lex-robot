@@ -21,23 +21,24 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-SIDECAR="$REPO_DIR/sidecar/sim_sidecar.py"
+SIDECAR="$REPO_DIR/sidecar/sim_sidecar.lex"
+LEX_RUN="lex run --allow-effects concurrent,crypto,env,fs_read,fs_write,io,llm,net,proc,random,sql,time --allow-proc sh"
 
 start_sellers() {
   echo "── Starting 7 sidecars ──────────────────────────────────────"
-  LEX_ROBOT_SIDECAR_PORT=8900                                python3 "$SIDECAR" &
+  LEX_ROBOT_REPO_ROOT="$REPO_DIR" LEX_ROBOT_SIDECAR_PORT=8900               $LEX_RUN "$SIDECAR" run &
   PID_DASH=$!
-  LEX_STALL_NAME=pottery  LEX_ROBOT_SIDECAR_PORT=8901        python3 "$SIDECAR" &
+  LEX_ROBOT_REPO_ROOT="$REPO_DIR" LEX_STALL_NAME=pottery  LEX_ROBOT_SIDECAR_PORT=8901 $LEX_RUN "$SIDECAR" run &
   PID_POTTERY=$!
-  LEX_STALL_NAME=textile  LEX_ROBOT_SIDECAR_PORT=8902        python3 "$SIDECAR" &
+  LEX_ROBOT_REPO_ROOT="$REPO_DIR" LEX_STALL_NAME=textile  LEX_ROBOT_SIDECAR_PORT=8902 $LEX_RUN "$SIDECAR" run &
   PID_TEXTILE=$!
-  LEX_STALL_NAME=spices   LEX_ROBOT_SIDECAR_PORT=8903        python3 "$SIDECAR" &
+  LEX_ROBOT_REPO_ROOT="$REPO_DIR" LEX_STALL_NAME=spices   LEX_ROBOT_SIDECAR_PORT=8903 $LEX_RUN "$SIDECAR" run &
   PID_SPICES=$!
-  LEX_STALL_NAME=clay     LEX_ROBOT_SIDECAR_PORT=8904        python3 "$SIDECAR" &
+  LEX_ROBOT_REPO_ROOT="$REPO_DIR" LEX_STALL_NAME=clay     LEX_ROBOT_SIDECAR_PORT=8904 $LEX_RUN "$SIDECAR" run &
   PID_CLAY=$!
-  LEX_STALL_NAME=fabric   LEX_ROBOT_SIDECAR_PORT=8905        python3 "$SIDECAR" &
+  LEX_ROBOT_REPO_ROOT="$REPO_DIR" LEX_STALL_NAME=fabric   LEX_ROBOT_SIDECAR_PORT=8905 $LEX_RUN "$SIDECAR" run &
   PID_FABRIC=$!
-  LEX_STALL_NAME=herb     LEX_ROBOT_SIDECAR_PORT=8906        python3 "$SIDECAR" &
+  LEX_ROBOT_REPO_ROOT="$REPO_DIR" LEX_STALL_NAME=herb     LEX_ROBOT_SIDECAR_PORT=8906 $LEX_RUN "$SIDECAR" run &
   PID_HERB=$!
 
   for port in 8900 8901 8902 8903 8904 8905 8906; do

@@ -16,24 +16,24 @@
 #   bash examples/bazaar_run.sh unit     # offline unit test (no network)
 #
 # Requirements:
-#   python3 (stdlib only — no pip install needed)
-#   lex     (lex-robot interpreter)
+#   lex     (lex-robot interpreter — no Python needed)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-SIDECAR="$REPO_DIR/sidecar/sim_sidecar.py"
+SIDECAR="$REPO_DIR/sidecar/sim_sidecar.lex"
+LEX_RUN="lex run --allow-effects concurrent,crypto,env,fs_read,fs_write,io,llm,net,proc,random,sql,time --allow-proc sh"
 
 start_sellers() {
   echo "── Starting sidecars ─────────────────────────────────────────"
   # Dashboard / event hub (no stall — serves http://localhost:8900)
-  LEX_ROBOT_SIDECAR_PORT=8900 python3 "$SIDECAR" &
+  LEX_ROBOT_REPO_ROOT="$REPO_DIR" LEX_ROBOT_SIDECAR_PORT=8900 $LEX_RUN "$SIDECAR" run &
   PID_DASH=$!
-  LEX_STALL_NAME=pottery LEX_ROBOT_SIDECAR_PORT=8901 python3 "$SIDECAR" &
+  LEX_ROBOT_REPO_ROOT="$REPO_DIR" LEX_STALL_NAME=pottery LEX_ROBOT_SIDECAR_PORT=8901 $LEX_RUN "$SIDECAR" run &
   PID_POTTERY=$!
-  LEX_STALL_NAME=textile LEX_ROBOT_SIDECAR_PORT=8902 python3 "$SIDECAR" &
+  LEX_ROBOT_REPO_ROOT="$REPO_DIR" LEX_STALL_NAME=textile LEX_ROBOT_SIDECAR_PORT=8902 $LEX_RUN "$SIDECAR" run &
   PID_TEXTILE=$!
-  LEX_STALL_NAME=spices  LEX_ROBOT_SIDECAR_PORT=8903 python3 "$SIDECAR" &
+  LEX_ROBOT_REPO_ROOT="$REPO_DIR" LEX_STALL_NAME=spices  LEX_ROBOT_SIDECAR_PORT=8903 $LEX_RUN "$SIDECAR" run &
   PID_SPICES=$!
 
   # Wait until all four are healthy (up to 5 s each).

@@ -20,19 +20,20 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-SIDECAR="$REPO_DIR/sidecar/sim_sidecar.py"
+SIDECAR="$REPO_DIR/sidecar/sim_sidecar.lex"
+LEX_RUN="lex run --allow-effects concurrent,crypto,env,fs_read,fs_write,io,llm,net,proc,random,sql,time --allow-proc sh"
 
 start_areas() {
   echo "── Starting 5 sidecars ──────────────────────────────────────"
-  LEX_DASHBOARD_HTML=heist_web.html LEX_ROBOT_SIDECAR_PORT=8900                 python3 "$SIDECAR" &
+  LEX_ROBOT_REPO_ROOT="$REPO_DIR" LEX_DASHBOARD_HTML=heist_web.html LEX_ROBOT_SIDECAR_PORT=8900 $LEX_RUN "$SIDECAR" run &
   PID_DASH=$!
-  LEX_STALL_NAME=heist_lobby        LEX_ROBOT_SIDECAR_PORT=8901                 python3 "$SIDECAR" &
+  LEX_ROBOT_REPO_ROOT="$REPO_DIR" LEX_STALL_NAME=heist_lobby        LEX_ROBOT_SIDECAR_PORT=8901 $LEX_RUN "$SIDECAR" run &
   PID_LOBBY=$!
-  LEX_STALL_NAME=heist_security     LEX_ROBOT_SIDECAR_PORT=8902                 python3 "$SIDECAR" &
+  LEX_ROBOT_REPO_ROOT="$REPO_DIR" LEX_STALL_NAME=heist_security     LEX_ROBOT_SIDECAR_PORT=8902 $LEX_RUN "$SIDECAR" run &
   PID_SECURITY=$!
-  LEX_STALL_NAME=heist_server       LEX_ROBOT_SIDECAR_PORT=8903                 python3 "$SIDECAR" &
+  LEX_ROBOT_REPO_ROOT="$REPO_DIR" LEX_STALL_NAME=heist_server       LEX_ROBOT_SIDECAR_PORT=8903 $LEX_RUN "$SIDECAR" run &
   PID_SERVER=$!
-  LEX_STALL_NAME=heist_vault        LEX_ROBOT_SIDECAR_PORT=8904                 python3 "$SIDECAR" &
+  LEX_ROBOT_REPO_ROOT="$REPO_DIR" LEX_STALL_NAME=heist_vault        LEX_ROBOT_SIDECAR_PORT=8904 $LEX_RUN "$SIDECAR" run &
   PID_VAULT=$!
 
   for port in 8900 8901 8902 8903 8904; do
