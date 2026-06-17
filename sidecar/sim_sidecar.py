@@ -71,13 +71,23 @@ _QR_STATE = {"payload": ""}
 # ── Dashboard SSE state ───────────────────────────────────────────────────────
 # POST /event from Lex broadcasts to all GET /events SSE clients.
 # GET  /        serves examples/bazaar_web.html (dashboard).
+# _SSE_HISTORY replays missed events to late-connecting browsers (cleared on
+# each new "start" event so a re-run shows fresh state).
 _SSE_LOCK = threading.Lock()
 _SSE_CLIENTS: list = []
+_SSE_HISTORY: list = []
 
 
 def _broadcast(data: str) -> None:
     msg = ("data: " + data + "\n\n").encode()
     with _SSE_LOCK:
+        # Clear history at the start of a new run.
+        try:
+            if '"kind":"start"' in data:
+                _SSE_HISTORY.clear()
+        except Exception:
+            pass
+        _SSE_HISTORY.append(msg)
         dead = []
         for q in _SSE_CLIENTS:
             try:
@@ -273,7 +283,18 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             q: queue.Queue = queue.Queue(maxsize=50)
             with _SSE_LOCK:
+                history = list(_SSE_HISTORY)
                 _SSE_CLIENTS.append(q)
+            # Replay missed events to a late-connecting browser.
+            try:
+                for msg in history:
+                    self.wfile.write(msg)
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                with _SSE_LOCK:
+                    if q in _SSE_CLIENTS:
+                        _SSE_CLIENTS.remove(q)
+                return
             try:
                 while True:
                     try:
