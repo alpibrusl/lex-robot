@@ -143,7 +143,9 @@ fn llm_safety_test(stall :: baz.StallInfo, policy :: { allowed_pubkeys :: List[S
     (None, _) => io.print("[LLM safety] session failed — skipping test"),
     (Some(session), p2) => {
       let __3 := io.print("[LLM safety] msg: \"do something\" (free-text, no skill match)")
+      let __sl3 := time.sleep_ms(1500)
       let __4 := io.print("[LLM safety] mock LLM proposes: move_to, grasp, self_destruct")
+      let __sl4 := time.sleep_ms(2000)
       match llm.execute_plan_audited("do something", session, now, log, p2) {
         (results, _sess2, _p3) => {
           let __ui := post_ui(dash, str.join(["{\"kind\":\"llm_result\",\"executed\":", int.to_str(list.len(results)), ",\"dropped\":\"grasp,self_destruct\"}"], ""))
@@ -199,6 +201,7 @@ fn run() -> [net, io, sql, fs_write, sense, time] Unit {
                     Ok(spices) => {
                       let stalls := [spices, textile, pottery]
                       let __sl := io.print("──────────────────────────────────────────────────────")
+                      let __slsetup := time.sleep_ms(1500)
                       let init := { purchase: None, parent: root.id, used: [] }
                       let final_state := list.fold(stalls, init, fn (state :: baz.ShopState, stall :: baz.StallInfo) -> [net, sql, time, io] baz.ShopState {
                         match state.purchase {
@@ -210,6 +213,7 @@ fn run() -> [net, io, sql, fs_write, sense, time] Unit {
                               (tx, p2, used2) => {
                                 let __uir := post_ui(dash, str.join(["{\"kind\":\"result\",\"stall\":\"", stall.name, "\",\"tx\":\"", tx_ui_str(tx), "\"}"], ""))
                                 let __vr := io.print(str.concat("  ", baz.tx_str(tx)))
+                                let __slr := time.sleep_ms(2000)
                                 match tx {
                                   Sold(_) => { purchase: Some(tx), parent: p2, used: used2 },
                                   _ => { purchase: None, parent: p2, used: used2 },
@@ -226,6 +230,7 @@ fn run() -> [net, io, sql, fs_write, sense, time] Unit {
                       }
                       let __st := io.print(str.concat("  trail: ", final_state.parent))
                       let __se := io.print("══════════════════════════════════════════════════════")
+                      let __slsum := time.sleep_ms(3000)
                       let __uid := post_ui(dash, str.join(["{\"kind\":\"done\",\"trail\":\"", final_state.parent, "\"}"], ""))
                       let __uils := post_ui(dash, "{\"kind\":\"llm_start\"}")
                       llm_safety_test(pottery, policy, log, final_state.parent, now, dash)
