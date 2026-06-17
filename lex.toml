@@ -8,4 +8,6 @@ description = "Effect-typed, capability-bounded control layer over LeRobot (desi
 # src/ (types/grant/client/skills) is std-only. src/task.lex adds lex-trail for
 # a hash-chained audit of each Perceive/Plan/Execute/Verify step.
 [dependencies]
-lex-trail = { git = "https://github.com/alpibrusl/lex-trail" }
+lex-trail  = { git = "https://github.com/alpibrusl/lex-trail" }
+lex-llm    = { git = "https://github.com/alpibrusl/lex-llm" }
+lex-schema = { git = "https://github.com/alpibrusl/lex-schema" }

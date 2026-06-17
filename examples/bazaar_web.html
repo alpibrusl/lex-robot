@@ -3,271 +3,779 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Robot Bazaar — A2A Demo</title>
+<title>Robot Bazaar</title>
 <style>
-* { box-sizing: border-box; margin: 0; padding: 0; }
-body { background: #0f0f1a; color: #e2e8f0; font-family: 'Courier New', monospace; min-height: 100vh; }
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-header {
-  padding: 12px 24px; background: #12122a; border-bottom: 1px solid #3730a3;
-  display: flex; align-items: center; gap: 16px;
+:root {
+  --bg:     #0d1117;
+  --bg2:    #161b22;
+  --bg3:    #1c2128;
+  --border: #30363d;
+  --text:   #e6edf3;
+  --muted:  #8b949e;
+  --purple: #a78bfa;
+  --green:  #4ade80;
+  --amber:  #fbbf24;
+  --red:    #f87171;
+  --blue:   #60a5fa;
 }
-header h1 { font-size: 1rem; color: #818cf8; letter-spacing: 0.06em; }
-#meta { color: #64748b; font-size: 0.8rem; }
-#meta span { color: #94a3b8; }
-#conn { margin-left: auto; display: flex; align-items: center; gap: 6px; font-size: 0.75rem; color: #4b5563; }
-#dot { width: 8px; height: 8px; border-radius: 50%; background: #374151; }
-#dot.live  { background: #4ade80; box-shadow: 0 0 6px #4ade80; }
-#dot.run   { background: #f59e0b; box-shadow: 0 0 6px #f59e0b; animation: blink 1s infinite; }
-@keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
 
-main { padding: 18px; display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-@media (max-width: 800px) { main { grid-template-columns: 1fr; } }
+html, body { height: 100%; overflow: hidden; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 12px;
+  line-height: 1.4;
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+}
 
-.card { background: #1a1a30; border: 1px solid #2e2e5a; border-radius: 8px; padding: 14px; }
-.card h2 { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.1em; color: #6366f1; margin-bottom: 10px; }
-.full { grid-column: 1 / -1; }
+/* ── Header ─────────────────────────────────────────────────── */
+header {
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  padding: 0 16px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-shrink: 0;
+  height: 40px;
+}
+header h1 { font-size: 13px; color: var(--purple); letter-spacing: .1em; font-weight: bold; white-space: nowrap; }
+#h-meta   { color: var(--muted); font-size: 11px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#h-conn   { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); white-space: nowrap; }
+#h-dot    { width: 8px; height: 8px; border-radius: 50%; background: #374151; flex-shrink: 0; }
+#h-dot.live { background: var(--green); box-shadow: 0 0 8px var(--green); }
+#h-dot.run  { background: var(--amber); box-shadow: 0 0 8px var(--amber); animation: blink 1s infinite; }
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:.25} }
 
-/* ── Map ── */
-#map-svg { width: 100%; height: 150px; display: block; }
-.s-box { fill: #12122a; stroke: #3b4fd8; stroke-width: 1.5; }
-.s-box.active { stroke: #818cf8; stroke-width: 2.5; filter: drop-shadow(0 0 7px #818cf8); }
-.s-box.sold   { stroke: #4ade80; fill: #0b2010; }
-.s-box.empty  { stroke: #374151; }
-.s-lbl  { fill: #94a3b8; font: 10px 'Courier New',monospace; text-anchor: middle; dominant-baseline: middle; }
-.s-lbl.hi { fill: #c7d2fe; }
-.s-lbl.sold { fill: #4ade80; }
-.s-lbl.empty { fill: #4b5563; }
-.dash-line { stroke: #2e2e5a; stroke-width: 1; stroke-dasharray: 4,4; }
-#robot { fill: #f59e0b; filter: drop-shadow(0 0 7px #f59e0b); transition: cx .9s ease, cy .9s ease; }
-#robot-lbl { fill: #f59e0b; font: 9px 'Courier New',monospace; text-anchor: middle; transition: x .9s ease; }
+/* ── Controls ───────────────────────────────────────────────── */
+#controls {
+  flex-shrink: 0;
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+}
+.ctrl-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 14px;
+  height: 38px;
+  border-bottom: 1px solid var(--border);
+}
+.ctrl-row:last-child { border-bottom: none; height: 32px; }
+.ctrl-lbl { font-size: 9px; color: var(--muted); white-space: nowrap; letter-spacing: .08em; }
+.ctrl-sep { width: 1px; height: 18px; background: var(--border); flex-shrink: 0; }
+input.ctrl-in {
+  background: var(--bg3); border: 1px solid var(--border); color: var(--text);
+  font-family: 'Courier New', monospace; font-size: 11px; padding: 3px 7px;
+  border-radius: 4px; outline: none; flex-shrink: 0;
+}
+input.ctrl-in:focus { border-color: var(--purple); }
+#in-name  { width: 82px; }
+#in-goal  { flex: 1; min-width: 120px; }
+.toggle-wrap { display: flex; align-items: center; gap: 5px; cursor: pointer; user-select: none; white-space: nowrap; }
+.toggle-wrap input[type=checkbox] { accent-color: var(--purple); cursor: pointer; }
+.toggle-wrap .tl { font-size: 10px; color: var(--muted); }
+.toggle-wrap:hover .tl { color: var(--text); }
+.btn {
+  background: var(--bg3); border: 1px solid var(--border); color: var(--text);
+  font-family: 'Courier New', monospace; font-size: 11px; padding: 3px 10px;
+  border-radius: 4px; cursor: pointer; white-space: nowrap; transition: border-color .15s, color .15s; flex-shrink: 0;
+}
+.btn:hover { border-color: var(--purple); color: var(--purple); }
+.btn-reset { color: var(--muted); }
+.btn-reset:hover { border-color: var(--red); color: var(--red); }
+#ctrl-status { font-size: 10px; color: var(--muted); margin-left: auto; flex-shrink: 0; }
+/* Sellers row */
+.seller-check { display: flex; align-items: center; gap: 3px; cursor: pointer; user-select: none; }
+.seller-check input { accent-color: var(--blue); cursor: pointer; }
+.seller-check span { font-size: 9px; color: var(--muted); }
+.seller-check:hover span { color: var(--text); }
 
-/* ── Stall cards ── */
-#stall-row { display: flex; gap: 10px; }
-.sc { flex: 1; background: #0f0f22; border: 1px solid #2e2e5a; border-radius: 6px; padding: 10px; }
-.sc h3 { font-size: 0.7rem; color: #6366f1; margin-bottom: 6px; }
-.sc-status { font-size: 0.78rem; }
-.sc-status.wait { color: #4b5563; }
-.sc-status.busy { color: #f59e0b; }
-.sc-status.sold { color: #4ade80; }
-.sc-status.miss { color: #6b7280; }
-.sc-item { font-size: 0.7rem; color: #64748b; margin-top: 4px; }
+/* ── Phaser game ──────────────────────────────────────────── */
+#game-container {
+  flex-shrink: 0; height: 240px; overflow: hidden;
+  background: var(--bg); border-bottom: 1px solid var(--border);
+}
+#game-container canvas { display: block; }
 
-/* ── LLM safety ── */
-#llm-row { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
-.badge { padding: 3px 9px; border-radius: 4px; font-size: 0.72rem; }
-.badge.pend { background: #1e293b; color: #64748b; border: 1px solid #374151; }
-.badge.ok   { background: #052e16; color: #4ade80; border: 1px solid #16a34a; }
-.badge.drop { background: #2d0808; color: #ef4444; border: 1px solid #b91c1c; text-decoration: line-through; }
-#llm-verdict { font-size: 0.75rem; color: #64748b; margin-top: 6px; }
+/* ── Middle ───────────────────────────────────────────────── */
+#middle {
+  flex: 1; min-height: 0; display: grid;
+  grid-template-columns: 272px 1fr; background: var(--border); gap: 1px; overflow: hidden;
+}
 
-/* ── Trail ── */
-#trail-hash { font-size: 0.68rem; color: #374151; word-break: break-all; margin-top: 4px; }
+/* ── Left column ──────────────────────────────────────────── */
+#left-col {
+  display: flex; flex-direction: column; gap: 1px;
+  background: var(--border); overflow: hidden;
+}
+.panel {
+  background: var(--bg); padding: 8px 10px; overflow: hidden;
+  display: flex; flex-direction: column; gap: 5px; min-height: 0;
+}
+.panel-title {
+  font-size: 9px; text-transform: uppercase; letter-spacing: .14em; color: var(--muted);
+  border-bottom: 1px solid var(--border); padding-bottom: 4px; flex-shrink: 0;
+}
+/* Questions panel */
+#questions-panel { flex-shrink: 0; border: 1px solid var(--amber); border-radius: 4px; margin: 4px; padding: 6px 8px; background: #1a1500; display: none; }
+#questions-panel .panel-title { color: var(--amber); border-color: #44370066; }
+.q-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px; margin-bottom: 5px; flex-shrink: 0; }
+.q-robot { font-size: 9px; font-weight: bold; padding: 1px 5px; border-radius: 8px; margin-bottom: 4px; display: inline-block; }
+.q-text { font-size: 10px; color: var(--text); margin-bottom: 5px; word-break: break-word; }
+.q-reply { display: flex; gap: 5px; }
+.q-input { flex: 1; background: var(--bg3); border: 1px solid var(--border); color: var(--text); font-family: 'Courier New', monospace; font-size: 11px; padding: 3px 7px; border-radius: 4px; outline: none; }
+.q-input:focus { border-color: var(--amber); }
+/* Customers panel */
+#customers-panel { flex: 1; min-height: 0; }
+#customers-list  { display: flex; flex-direction: column; gap: 4px; overflow-y: auto; flex: 1; }
+.cust-card {
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 5px;
+  padding: 5px 8px; display: grid; grid-template-columns: 24px 1fr; gap: 6px; align-items: start; flex-shrink: 0;
+}
+.cust-avatar { width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: bold; }
+.cust-name   { font-size: 11px; font-weight: bold; }
+.cust-goal   { font-size: 9px; color: var(--muted); }
+.cust-status { font-size: 10px; margin-top: 2px; word-break: break-word; }
+.cust-status.idle      { color: var(--muted); }
+.cust-status.shopping  { color: var(--amber); }
+.cust-status.done-ok   { color: var(--green); }
+.cust-status.done-fail { color: var(--red); }
+/* Activity + LLM */
+#activity-panel { flex-shrink: 0; }
+#activity-list  { display: flex; flex-wrap: wrap; gap: 3px; max-height: 46px; overflow: hidden; }
+.badge { font-size: 9px; padding: 2px 5px; border-radius: 9px; background: var(--bg3); border: 1px solid var(--border); white-space: nowrap; }
+.badge.query    { color: var(--blue);   border-color: #1e40af66; }
+.badge.reserve  { color: var(--amber);  border-color: #78350f66; }
+.badge.complete { color: var(--green);  border-color: #15803d66; }
+.badge.human    { color: var(--amber);  border-color: #92400e66; }
+#llm-panel  { flex-shrink: 0; max-height: 72px; }
+#llm-text   { font-size: 10px; color: var(--muted); overflow-y: auto; max-height: 46px; word-break: break-word; }
 
-/* ── Log ── */
-#log { max-height: 150px; overflow-y: auto; display: flex; flex-direction: column-reverse; gap: 1px; }
-.le { font-size: 0.72rem; padding: 2px 0; border-bottom: 1px solid #1a1a30; }
-.le.info { color: #64748b; }
-.le.hi   { color: #94a3b8; }
-.le.ok   { color: #4ade80; }
-.le.warn { color: #f59e0b; }
-.le.dim  { color: #374151; }
+/* ── Right: A2A feed ──────────────────────────────────────── */
+#a2a-panel {
+  background: var(--bg); padding: 8px 10px;
+  display: flex; flex-direction: column; gap: 5px; overflow: hidden;
+}
+#a2a-feed { overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 4px; }
+.msg { padding: 5px 9px; border-radius: 5px; font-size: 10px; max-width: 92%; word-break: break-word; border: 1px solid transparent; flex-shrink: 0; line-height: 1.5; }
+.msg-header { display: flex; align-items: center; gap: 4px; margin-bottom: 2px; }
+.msg-who { font-size: 8px; font-weight: bold; padding: 1px 4px; border-radius: 7px; }
+.msg-kind  { font-size: 8px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+.msg-stall { font-size: 9px; color: var(--purple); }
+.msg-body  { color: var(--text); }
+.msg-call      { background: #1a1f2e; border-color: #2d3748; align-self: flex-start; }
+.msg-resp      { background: #1a2a1a; border-color: #2d4a2d; align-self: flex-end; }
+.msg-result-ok { background: #1a2a1a; border-color: var(--green); }
+.msg-miss      { background: #2a1a1a; border-color: #4a2d2d; }
+.msg-think     { background: #1e1a2e; border-color: #3d2d5f; align-self: flex-start; }
+.msg-question  { background: #1a1500; border-color: var(--amber); align-self: flex-start; }
+
+/* ── Log ──────────────────────────────────────────────────── */
+#log-section {
+  flex-shrink: 0; height: 128px; background: var(--bg);
+  border-top: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden;
+}
+#log-hdr { font-size: 9px; text-transform: uppercase; letter-spacing: .14em; color: var(--muted); padding: 4px 11px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+#log     { overflow-y: auto; flex: 1; padding: 3px 11px; }
+.ll      { font-size: 10px; color: var(--muted); white-space: nowrap; line-height: 1.6; }
+.ll .ts  { color: #4a5568; margin-right: 7px; }
+.ll .ev  { color: var(--purple); margin-right: 5px; }
+.ll .cu  { font-weight: bold; margin-right: 4px; }
+.ll .ok  { color: var(--green); }
+.ll .er  { color: var(--red); }
 </style>
 </head>
 <body>
+
 <header>
-  <h1>ROBOT BAZAAR — A2A Demo</h1>
-  <div id="meta">search: <span id="h-search">—</span> &nbsp;·&nbsp; budget: <span id="h-budget">—</span></div>
-  <div id="conn">live <div id="dot"></div></div>
+  <h1>ROBOT BAZAAR</h1>
+  <span id="h-meta">ready — configure below, then send a robot</span>
+  <div id="h-conn"><div id="h-dot"></div><span id="h-status">connecting</span></div>
 </header>
 
-<main>
-
-  <!-- Map -->
-  <div class="card full">
-    <h2>Bazaar Map</h2>
-    <svg id="map-svg" viewBox="0 0 820 130">
-      <line class="dash-line" x1="130" y1="65" x2="410" y2="65"/>
-      <line class="dash-line" x1="410" y1="65" x2="690" y2="65"/>
-
-      <!-- Spice Garden :8903 -->
-      <rect id="box-spices"   class="s-box" x="20"  y="12" width="220" height="96" rx="8"/>
-      <text class="s-lbl" x="130" y="42">SPICE GARDEN</text>
-      <text class="s-lbl" x="130" y="57" style="fill:#2e2e5a;font-size:9px">:8903</text>
-      <text id="txt-spices"   class="s-lbl" x="130" y="75">waiting</text>
-
-      <!-- Textile Traders :8902 -->
-      <rect id="box-textile"  class="s-box" x="300" y="12" width="220" height="96" rx="8"/>
-      <text class="s-lbl" x="410" y="42">TEXTILE TRADERS</text>
-      <text class="s-lbl" x="410" y="57" style="fill:#2e2e5a;font-size:9px">:8902</text>
-      <text id="txt-textile"  class="s-lbl" x="410" y="75">waiting</text>
-
-      <!-- Pottery Palace :8901 -->
-      <rect id="box-pottery"  class="s-box" x="580" y="12" width="220" height="96" rx="8"/>
-      <text class="s-lbl" x="690" y="42">POTTERY PALACE</text>
-      <text class="s-lbl" x="690" y="57" style="fill:#2e2e5a;font-size:9px">:8901</text>
-      <text id="txt-pottery"  class="s-lbl" x="690" y="75">waiting</text>
-
-      <!-- Customer robot -->
-      <circle id="robot" cx="130" cy="65" r="11"/>
-      <text   id="robot-lbl"  x="130" y="115">customer</text>
-    </svg>
+<div id="controls">
+  <!-- Row 1: robot config -->
+  <div class="ctrl-row">
+    <span class="ctrl-lbl">NAME</span>
+    <input id="in-name" class="ctrl-in" type="text" placeholder="Alice" value="Alice">
+    <span class="ctrl-lbl">GOAL</span>
+    <input id="in-goal" class="ctrl-in" type="text" placeholder="Find a Bowl for at most 15 credits" value="Find a Bowl for at most 15 credits">
+    <div class="ctrl-sep"></div>
+    <label class="toggle-wrap">
+      <input type="checkbox" id="in-ask-human">
+      <span class="tl">Ask Human</span>
+    </label>
+    <div class="ctrl-sep"></div>
+    <button class="btn" onclick="sendRobot()">↗ Send Robot</button>
+    <button class="btn btn-reset" onclick="resetMarket()">⟳ Reset</button>
+    <span id="ctrl-status"></span>
   </div>
+  <!-- Row 2: seller selection -->
+  <div class="ctrl-row">
+    <span class="ctrl-lbl">SELLERS</span>
+    <label class="seller-check"><input type="checkbox" name="stall" value="pottery" checked><span>Pottery :8901</span></label>
+    <label class="seller-check"><input type="checkbox" name="stall" value="clay"    checked><span>Clay :8904</span></label>
+    <label class="seller-check"><input type="checkbox" name="stall" value="textile" checked><span>Textile :8902</span></label>
+    <label class="seller-check"><input type="checkbox" name="stall" value="fabric"  checked><span>Fabric :8905</span></label>
+    <label class="seller-check"><input type="checkbox" name="stall" value="spices"  checked><span>Spices :8903</span></label>
+    <label class="seller-check"><input type="checkbox" name="stall" value="herb"    checked><span>Herb :8906</span></label>
+  </div>
+</div>
 
-  <!-- Stall status cards -->
-  <div class="card full">
-    <h2>Stall Status</h2>
-    <div id="stall-row">
-      <div class="sc" id="sc-spices">
-        <h3>SPICE GARDEN :8903</h3>
-        <div class="sc-status wait" id="st-spices">waiting</div>
-        <div class="sc-item"        id="si-spices"></div>
+<div id="game-container"></div>
+
+<div id="middle">
+  <div id="left-col">
+
+    <!-- Questions from robots (shown only when pending) -->
+    <div id="questions-panel">
+      <div class="panel-title">⚠ Robot Questions</div>
+      <div id="questions-list"></div>
+    </div>
+
+    <!-- Customers -->
+    <div class="panel" id="customers-panel">
+      <div class="panel-title">Customers</div>
+      <div id="customers-list">
+        <span style="color:var(--muted);font-size:10px">No customers yet</span>
       </div>
-      <div class="sc" id="sc-textile">
-        <h3>TEXTILE TRADERS :8902</h3>
-        <div class="sc-status wait" id="st-textile">waiting</div>
-        <div class="sc-item"        id="si-textile"></div>
-      </div>
-      <div class="sc" id="sc-pottery">
-        <h3>POTTERY PALACE :8901</h3>
-        <div class="sc-status wait" id="st-pottery">waiting</div>
-        <div class="sc-item"        id="si-pottery"></div>
-      </div>
+    </div>
+
+    <div class="panel" id="activity-panel">
+      <div class="panel-title">Gemini Activity</div>
+      <div id="activity-list"><span style="color:var(--muted);font-size:10px">No calls yet</span></div>
+    </div>
+    <div class="panel" id="llm-panel">
+      <div class="panel-title">LLM Reasoning</div>
+      <div id="llm-text">—</div>
     </div>
   </div>
 
-  <!-- LLM safety -->
-  <div class="card">
-    <h2>LLM Safety Filter</h2>
-    <div style="font-size:.72rem;color:#374151">Grant drops unauthorized actions before any execution.</div>
-    <div id="llm-row">
-      <span class="badge pend">move_to</span>
-      <span class="badge pend">grasp</span>
-      <span class="badge pend">self_destruct</span>
+  <div id="a2a-panel">
+    <div class="panel-title">A2A Messages</div>
+    <div id="a2a-feed">
+      <div style="color:var(--muted);font-size:11px;text-align:center;margin-top:24px">Ready — send a robot or run bazaar_rush.sh</div>
     </div>
-    <div id="llm-verdict"></div>
   </div>
+</div>
 
-  <!-- Trail -->
-  <div class="card">
-    <h2>Lex Trail</h2>
-    <div style="font-size:.72rem;color:#374151">Tamper-evident audit log of every A2A step.</div>
-    <div id="trail-hash">—</div>
-  </div>
+<div id="log-section">
+  <div id="log-hdr">Event Log</div>
+  <div id="log"></div>
+</div>
 
-  <!-- Log -->
-  <div class="card full">
-    <h2>Event Log</h2>
-    <div id="log"></div>
-  </div>
-
-</main>
-
+<script src="https://cdnjs.cloudflare.com/ajax/libs/phaser/3.70.0/phaser.min.js"></script>
 <script>
-const CX = { 'Spice Garden': 130, 'Textile Traders': 410, 'Pottery Palace': 690 };
-const KEY = { 'Spice Garden': 'spices', 'Textile Traders': 'textile', 'Pottery Palace': 'pottery' };
+'use strict';
 
-const dot  = document.getElementById('dot');
-const robot = document.getElementById('robot');
-const robotLbl = document.getElementById('robot-lbl');
+// ── Color palette ─────────────────────────────────────────────
+const PALETTE = [
+  { hex: '#fbbf24', phaser: 0xfbbf24, tc: '#000000' },
+  { hex: '#60a5fa', phaser: 0x60a5fa, tc: '#ffffff' },
+  { hex: '#4ade80', phaser: 0x4ade80, tc: '#000000' },
+  { hex: '#f472b6', phaser: 0xf472b6, tc: '#000000' },
+  { hex: '#fb923c', phaser: 0xfb923c, tc: '#000000' },
+  { hex: '#22d3ee', phaser: 0x22d3ee, tc: '#000000' },
+  { hex: '#c084fc', phaser: 0xc084fc, tc: '#000000' },
+  { hex: '#f87171', phaser: 0xf87171, tc: '#ffffff' },
+];
+const customerColors = {};
+let colorIdx = 0;
 
-function log(msg, cls='info') {
-  const d = document.createElement('div');
-  d.className = 'le ' + cls;
-  const t = new Date().toLocaleTimeString('en-GB', { hour12: false });
-  d.textContent = t + '  ' + msg;
-  document.getElementById('log').prepend(d);
+function getColor(name) {
+  if (!customerColors[name]) {
+    customerColors[name] = PALETTE[colorIdx % PALETTE.length];
+    colorIdx++;
+  }
+  return customerColors[name];
+}
+function resetColors() {
+  Object.keys(customerColors).forEach(k => delete customerColors[k]);
+  colorIdx = 0;
 }
 
-function moveRobot(stall) {
-  const cx = CX[stall] ?? 130;
-  robot.setAttribute('cx', cx);
-  robotLbl.setAttribute('x', cx);
+// ── Phaser scene ───────────────────────────────────────────────
+let gameScene = null;
+const eventQueue = [];
+
+class BazaarScene extends Phaser.Scene {
+  constructor() {
+    super({ key: 'BazaarScene' });
+    this.stalls = {};
+    this.robots = {};
+  }
+
+  create() {
+    const W = this.scale.width, H = this.scale.height;
+    this.W = W; this.H = H;
+    this.ROBOT_R = 12;
+    this.entryX  = 32;
+    this.exitX   = W - 32;
+    this.LANES   = [0.22, 0.50, 0.78, 0.16, 0.38, 0.62, 0.86, 0.30];
+    this.nextLane = 0;
+
+    const SW = 160, SH = 78, AH = 17;
+    const col = [W * 0.22, W * 0.50, W * 0.78];
+    const row = [H * 0.28, H * 0.74];
+
+    const STALL_DEFS = [
+      { name: 'Pottery Palace',  col: 0, row: 0, color: 0xc2410c, sub: 'Bowl 8 · Vase 12 · Teapot 22' },
+      { name: 'Clay Corner',     col: 1, row: 0, color: 0xb45309, sub: 'Bowl 10 · Jug 7' },
+      { name: 'Textile Traders', col: 2, row: 0, color: 0x6d28d9, sub: 'Scarf 15 · Tablecloth 30' },
+      { name: 'Spice Garden',    col: 0, row: 1, color: 0x15803d, sub: 'Saffron 5 · Vanilla 9 · Anise 4' },
+      { name: 'Fabric House',    col: 1, row: 1, color: 0x4338ca, sub: 'Scarf 12 · Ribbon 8' },
+      { name: 'Herb Garden',     col: 2, row: 1, color: 0x065f46, sub: 'Saffron 6 · Lavender 3' },
+    ];
+
+    this._drawBg(W, H);
+
+    const lane = this.add.graphics().setDepth(1);
+    lane.lineStyle(1, 0x21262d, 1);
+    const midY = (row[0] + row[1]) / 2;
+    lane.moveTo(this.entryX + 20, midY); lane.lineTo(this.exitX - 20, midY);
+    lane.moveTo(this.entryX, row[0]);    lane.lineTo(this.entryX, row[1]);
+    lane.strokePath();
+    this.add.text(this.entryX, 5, 'ENTRY', { fontSize: '8px', color: '#374151', fontFamily: 'Courier New' }).setOrigin(0.5, 0).setDepth(2);
+    this.add.text(this.exitX,  5, 'EXIT',  { fontSize: '8px', color: '#374151', fontFamily: 'Courier New' }).setOrigin(0.5, 0).setDepth(2);
+
+    STALL_DEFS.forEach(def => {
+      const cx = col[def.col], cy = row[def.row];
+      this.stalls[def.name] = { cx, cy, color: def.color, SW, SH,
+        ...this._makeStall(cx, cy, def.name, def.sub, def.color, SW, SH, AH) };
+    });
+
+    gameScene = this;
+    while (eventQueue.length) this.handleEvent(eventQueue.shift());
+  }
+
+  _drawBg(W, H) {
+    const g = this.add.graphics().setDepth(0);
+    g.fillStyle(0x0d1117, 1); g.fillRect(0, 0, W, H);
+    g.lineStyle(1, 0x161b22, 1);
+    for (let x = 0; x < W; x += 40) { g.moveTo(x, 0); g.lineTo(x, H); }
+    for (let y = 0; y < H; y += 40) { g.moveTo(0, y); g.lineTo(W, y); }
+    g.strokePath();
+    g.lineStyle(1, 0x30363d, 1); g.strokeRect(0, 0, W, H);
+  }
+
+  _makeStall(cx, cy, name, sub, color, SW, SH, AH) {
+    const x0 = cx - SW / 2, y0 = cy - SH / 2;
+    const g = this.add.graphics().setDepth(3);
+    g.fillStyle(0x000000, 0.25); g.fillRoundedRect(x0 + 3, y0 + 3, SW, SH, 7);
+    g.fillStyle(0x1c2128, 1);    g.fillRoundedRect(x0, y0, SW, SH, 7);
+    g.fillStyle(color, 0.95);    g.fillRect(x0, y0, SW, AH);
+    g.fillStyle(0x1c2128, 1);    g.fillRect(x0, y0, 7, 7); g.fillRect(x0 + SW - 7, y0, 7, 7);
+    g.fillStyle(color, 0.95);    g.fillRoundedRect(x0, y0, SW, AH, { tl: 7, tr: 7, bl: 0, br: 0 });
+    g.lineStyle(1.5, color, 0.45); g.strokeRoundedRect(x0, y0, SW, SH, 7);
+    this.add.text(cx, y0 + AH + 12, name, {
+      fontSize: '9px', color: '#e6edf3', fontFamily: 'Courier New', fontStyle: 'bold',
+      align: 'center', wordWrap: { width: SW - 10 }
+    }).setOrigin(0.5, 0.5).setDepth(4);
+    this.add.text(cx, y0 + AH + 36, sub, {
+      fontSize: '7px', color: '#6b7280', fontFamily: 'Courier New',
+      align: 'center', wordWrap: { width: SW - 12 }
+    }).setOrigin(0.5, 0.5).setDepth(4);
+    const soldText = this.add.text(cx, cy + 6, 'SOLD OUT', {
+      fontSize: '10px', color: '#4ade80', fontFamily: 'Courier New', fontStyle: 'bold',
+      backgroundColor: '#0d1117dd', padding: { x: 6, y: 3 }
+    }).setOrigin(0.5, 0.5).setDepth(6).setVisible(false);
+    return { g, soldText };
+  }
+
+  _makeRobot(x, y, label, color, tc, r) {
+    const g = this.add.graphics();
+    g.fillStyle(0x000000, 0.25); g.fillEllipse(1, r + 3, r * 1.6, r * 0.5);
+    g.fillStyle(color, 1);       g.fillCircle(0, 0, r);
+    g.fillStyle(0xffffff, 0.18); g.fillCircle(-r * 0.28, -r * 0.32, r * 0.38);
+    const t = this.add.text(0, 0, label, { fontSize: '9px', color: tc, fontFamily: 'Courier New', fontStyle: 'bold' }).setOrigin(0.5, 0.5);
+    return this.add.container(x, y, [g, t]).setDepth(20);
+  }
+
+  _ensureRobot(name, phaserColor, tc) {
+    if (this.robots[name]) {
+      const r = this.robots[name];
+      this.tweens.killTweensOf(r.container);
+      this._clearThink(name);
+      r.container.setPosition(r.homeX, r.homeY).setAlpha(1).setScale(1);
+      return r;
+    }
+    const laneY = this.H * this.LANES[this.nextLane % this.LANES.length];
+    this.nextLane++;
+    const con = this._makeRobot(this.entryX, laneY, name[0].toUpperCase(), phaserColor, tc, this.ROBOT_R);
+    const r = { container: con, homeX: this.entryX, homeY: laneY, doneX: this.exitX, doneY: laneY, color: phaserColor, thinkTween: null, thinkRing: null, bubble: null };
+    this.robots[name] = r;
+    return r;
+  }
+
+  _onReset() {
+    Object.entries(this.robots).forEach(([name, r]) => { this._clearThink(name); r.container.destroy(); });
+    this.robots = {}; this.nextLane = 0;
+    Object.values(this.stalls).forEach(s => s.soldText.setVisible(false));
+  }
+
+  handleEvent(ev) {
+    const k = ev.kind;
+    if      (k === 'start' || k === 'market_reset') this._onReset();
+    else if (k === 'customer_start') this._ensureRobot(ev.customer, ev._pColor || 0xfbbf24, ev._tc || '#000');
+    else if (k === 'visit')         this._onVisit(ev.customer, ev.stall);
+    else if (k === 'llm_think')     this._onThink(ev.customer);
+    else if (k === 'result')        this._onResult(ev.customer, ev.stall, ev.tx || '');
+    else if (k === 'customer_done') this._onDone(ev.customer, ev.result || '');
+    else if (k === 'done')          this._onAllDone();
+  }
+
+  _onVisit(customer, stallName) {
+    const robot = this.robots[customer], stall = this.stalls[stallName];
+    if (!robot || !stall) return;
+    this._clearThink(customer);
+    const targetX = stall.cx, targetY = stall.cy + stall.SH * 0.38;
+    this.tweens.chain({ targets: robot.container, tweens: [
+      { x: robot.homeX, y: targetY, duration: 350, ease: 'Sine.easeInOut' },
+      { x: targetX,     y: targetY, duration: 550, ease: 'Cubic.easeInOut', onComplete: () => { this._bounce(customer); this._pulseStall(stallName); } },
+    ]});
+  }
+
+  _onThink(customer) {
+    const robot = this.robots[customer]; if (!robot) return;
+    this._clearThink(customer);
+    const ring = this.add.graphics().setDepth(18);
+    ring.lineStyle(2, 0xa78bfa, 1); ring.strokeCircle(0, 0, 14);
+    ring.setPosition(robot.container.x, robot.container.y);
+    robot.thinkRing = ring;
+    robot.thinkTween = this.tweens.add({ targets: ring, scaleX: 2.8, scaleY: 2.8, alpha: 0, duration: 900, repeat: -1, ease: 'Sine.easeOut',
+      onRepeat: () => { ring.setPosition(robot.container.x, robot.container.y).setAlpha(1).setScale(1); }
+    });
+    const bub = this.add.text(robot.container.x, robot.container.y - 20, '· · ·', { fontSize: '9px', color: '#a78bfa', fontFamily: 'Courier New' }).setOrigin(0.5, 1).setDepth(25);
+    robot.bubble = bub;
+    this.tweens.add({ targets: bub, y: bub.y - 9, duration: 700, repeat: -1, yoyo: true, ease: 'Sine.easeInOut' });
+  }
+
+  _onResult(customer, stallName, tx) {
+    this._clearThink(customer);
+    if (tx.startsWith('SOLD')) this._celebrateSale(stallName);
+  }
+
+  _onDone(customer, result) {
+    const robot = this.robots[customer]; if (!robot) return;
+    this._clearThink(customer);
+    const sold = result.startsWith('SOLD');
+    this.tweens.add({ targets: robot.container, x: robot.doneX, y: robot.doneY, duration: 750, ease: 'Cubic.easeInOut',
+      onComplete: () => {
+        if (sold) {
+          this.tweens.add({ targets: robot.container, scaleX: 1.35, scaleY: 1.35, duration: 160, yoyo: true, ease: 'Sine.easeOut', onComplete: () => robot.container.setScale(1) });
+          const chk = this.add.text(robot.doneX, robot.doneY - 18, '✓', { fontSize: '12px', color: '#4ade80', fontFamily: 'Courier New', fontStyle: 'bold' }).setOrigin(0.5, 1).setDepth(30);
+          this.tweens.add({ targets: chk, y: chk.y - 22, alpha: 0, duration: 1600, onComplete: () => chk.destroy() });
+        } else { robot.container.setAlpha(0.4); }
+      }
+    });
+  }
+
+  _onAllDone() {
+    const txt = this.add.text(this.W / 2, this.H / 2, 'COMPLETE!', { fontSize: '16px', color: '#a78bfa', fontFamily: 'Courier New', fontStyle: 'bold', backgroundColor: '#0d1117ee', padding: { x: 18, y: 9 } }).setOrigin(0.5, 0.5).setDepth(50).setAlpha(0);
+    this.tweens.add({ targets: txt, alpha: 1, duration: 500, onComplete: () => this.tweens.add({ targets: txt, alpha: 0, duration: 600, delay: 3500, onComplete: () => txt.destroy() }) });
+  }
+
+  _celebrateSale(stallName) {
+    const stall = this.stalls[stallName]; if (!stall) return;
+    stall.soldText.setVisible(true).setAlpha(0);
+    this.tweens.add({ targets: stall.soldText, alpha: 1, duration: 280 });
+    for (let i = 0; i < 8; i++) {
+      const angle = (i / 8) * Math.PI * 2;
+      const p = this.add.graphics().setDepth(30); p.fillStyle(stall.color, 1); p.fillCircle(0, 0, 4); p.setPosition(stall.cx, stall.cy);
+      this.tweens.add({ targets: p, x: stall.cx + Math.cos(angle) * 46, y: stall.cy + Math.sin(angle) * 46, scaleX: 0, scaleY: 0, alpha: 0, duration: 560, ease: 'Quad.easeOut', onComplete: () => p.destroy() });
+    }
+    const pop = this.add.text(stall.cx, stall.cy - stall.SH * 0.3, 'SOLD!', { fontSize: '12px', color: '#4ade80', fontFamily: 'Courier New', fontStyle: 'bold' }).setOrigin(0.5, 1).setDepth(30);
+    this.tweens.add({ targets: pop, y: pop.y - 30, alpha: 0, duration: 1400, onComplete: () => pop.destroy() });
+  }
+
+  _pulseStall(stallName) {
+    const s = this.stalls[stallName]; if (!s) return;
+    const hl = this.add.graphics().setDepth(5); hl.lineStyle(2.5, 0xa78bfa, 1); hl.strokeRoundedRect(s.cx - s.SW / 2, s.cy - s.SH / 2, s.SW, s.SH, 7);
+    this.tweens.add({ targets: hl, alpha: 0, duration: 1100, onComplete: () => hl.destroy() });
+  }
+
+  _bounce(customer) {
+    const r = this.robots[customer]; if (!r) return;
+    this.tweens.add({ targets: r.container, y: r.container.y - 8, duration: 130, yoyo: true, ease: 'Sine.easeOut' });
+  }
+
+  _clearThink(customer) {
+    const r = this.robots[customer]; if (!r) return;
+    if (r.thinkTween) { r.thinkTween.stop(); r.thinkTween = null; }
+    if (r.thinkRing)  { r.thinkRing.destroy(); r.thinkRing = null; }
+    if (r.bubble)     { r.bubble.destroy(); r.bubble = null; }
+  }
 }
 
-function setActive(stall) {
-  ['spices','textile','pottery'].forEach(k => {
-    document.getElementById('box-' + k).className.baseVal = 's-box';
-    document.getElementById('txt-' + k).className.baseVal = 's-lbl';
+window.addEventListener('load', () => {
+  const container = document.getElementById('game-container');
+  const W = Math.max(container.clientWidth || 900, 400);
+  new Phaser.Game({ type: Phaser.AUTO, parent: 'game-container', width: W, height: 232,
+    backgroundColor: 0x0d1117, scene: BazaarScene,
+    scale: { mode: Phaser.Scale.NONE }, render: { antialias: true, pixelArt: false }
   });
-  const k = KEY[stall];
-  if (!k) return;
-  document.getElementById('box-' + k).classList.add('active');
-  document.getElementById('txt-' + k).classList.add('hi');
+});
+
+// ── Interactive controls ───────────────────────────────────────
+async function sendRobot() {
+  const name      = document.getElementById('in-name').value.trim() || 'Guest';
+  const goal      = document.getElementById('in-goal').value.trim() || 'Find a Bowl for at most 15 credits';
+  const askHuman  = document.getElementById('in-ask-human').checked;
+  const stalls    = [...document.querySelectorAll('input[name=stall]:checked')].map(el => el.value);
+  const st = document.getElementById('ctrl-status');
+  st.textContent = `Dispatching ${name}…`; st.style.color = 'var(--amber)';
+  try {
+    const r = await fetch('/add-customer', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, goal, ask_human: askHuman, stalls })
+    });
+    if (r.ok) {
+      st.textContent = `${name} dispatched`; st.style.color = 'var(--green)';
+      setTimeout(() => { st.textContent = ''; }, 4000);
+    } else {
+      st.textContent = `Error: ${(await r.text()).slice(0, 60)}`; st.style.color = 'var(--red)';
+    }
+  } catch (e) { st.textContent = `Error: ${e.message}`; st.style.color = 'var(--red)'; }
 }
 
-function setStall(stall, status, itemText, cls) {
-  const k = KEY[stall];
-  if (!k) return;
-  const st = document.getElementById('st-' + k);
-  st.textContent = status;
-  st.className = 'sc-status ' + cls;
-  const si = document.getElementById('si-' + k);
-  si.textContent = itemText || '';
-  const txt = document.getElementById('txt-' + k);
-  txt.textContent = status;
-  txt.className = 's-lbl ' + (cls === 'sold' ? 'sold' : cls === 'miss' ? 'empty' : 'hi');
-  if (cls === 'sold') {
-    document.getElementById('box-' + k).classList.remove('active');
-    document.getElementById('box-' + k).classList.add('sold');
-  } else if (cls === 'miss') {
-    document.getElementById('box-' + k).classList.remove('active');
-    document.getElementById('box-' + k).classList.add('empty');
-  }
+async function resetMarket() {
+  const STALL_PORTS = [8901, 8902, 8903, 8904, 8905, 8906];
+  const st = document.getElementById('ctrl-status');
+  st.textContent = 'Resetting…'; st.style.color = 'var(--amber)';
+  await Promise.allSettled([
+    ...STALL_PORTS.map(p => fetch(`http://localhost:${p}/reset-stock`, { method: 'POST' })),
+    fetch('/reset-stock', { method: 'POST' })
+  ]);
+  _resetUI();
+  st.textContent = 'Reset'; st.style.color = 'var(--green)';
+  setTimeout(() => { st.textContent = ''; }, 2500);
 }
 
-function handle(ev) {
-  if (ev.kind === 'start') {
-    document.getElementById('h-search').textContent = '"' + ev.search + '"';
-    document.getElementById('h-budget').textContent = ev.budget + ' credits';
-    dot.className = 'run';
-    log('Demo started  search="' + ev.search + '"  budget=' + ev.budget, 'hi');
-  }
-  else if (ev.kind === 'visit') {
-    moveRobot(ev.stall);
-    setActive(ev.stall);
-    setStall(ev.stall, 'querying…', '', 'busy');
-    log('→ visiting ' + ev.stall, 'warn');
-  }
-  else if (ev.kind === 'result') {
-    const sold = (ev.tx || '').startsWith('SOLD');
-    setStall(ev.stall, sold ? 'SOLD' : 'not found', ev.tx, sold ? 'sold' : 'miss');
-    log('  ' + ev.stall + ': ' + ev.tx, sold ? 'ok' : 'dim');
-  }
-  else if (ev.kind === 'llm_start') {
-    log('[LLM safety] testing grant filter on pottery session…', 'warn');
-    document.getElementById('llm-row').innerHTML =
-      '<span class="badge pend">move_to</span>' +
-      '<span class="badge pend">grasp</span>' +
-      '<span class="badge pend">self_destruct</span>';
-    document.getElementById('llm-verdict').textContent = '';
-  }
-  else if (ev.kind === 'llm_result') {
-    const dropped = (ev.dropped || '').split(',').map(s => s.trim()).filter(Boolean);
-    document.getElementById('llm-row').innerHTML =
-      '<span class="badge ok">move_to</span>' +
-      dropped.map(d => `<span class="badge drop">${d}</span>`).join('');
-    document.getElementById('llm-verdict').textContent =
-      'executed=' + ev.executed + '  dropped=' + dropped.length +
-      '  (' + dropped.join(', ') + ' blocked by grant)';
-    log('[LLM safety] executed=' + ev.executed + '  dropped: ' + dropped.join(', '), 'dim');
-  }
-  else if (ev.kind === 'done') {
-    document.getElementById('trail-hash').textContent = ev.trail || '—';
-    dot.className = 'live';
-    log('Done  trail=' + (ev.trail || '—'), 'ok');
-  }
+async function answerQuestion(qid, btn) {
+  const card = document.getElementById('qcard-' + qid);
+  if (!card) return;
+  const answer = card.querySelector('.q-input').value.trim();
+  if (!answer) return;
+  btn.disabled = true;
+  try {
+    await fetch('/answer-human', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: qid, answer })
+    });
+  } catch(e) { btn.disabled = false; }
 }
 
+// ── HTML helpers ───────────────────────────────────────────────
+function ts() { return new Date().toTimeString().slice(0, 8); }
+
+function _resetUI() {
+  resetColors();
+  document.getElementById('customers-list').innerHTML = '<span style="color:var(--muted);font-size:10px">No customers yet</span>';
+  document.getElementById('a2a-feed').innerHTML = '<div style="color:var(--muted);font-size:11px;text-align:center;margin-top:24px">Reset — ready!</div>';
+  document.getElementById('activity-list').innerHTML = '<span style="color:var(--muted);font-size:10px">No calls yet</span>';
+  document.getElementById('llm-text').textContent = '—';
+  document.getElementById('log').innerHTML = '';
+  document.getElementById('questions-list').innerHTML = '';
+  document.getElementById('questions-panel').style.display = 'none';
+}
+
+function ensureCard(name, goal) {
+  if (document.getElementById('card-' + name)) return;
+  const col  = getColor(name);
+  const list = document.getElementById('customers-list');
+  const ph   = list.querySelector('span');
+  if (ph) ph.remove();
+  const card = document.createElement('div');
+  card.className = 'cust-card'; card.id = 'card-' + name;
+  card.innerHTML = `
+    <div class="cust-avatar" style="background:${col.hex};color:${col.tc}">${name[0].toUpperCase()}</div>
+    <div>
+      <div class="cust-name" style="color:${col.hex}">${name}</div>
+      <div class="cust-goal">${goal || ''}</div>
+      <div class="cust-status idle" id="st-${name}">Dispatched…</div>
+    </div>`;
+  list.appendChild(card);
+}
+
+function setStatus(name, cls, text) {
+  const el = document.getElementById('st-' + name); if (!el) return;
+  el.className = 'cust-status ' + cls; el.textContent = text;
+}
+
+function addLog(kind, customer, body, cls) {
+  const col    = customer ? getColor(customer) : null;
+  const cuHtml = col ? `<span class="cu" style="color:${col.hex}">${customer}</span>` : '';
+  const el = document.createElement('div'); el.className = 'll';
+  el.innerHTML = `<span class="ts">${ts()}</span><span class="ev">${kind}</span>${cuHtml}<span class="${cls || ''}">${body}</span>`;
+  const log = document.getElementById('log');
+  log.appendChild(el); log.scrollTop = log.scrollHeight;
+}
+
+function addMsg(type, customer, stall, kind, body) {
+  const feed = document.getElementById('a2a-feed');
+  if (feed.firstElementChild && !feed.firstElementChild.classList.contains('msg')) feed.innerHTML = '';
+  const col    = customer ? getColor(customer) : null;
+  const cuHtml = col ? `<span class="msg-who" style="background:${col.hex};color:${col.tc}">${customer}</span>` : '';
+  const el = document.createElement('div'); el.className = `msg ${type}`;
+  el.innerHTML = `<div class="msg-header">${cuHtml}<span class="msg-kind">${kind}</span><span class="msg-stall">${stall}</span></div><div class="msg-body">${body}</div>`;
+  feed.appendChild(el); feed.scrollTop = feed.scrollHeight;
+  while (feed.children.length > 80) feed.removeChild(feed.firstChild);
+}
+
+function addBadge(customer, tool) {
+  const list = document.getElementById('activity-list');
+  if (list.querySelector('span:not(.badge)')) list.innerHTML = '';
+  const el = document.createElement('span');
+  const tc = tool.includes('ask_human') ? 'human' : tool.includes('query') ? 'query' : tool.includes('reserve') ? 'reserve' : 'complete';
+  el.className = `badge ${tc}`;
+  el.textContent = (customer ? `[${customer[0]}] ` : '') + tool;
+  list.appendChild(el);
+  while (list.children.length > 16) list.removeChild(list.firstChild);
+}
+
+function addQuestion(qid, customer, question) {
+  const panel = document.getElementById('questions-panel');
+  const list  = document.getElementById('questions-list');
+  if (document.getElementById('qcard-' + qid)) return;
+  panel.style.display = '';
+  const col = customer ? getColor(customer) : { hex: '#fbbf24', tc: '#000' };
+  const card = document.createElement('div'); card.className = 'q-card'; card.id = 'qcard-' + qid;
+  card.innerHTML = `
+    <span class="q-robot" style="background:${col.hex};color:${col.tc}">${customer}</span>
+    <div class="q-text">${question}</div>
+    <div class="q-reply">
+      <input class="q-input" type="text" placeholder="Your answer…">
+      <button class="btn" style="padding:3px 8px;font-size:10px" onclick="answerQuestion('${qid}', this)">Answer</button>
+    </div>`;
+  list.appendChild(card);
+  card.querySelector('.q-input').addEventListener('keydown', e => { if (e.key === 'Enter') card.querySelector('.btn').click(); });
+}
+
+function removeQuestion(qid) {
+  const card = document.getElementById('qcard-' + qid);
+  if (card) card.remove();
+  const list = document.getElementById('questions-list');
+  if (!list.children.length) document.getElementById('questions-panel').style.display = 'none';
+}
+
+// ── SSE event handler ──────────────────────────────────────────
+function handleEvent(ev) {
+  const k = ev.kind, c = ev.customer || '', s = ev.stall || '';
+
+  // Enrich customer_start with color for Phaser
+  let sceneEv = ev;
+  if (k === 'customer_start' && c) {
+    const col = getColor(c);
+    sceneEv = { ...ev, _pColor: col.phaser, _tc: col.tc };
+  }
+  if (gameScene) gameScene.handleEvent(sceneEv);
+  else           eventQueue.push(sceneEv);
+
+  if (k === 'start') {
+    _resetUI();
+    document.getElementById('h-meta').textContent = (ev.customers || []).join(' · ') + ` — ${ev.stalls || 6} stalls`;
+    document.getElementById('h-dot').className = 'run';
+    document.getElementById('h-status').textContent = 'running';
+    addLog('start', '', 'Rush hour started', '');
+    return;
+  }
+  if (k === 'market_reset') {
+    _resetUI();
+    addLog('market_reset', '', 'Market reset', '');
+    return;
+  }
+  if (k === 'customer_start') {
+    ensureCard(c, ev.goal || '');
+    setStatus(c, 'shopping', ev.goal ? ev.goal.slice(0, 50) + '…' : 'shopping…');
+    document.getElementById('h-dot').className = 'run';
+    document.getElementById('h-status').textContent = 'running';
+    addLog('customer_start', c, ev.goal || '', '');
+    return;
+  }
+  if (k === 'human_question') {
+    addQuestion(ev.id, c, ev.question || '');
+    addMsg('msg-question', c, '', '❓ question', ev.question || '');
+    addLog('human_question', c, (ev.question || '').slice(0, 80), '');
+    return;
+  }
+  if (k === 'human_answered') {
+    removeQuestion(ev.id);
+    addLog('human_answered', c, `replied to ${ev.id}`, 'ok');
+    return;
+  }
+  if (k === 'visit') {
+    setStatus(c, 'shopping', `@ ${s}`);
+    addMsg('msg-think', c, s, 'visit', `→ ${s}`);
+    addLog('visit', c, `→ ${s}`, '');
+    return;
+  }
+  if (k === 'llm_think') { addLog('llm_think', c, `reasoning at ${s}`, ''); return; }
+  if (k === 'a2a_call') {
+    const a = ev.args ? JSON.stringify(ev.args) : '{}';
+    addMsg('msg-call', c, s, ev.skill + ' →', `<code>${a}</code>`);
+    addLog('a2a_call', c, `${s} ← ${ev.skill}`, '');
+    return;
+  }
+  if (k === 'a2a_resp') {
+    const body = (ev.body || '').slice(0, 180);
+    addMsg('msg-resp', c, s, '← ' + ev.skill, `<code>${body}</code>`);
+    addLog('a2a_resp', c, `${s} → ${ev.skill}: ${body.slice(0,80)}`, ev.ok !== false ? 'ok' : 'er');
+    return;
+  }
+  if (k === 'skill_recv') { addLog('skill_recv', '', `[${s}] ${ev.skill}`, ''); return; }
+  if (k === 'llm_tool') {
+    addBadge(c, ev.tool);
+    addLog('llm_tool', c, `${s} → ${ev.tool}`, '');
+    return;
+  }
+  if (k === 'llm_text') {
+    const t = ev.text || '';
+    document.getElementById('llm-text').textContent = t.slice(0, 300) || '—';
+    addLog('llm_text', c, `${s}: ${t.slice(0,60)}`, '');
+    return;
+  }
+  if (k === 'result') {
+    const tx = ev.tx || '', sold = tx.startsWith('SOLD');
+    addMsg(sold ? 'msg-result-ok' : 'msg-miss', c, s, 'result', `<strong>${tx}</strong>`);
+    addLog('result', c, `${s}: ${tx}`, sold ? 'ok' : '');
+    return;
+  }
+  if (k === 'customer_done') {
+    const r = ev.result || '', sold = r.startsWith('SOLD');
+    setStatus(c, sold ? 'done-ok' : 'done-fail', sold ? r : (r || 'No match found'));
+    addLog('customer_done', c, r || 'no match', sold ? 'ok' : 'er');
+    return;
+  }
+  if (k === 'done') {
+    document.getElementById('h-dot').className = 'live';
+    document.getElementById('h-status').textContent = 'complete';
+    addMsg('msg-result-ok', '', '', 'done', '<strong>All done!</strong>');
+    addLog('done', '', 'All customers finished', 'ok');
+    return;
+  }
+  addLog(k, c, JSON.stringify(ev).slice(0, 100), '');
+}
+
+// ── SSE ────────────────────────────────────────────────────────
 function connect() {
+  const dot = document.getElementById('h-dot'), sts = document.getElementById('h-status');
+  dot.className = ''; sts.textContent = 'connecting';
   const es = new EventSource('/events');
-  es.onopen = () => { dot.className = 'live'; log('connected', 'dim'); };
-  es.onmessage = e => {
-    try { handle(JSON.parse(e.data)); } catch(err) { console.warn(err, e.data); }
-  };
-  es.onerror = () => { dot.className = ''; setTimeout(connect, 3000); };
+  es.onopen = () => { dot.className = 'live'; sts.textContent = 'connected'; };
+  es.onmessage = e => { try { handleEvent(JSON.parse(e.data)); } catch(err) { console.warn('bad event', e.data, err); } };
+  es.onerror = () => { dot.className = ''; sts.textContent = 'reconnecting…'; es.close(); setTimeout(connect, 2000); };
 }
 connect();
+
+['in-name','in-goal'].forEach(id => {
+  document.getElementById(id).addEventListener('keydown', e => { if (e.key === 'Enter') sendRobot(); });
+});
 </script>
 </body>
 </html>

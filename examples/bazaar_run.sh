@@ -58,7 +58,7 @@ stop_sellers() {
 run_customer() {
   echo "── Running customer ──────────────────────────────────────────"
   # Filter the trailing "null" that lex run prints for Unit-returning functions.
-  lex run --allow-effects fs_write,io,net,sense,sql,time \
+  lex run --allow-effects env,fs_write,io,llm,net,proc,sense,sql,time \
       "$REPO_DIR/examples/bazaar_demo.lex" run \
     | grep -v '^null$' || true
 }

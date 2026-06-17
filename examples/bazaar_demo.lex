@@ -50,13 +50,19 @@ import "std.http" as http
 
 import "std.map" as map
 
+import "std.env" as env
+
 import "lex-trail/src/log" as tlog
+
+import "lex-llm/src/providers/vertex" as vtx
 
 import "../src/a2a_card" as card
 
 import "../src/a2a_llm_fallback" as llm
 
 import "../src/bazaar" as baz
+
+import "../src/bazaar_llm" as bll
 
 # ── Stall seeds (sim: known to both sides; in prod each seller holds its own) ──
 fn pottery_secret() -> Bytes {
@@ -174,11 +180,25 @@ fn llm_audit_run(blob :: boot.BootstrapBlob, policy :: { allowed_pubkeys :: List
 }
 
 # ── Customer entry point ───────────────────────────────────────────────────────
-fn run() -> [net, io, sql, fs_write, sense, time] Unit {
+fn run() -> [net, io, sql, fs_write, sense, time, env, llm, proc] Unit {
   let search := "Bowl"
   let budget := 15
   let trail_path := "/tmp/lex-bazaar-demo.db"
   let dash := "http://localhost:8900"
+  let vertex_token := match env.get("VERTEX_ACCESS_TOKEN") {
+    None => "",
+    Some(v) => v,
+  }
+  let vertex_project := match env.get("VERTEX_PROJECT") {
+    None => "",
+    Some(v) => v,
+  }
+  let vertex_location := match env.get("VERTEX_LOCATION") {
+    None => "eu",
+    Some(v) => if str.is_empty(v) { "eu" } else { v },
+  }
+  let vtx_provider := vtx.make_provider(vtx.config_at(vertex_token, vertex_project, vertex_location))
+  let vtx_model := vtx.gemini_35_flash()
   let __b := banner(search, budget)
   let __ui0 := post_ui(dash, str.join(["{\"kind\":\"start\",\"search\":\"", search, "\",\"budget\":", int.to_str(budget), "}"], ""))
   match tlog.open(trail_path) {
@@ -203,13 +223,14 @@ fn run() -> [net, io, sql, fs_write, sense, time] Unit {
                       let __sl := io.print("──────────────────────────────────────────────────────")
                       let __slsetup := time.sleep_ms(1500)
                       let init := { purchase: None, parent: root.id, used: [] }
-                      let final_state := list.fold(stalls, init, fn (state :: baz.ShopState, stall :: baz.StallInfo) -> [net, sql, time, io] baz.ShopState {
+                      let final_state := list.fold(stalls, init, fn (state :: baz.ShopState, stall :: baz.StallInfo) -> [net, sql, time, llm, io, proc] baz.ShopState {
                         match state.purchase {
                           Some(_) => state,
                           None => {
                             let __uiv := post_ui(dash, str.join(["{\"kind\":\"visit\",\"stall\":\"", stall.name, "\"}"], ""))
-                            let __vi := io.print(str.join(["→ [", stall.name, "] handshaking + querying \"", search, "\" ≤ ", int.to_str(budget), " credits ..."], ""))
-                            match baz.visit_stall(stall, search, budget, policy, log, state.parent, state.used, now) {
+                            let __vi := io.print(str.join(["→ [", stall.name, "] LLM agent handshaking + shopping for \"", search, "\" ≤ ", int.to_str(budget), " credits ..."], ""))
+                            let __goal := str.join(["Find and buy \"", search, "\" for at most ", int.to_str(budget), " credits"], "")
+                            match bll.shop_with_llm(stall, __goal, policy, log, state.parent, state.used, now, vtx_provider, vtx_model, dash, "", false) {
                               (tx, p2, used2) => {
                                 let __uir := post_ui(dash, str.join(["{\"kind\":\"result\",\"stall\":\"", stall.name, "\",\"tx\":\"", tx_ui_str(tx), "\"}"], ""))
                                 let __vr := io.print(str.concat("  ", baz.tx_str(tx)))

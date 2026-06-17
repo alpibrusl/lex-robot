@@ -17,8 +17,34 @@ import math
 import os
 import queue
 import random
+import shutil as _shutil
+import subprocess
 import threading
+import time as _time
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_ACTIVE_PROCS: list = []
+_PROC_LOCK = threading.Lock()
+
+# ── Human-escalation state ────────────────────────────────────────────────────
+# POST /ask-human    stores a question; GET /get-answer/<id> long-polls for reply
+# POST /answer-human resolves a pending question
+_QUESTION_LOCK = threading.Lock()
+_PENDING_QUESTIONS: dict = {}  # qid -> {customer, question}
+_ANSWERS: dict = {}            # qid -> answer_text
+
+# ── Stall config (for /add-customer stall selection) ─────────────────────────
+_STALL_CONFIGS = {
+    "pottery": ("http://localhost:8901", "Pottery Palace"),
+    "textile": ("http://localhost:8902", "Textile Traders"),
+    "spices":  ("http://localhost:8903", "Spice Garden"),
+    "clay":    ("http://localhost:8904", "Clay Corner"),
+    "fabric":  ("http://localhost:8905", "Fabric House"),
+    "herb":    ("http://localhost:8906", "Herb Garden"),
+}
+_ALL_STALLS = list(_STALL_CONFIGS.keys())
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("LEX_ROBOT_SIDECAR_PORT", "8900"))
@@ -33,14 +59,27 @@ _STALL_INVENTORIES = {
         {"id": "pot-002", "name": "Blue Glazed Vase",  "category": "pottery", "price": 12},
         {"id": "pot-003", "name": "Clay Teapot",       "category": "pottery", "price": 22},
     ],
+    "clay": [
+        {"id": "clay-001", "name": "Stoneware Bowl",   "category": "pottery", "price": 10},
+        {"id": "clay-002", "name": "Terracotta Jug",   "category": "pottery", "price": 7},
+    ],
     "textile": [
         {"id": "tex-001", "name": "Silk Scarf",        "category": "textile", "price": 15},
         {"id": "tex-002", "name": "Linen Tablecloth",  "category": "textile", "price": 30},
+    ],
+    "fabric": [
+        {"id": "fab-001", "name": "Cotton Scarf",      "category": "textile", "price": 12},
+        {"id": "fab-002", "name": "Velvet Ribbon",     "category": "textile", "price": 8},
     ],
     "spices": [
         {"id": "spi-001", "name": "Saffron 10g",       "category": "spices",  "price": 5},
         {"id": "spi-002", "name": "Vanilla Pods x5",   "category": "spices",  "price": 9},
         {"id": "spi-003", "name": "Star Anise 50g",    "category": "spices",  "price": 4},
+    ],
+    "herb": [
+        {"id": "herb-001", "name": "Premium Saffron",  "category": "spices",  "price": 6},
+        {"id": "herb-002", "name": "Dried Lavender",   "category": "spices",  "price": 3},
+        {"id": "herb-003", "name": "Cardamom Pods",    "category": "spices",  "price": 4},
     ],
 }
 
@@ -132,6 +171,30 @@ def _policy_xy(step: int) -> tuple:
     return (round(px, 4), 0.5)
 
 
+DASHBOARD_URL = os.environ.get("LEX_DASHBOARD_URL", "http://localhost:8900")
+
+
+def _notify_dashboard(event: dict) -> None:
+    """Fire-and-forget: send event to the dashboard sidecar (stall sidecars only)."""
+    if not STALL_NAME:
+        return
+    try:
+        body = json.dumps(event, separators=(",", ":")).encode()
+        req = urllib.request.Request(
+            f"{DASHBOARD_URL}/event",
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        urllib.request.urlopen(req, timeout=1)
+    except Exception:
+        pass
+
+
+def _notify_bg(event: dict) -> None:
+    threading.Thread(target=_notify_dashboard, args=(event,), daemon=True).start()
+
+
 def handle_skill(name: str, args: dict) -> dict:
     """Route a skill call to a simulated outcome.
 
@@ -180,30 +243,43 @@ def handle_skill(name: str, args: dict) -> dict:
                 and s["price"] <= max_price
             ]
         if not candidates:
-            return {"stall": STALL_NAME, "found": 0}
-        best = min(candidates, key=lambda s: s["price"])
-        return {"stall": STALL_NAME, "found": 1, "id": best["id"],
-                "name": best["name"], "category": best["category"], "price": best["price"]}
+            result = {"stall": STALL_NAME, "found": 0}
+        else:
+            best = min(candidates, key=lambda s: s["price"])
+            result = {"stall": STALL_NAME, "found": 1, "id": best["id"],
+                      "name": best["name"], "category": best["category"], "price": best["price"]}
+        _notify_bg({"kind": "skill_recv", "stall": STALL_NAME, "skill": "query_stock",
+                    "search": search, "max_price": max_price, "found": result.get("found", 0)})
+        return result
     if name == "reserve_item":
         item_id = args.get("item_id", "")
         with _STOCK_LOCK:
             if item_id not in _STOCK_STATE:
-                return {"status": "not_found"}
-            if _STOCK_STATE[item_id]["reserved"]:
-                return {"status": "already_reserved"}
-            _STOCK_STATE[item_id]["reserved"] = True
-        return {"status": "reserved"}
+                result = {"status": "not_found"}
+            elif _STOCK_STATE[item_id]["reserved"]:
+                result = {"status": "already_reserved"}
+            else:
+                _STOCK_STATE[item_id]["reserved"] = True
+                result = {"status": "reserved"}
+        _notify_bg({"kind": "skill_recv", "stall": STALL_NAME, "skill": "reserve_item",
+                    "item_id": item_id, "status": result.get("status")})
+        return result
     if name == "complete_sale":
         item_id = args.get("item_id", "")
         payment = args.get("payment", 0)
         with _STOCK_LOCK:
             if item_id not in _STOCK_STATE or not _STOCK_STATE[item_id]["reserved"]:
-                return {"status": "not_reserved"}
-            price = _STOCK_STATE[item_id]["price"]
-            if payment < price:
-                return {"status": "insufficient", "required": price}
-            del _STOCK_STATE[item_id]
-        return {"status": "sold", "change": payment - price}
+                result = {"status": "not_reserved"}
+            else:
+                price = _STOCK_STATE[item_id]["price"]
+                if payment < price:
+                    result = {"status": "insufficient", "required": price}
+                else:
+                    del _STOCK_STATE[item_id]
+                    result = {"status": "sold", "change": payment - price}
+        _notify_bg({"kind": "skill_recv", "stall": STALL_NAME, "skill": "complete_sale",
+                    "item_id": item_id, "payment": payment, "status": result.get("status")})
+        return result
     if name == "render_qr":
         # REAL: encode payload as a QR code and display on the robot's screen
         payload = args.get("payload", "")
@@ -246,6 +322,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(body)
 
@@ -254,8 +331,16 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", "text/plain; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(body)
+
+    def do_OPTIONS(self) -> None:
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+        self.end_headers()
 
     def do_GET(self) -> None:
         if self.path == "/":
@@ -313,6 +398,20 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/health":
             return self._send(200, {"ok": True})
+        if self.path.startswith("/get-answer/"):
+            qid = self.path[len("/get-answer/"):]
+            deadline = _time.time() + 60
+            while _time.time() < deadline:
+                with _QUESTION_LOCK:
+                    if qid in _ANSWERS:
+                        answer = _ANSWERS.pop(qid)
+                        return self._send_text(200, answer)
+                _time.sleep(0.5)
+            return self._send_text(200, "")  # timed out — empty → robot sees "(no reply)"
+        if self.path == "/stock":
+            with _STOCK_LOCK:
+                items = list(_STOCK_STATE.values())
+            return self._send(200, {"stall": STALL_NAME, "items": items})
         if self.path == "/a2a/public-card":
             with _A2A_CARD_LOCK:
                 blob = _A2A_CARD_STATE["public"]
@@ -371,6 +470,80 @@ class Handler(BaseHTTPRequestHandler):
             with _A2A_CARD_LOCK:
                 _A2A_CARD_STATE[key] = blob
             return self._send(200, {"ok": True})
+        if self.path == "/reset-stock":
+            with _STOCK_LOCK:
+                _STOCK_STATE.clear()
+                _STOCK_STATE.update({
+                    item["id"]: dict(item, reserved=False)
+                    for item in _STALL_INVENTORIES.get(STALL_NAME, [])
+                })
+            if not STALL_NAME:
+                _broadcast(json.dumps({"kind": "market_reset"}, separators=(",", ":")))
+            return self._send(200, {"ok": True, "stall": STALL_NAME})
+        if self.path == "/ask-human" and not STALL_NAME:
+            length = int(self.headers.get("Content-Length", "0") or "0")
+            try:
+                body = json.loads(self.rfile.read(length)) if length else {}
+            except json.JSONDecodeError:
+                return self._send(400, {"error": "invalid json"})
+            qid      = str(body.get("id", "q-unknown"))
+            customer = str(body.get("customer", ""))
+            question = str(body.get("question", ""))
+            with _QUESTION_LOCK:
+                _PENDING_QUESTIONS[qid] = {"customer": customer, "question": question}
+                # clear any stale answer for this id
+                _ANSWERS.pop(qid, None)
+            ev = json.dumps({"kind": "human_question", "id": qid, "customer": customer, "question": question}, separators=(",", ":"))
+            _broadcast(ev)
+            return self._send(200, {"ok": True, "id": qid})
+
+        if self.path == "/answer-human" and not STALL_NAME:
+            length = int(self.headers.get("Content-Length", "0") or "0")
+            try:
+                body = json.loads(self.rfile.read(length)) if length else {}
+            except json.JSONDecodeError:
+                return self._send(400, {"error": "invalid json"})
+            qid    = str(body.get("id", ""))
+            answer = str(body.get("answer", ""))
+            with _QUESTION_LOCK:
+                _ANSWERS[qid] = answer
+                customer = (_PENDING_QUESTIONS.pop(qid, {}) or {}).get("customer", "")
+            ev = json.dumps({"kind": "human_answered", "id": qid, "customer": customer}, separators=(",", ":"))
+            _broadcast(ev)
+            return self._send(200, {"ok": True})
+
+        if self.path == "/add-customer" and not STALL_NAME:
+            length = int(self.headers.get("Content-Length", "0") or "0")
+            try:
+                body = json.loads(self.rfile.read(length)) if length else {}
+            except json.JSONDecodeError:
+                return self._send(400, {"error": "invalid json"})
+            name       = str(body.get("name", "Guest"))
+            goal       = str(body.get("goal", "Find a Bowl for at most 15 credits"))
+            ask_human  = bool(body.get("ask_human", False))
+            stalls_req = body.get("stalls", _ALL_STALLS)
+            stalls_set = set(stalls_req) if isinstance(stalls_req, list) else set(_ALL_STALLS)
+            lex_bin = _shutil.which("lex")
+            if not lex_bin:
+                return self._send(500, {"error": "lex not in PATH"})
+            interactive = os.path.join(REPO_ROOT, "examples", "bazaar_interactive.lex")
+            env = os.environ.copy()
+            env["CUSTOMER_NAME"]       = name
+            env["CUSTOMER_GOAL"]       = goal
+            env["CUSTOMER_ASK_HUMAN"]  = "1" if ask_human else "0"
+            for key in _ALL_STALLS:
+                env[f"STALL_{key.upper()}"] = "1" if key in stalls_set else "0"
+            proc = subprocess.Popen(
+                [lex_bin, "run",
+                 "--allow-effects", "env,fs_write,io,llm,net,proc,sense,sql,time",
+                 interactive, "run"],
+                env=env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            with _PROC_LOCK:
+                _ACTIVE_PROCS.append(proc)
+            return self._send(200, {"ok": True, "pid": proc.pid, "name": name})
         return self._send(404, {"error": "not found"})
 
     def log_message(self, *args) -> None:  # quieter logs
