@@ -17,8 +17,31 @@ import os
 import random
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-HOST = "127.0.0.1"
+from trail import Trail
+
+HOST = os.environ.get("LEX_ROBOT_SIDECAR_HOST", "127.0.0.1")
 PORT = int(os.environ.get("LEX_ROBOT_SIDECAR_PORT", "8900"))
+
+# Content-addressed lex-trail episode log (mirrors gym_sidecar). Lets the
+# simulated end-to-end gate reconcile this chain against the lex-os audit log.
+EPISODE = Trail()
+_TS = {"n": 0}
+
+
+def _next_ts() -> int:
+    _TS["n"] += 1
+    return _TS["n"]
+
+
+def record_skill_trail(name: str, args: dict, result: dict) -> None:
+    """Append a cap.invoked + cap.completed pair for one skill call."""
+    EPISODE.emit("cap.invoked",
+                 json.dumps({"capability": name, "args": args}, sort_keys=True),
+                 ts_ms=_next_ts())
+    outcome = result.get("outcome", "reached")
+    EPISODE.emit("cap.completed",
+                 json.dumps({"capability": name, "result": outcome}, sort_keys=True),
+                 ts_ms=_next_ts())
 
 
 def handle_skill(name: str, args: dict) -> dict:
@@ -71,7 +94,15 @@ class Handler(BaseHTTPRequestHandler):
             args = json.loads(raw or b"{}")
         except json.JSONDecodeError:
             return self._send(400, {"error": "invalid json"})
-        self._send(200, handle_skill(name, args))
+        result = handle_skill(name, args)
+        record_skill_trail(name, args, result)
+        trail_path = os.environ.get("LEX_ROBOT_TRAIL", "/tmp/robot-trail.json")
+        try:
+            with open(trail_path, "w") as f:
+                f.write(EPISODE.to_json())
+        except OSError:
+            pass
+        self._send(200, result)
 
     def do_GET(self) -> None:
         if self.path == "/health":
