@@ -104,13 +104,15 @@ wait_up "http://localhost:${TEXTILE_PORT}"  "textile"
 wait_up "http://localhost:${SPICES_PORT}"   "spices"
 
 # ── Run autonomous agent ──────────────────────────────────────────────────────
+# NOTE: AUTO_ITEMS is intentionally NOT set — the robot asks the HUMAN for the
+# shopping goal via the dashboard and blocks until you answer (open the dashboard
+# and type e.g.  "Bowl, Scarf, Saffron; 25"). AUTO_BUDGET is only the default if
+# you omit the ";budget" part. To run scripted instead, set AUTO_ITEMS.
 echo ""
-echo "[auto_bazaar] launching autonomous agent: buy ${QTY} × \"${ITEM}\" (budget: ${BUDGET} cr)"
-echo "[auto_bazaar] dashboard: ${DASH_URL}"
+echo "[auto_bazaar] launching agent — it will ASK YOU for the goal in the dashboard"
+echo "[auto_bazaar] dashboard: ${DASH_URL}  (answer the 'What should I shop for?' prompt)"
 echo ""
 SIDECAR_URL=${DASH_URL} \
-AUTO_ITEM="${ITEM}" \
-AUTO_QTY="${QTY}" \
 AUTO_BUDGET="${BUDGET}" \
   lex run --allow-effects env,fs_write,io,llm,net,proc,sense,sql,time \
   "${REPO_DIR}/examples/auto_bazaar.lex" run

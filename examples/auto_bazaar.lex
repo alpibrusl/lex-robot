@@ -44,6 +44,8 @@ import "lex-schema/schema"     as s
 import "lex-schema/json_value" as jv
 import "lex-schema/error"      as e
 
+import "../src/human_goal"    as hgoal
+
 import "../src/a2a_bootstrap" as boot
 import "../src/a2a_handshake" as hs
 import "../src/a2a_session"   as sess
@@ -384,24 +386,39 @@ fn query_items(session :: sess.PeerSession, items :: List[Str], budget :: Int, s
   })
 }
 
+# Parse a human goal answer "item1, item2, ...; budget" into (items_csv, budget).
+fn parse_goal(ans :: Str, dflt_budget :: Int) -> (Str, Int) {
+  if str.is_empty(ans) {
+    ("Bowl, Scarf, Saffron", dflt_budget)
+  } else {
+    let parts := str.split(ans, ";")
+    let items_str := match list.head(parts) { Some(s) => str.trim(s), None => ans }
+    let budget := match list.head(list.tail(parts)) {
+      Some(b) => match str.to_int(str.trim(b)) { Some(n) => n, None => dflt_budget },
+      None    => dflt_budget,
+    }
+    (if str.is_empty(items_str) { "Bowl, Scarf, Saffron" } else { items_str }, budget)
+  }
+}
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 fn run() -> [env, net, io, llm, time, proc] Unit {
   let base_url := match env.get("SIDECAR_URL") { None => "http://localhost:8900", Some(u) => u }
-  # Shopping list: AUTO_ITEMS="Bowl,Scarf,Saffron" (comma-separated). The robot
-  # must visit every stall, gather a full price matrix, then decide how to
-  # distribute its purchases across stalls within budget. AUTO_ITEM is the legacy
-  # single-item fallback.
-  let items_raw := match env.get("AUTO_ITEMS") {
-    None    => match env.get("AUTO_ITEM") { None => "Bowl,Scarf,Saffron", Some(v) => v },
-    Some(v) => if str.is_empty(v) { "Bowl,Scarf,Saffron" } else { v },
+  let env_budget := match env.get("AUTO_BUDGET") { None => 50, Some(v) => match str.to_int(v) { Some(n) => n, None => 50 } }
+  # The GOAL is provided by the human, not hardcoded: if AUTO_ITEMS is set (a
+  # scripted/headless run) we use it; otherwise we ask the operator through the
+  # dashboard and block until they answer (the reusable human-goal pattern).
+  let env_items := match env.get("AUTO_ITEMS") { None => "", Some(v) => v }
+  let goal_pair := if str.is_empty(env_items) {
+    parse_goal(hgoal.ask_goal(base_url, "robot", "What should I shop for? List items comma-separated, then your budget after a ';'.  e.g.  Bowl, Scarf, Saffron; 25"), env_budget)
+  } else {
+    (env_items, env_budget)
   }
+  let items_raw := match goal_pair { (s, _) => s }
+  let budget    := match goal_pair { (_, b) => b }
   let items := list.filter(str.split(items_raw, ","), fn (s :: Str) -> Bool { not str.is_empty(str.trim(s)) })
   let item  := match list.head(items) { Some(h) => str.trim(h), None => "Bowl" }
-  let budget := match env.get("AUTO_BUDGET") {
-    None    => 50,
-    Some(v) => match str.to_int(v) { Some(n) => n, None => 50 },
-  }
   let token    := match env.get("VERTEX_ACCESS_TOKEN") { None => "", Some(v) => v }
   let project  := match env.get("VERTEX_PROJECT")      { None => "", Some(v) => v }
   let location := match env.get("VERTEX_LOCATION") {
