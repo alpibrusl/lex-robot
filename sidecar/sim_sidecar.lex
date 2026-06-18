@@ -176,6 +176,8 @@ fn init_schema(db :: Db, stall :: Str) -> [sql, time] Unit {
   let _ := sql.exec(db, "CREATE TABLE IF NOT EXISTS a2a_cards (tier TEXT PRIMARY KEY, blob TEXT NOT NULL)", [])
   let _ := sql.exec(db, "CREATE TABLE IF NOT EXISTS human_questions (qid TEXT PRIMARY KEY, customer TEXT NOT NULL, question TEXT NOT NULL, answer TEXT, created_at INTEGER NOT NULL)", [])
   let _ := sql.exec(db, "CREATE TABLE IF NOT EXISTS demo_state (key TEXT PRIMARY KEY, value TEXT NOT NULL)", [])
+  let _ := sql.exec(db, "DELETE FROM sse_events", [])
+  let _ := sql.exec(db, "DELETE FROM human_questions", [])
   let _ := seed_stock(db, stall)
   let _ := seed_demo_state(db)
   ()

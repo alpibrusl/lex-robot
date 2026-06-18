@@ -5,7 +5,7 @@ target/
 # CLI config (per-machine)
 .cli/
 
-# Python sidecar
+# Python / recording tools
 __pycache__/
 *.pyc
 .venv*/

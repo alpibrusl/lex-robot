@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Run via: .venv/bin/python3 examples/record_demo.py [demo|all]
 """Record lex-robot demos as WebM + GIF via Playwright.
 
 Usage:
