@@ -433,7 +433,30 @@ fn notify_dash(dash :: Str, json :: Str) -> [net] Unit {
 
 # ── Skill dispatch ────────────────────────────────────────────────────────────
 
-fn handle_skill(db :: Db, name :: Str, args :: jv.Json, stall :: Str, dash :: Str) -> [sql, net, time] Str {
+fn http_err_msg(e :: HttpError) -> Str {
+  match e {
+    TimeoutError       => "timeout",
+    TlsError(m)        => str.concat("tls: ", m),
+    NetworkError(m)    => str.concat("network: ", m),
+    DecodeError(m)     => str.concat("decode: ", m),
+  }
+}
+
+fn physics_call(physics_url :: Str, skill :: Str, raw_args :: Str) -> [net] Str {
+  let body_str := str.join(["{\"skill\":", json_str(skill), ",\"args\":", raw_args, "}"], "")
+  let url := str.concat(physics_url, "/skill")
+  let req0 := { method: "POST", url: url, headers: map.new(), body: Some(bytes.from_str(body_str)), timeout_ms: None }
+  let req := http.with_header(http.with_timeout_ms(req0, 10000), "Content-Type", "application/json")
+  match http.send(req) {
+    Err(e) => str.join(["{\"outcome\":\"physics_error\",\"detail\":", json_str(http_err_msg(e)), "}"], ""),
+    Ok(r) => match bytes.to_str(r.body) {
+      Err(_) => "{\"outcome\":\"physics_error\",\"detail\":\"bad utf8\"}",
+      Ok(s) => s,
+    },
+  }
+}
+
+fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :: Str, dash :: Str, physics_url :: Str) -> [sql, net, time] Str {
   # ── Bazaar skills ────────────────────────────────────────────────
   if name == "query_stock" {
     let search := jv_str_or(args, "search", "")
@@ -467,10 +490,14 @@ fn handle_skill(db :: Db, name :: Str, args :: jv.Json, stall :: Str, dash :: St
   } else {
   # ── Robot primitives ─────────────────────────────────────────────
   if name == "move_to" {
-    let x := jv_str_or(args, "x", "0")
-    let y := jv_str_or(args, "y", "0")
-    let z := jv_str_or(args, "z", "0")
-    str.join(["{\"outcome\":\"reached\",\"detail\":\"moved to (", x, ",", y, ",", z, ")\"}"], "")
+    if not str.is_empty(physics_url) {
+      physics_call(physics_url, "move_to", raw_body)
+    } else {
+      let x := jv_str_or(args, "x", "0")
+      let y := jv_str_or(args, "y", "0")
+      let z := jv_str_or(args, "z", "0")
+      str.join(["{\"outcome\":\"reached\",\"detail\":\"moved to (", x, ",", y, ",", z, ")\"}"], "")
+    }
   } else {
   if name == "grasp" {
     str.join(["{\"outcome\":\"reached\",\"detail\":\"grasped at ", jv_str_or(args, "force", "0"), "N\"}"], "")
@@ -631,13 +658,17 @@ fn handle_skill(db :: Db, name :: Str, args :: jv.Json, stall :: Str, dash :: St
   } else {
   # ── Heist skills ──────────────────────────────────────────────────
   if name == "scan_area" {
-    let area := str.replace(stall, "heist_", "")
-    let guards := if area == "lobby" { 2 } else { if area == "security" { 1 } else { if area == "server" { 0 } else { 3 } } }
-    let cameras := if area == "lobby" { 4 } else { if area == "security" { 8 } else { if area == "server" { 2 } else { 6 } } }
-    let cams_disabled := get_state_bool(db, "heist_cameras_disabled")
-    let alarm := if cams_disabled { "disarmed" } else { "active" }
-    let _ := notify_dash(dash, str.join(["{\"kind\":\"area_scanned\",\"stall\":", json_str(stall), ",\"guards\":", int.to_str(guards), "}"], ""))
-    str.join(["{\"area\":", json_str(area), ",\"guards\":", int.to_str(guards), ",\"cameras\":", int.to_str(cameras), ",\"alarm_status\":", json_str(alarm), ",\"access_level\":3}"], "")
+    if not str.is_empty(physics_url) {
+      physics_call(physics_url, "scan_area", raw_body)
+    } else {
+      let area := str.replace(stall, "heist_", "")
+      let guards := if area == "lobby" { 2 } else { if area == "security" { 1 } else { if area == "server" { 0 } else { 3 } } }
+      let cameras := if area == "lobby" { 4 } else { if area == "security" { 8 } else { if area == "server" { 2 } else { 6 } } }
+      let cams_disabled := get_state_bool(db, "heist_cameras_disabled")
+      let alarm := if cams_disabled { "disarmed" } else { "active" }
+      let _ := notify_dash(dash, str.join(["{\"kind\":\"area_scanned\",\"stall\":", json_str(stall), ",\"guards\":", int.to_str(guards), "}"], ""))
+      str.join(["{\"area\":", json_str(area), ",\"guards\":", int.to_str(guards), ",\"cameras\":", int.to_str(cameras), ",\"alarm_status\":", json_str(alarm), ",\"access_level\":3}"], "")
+    }
   } else {
   if name == "create_distraction" {
     let method := jv_str_or(args, "method", "noise")
@@ -735,7 +766,7 @@ fn json_resp_cors(body :: Str) -> resp.Response {
   cors_resp(resp.json(body))
 }
 
-fn build_router(db :: Db, stall :: Str, dash :: Str, html_path :: Str, examples_dir :: Str) -> router.Router {
+fn build_router(db :: Db, stall :: Str, dash :: Str, html_path :: Str, examples_dir :: Str, physics_url :: Str) -> router.Router {
   # Shared wide-effect handler type required by route_effectful / route_stream.
   # Each closure captures db / stall / dash from the outer scope.
   let r0 := router.new()
@@ -819,7 +850,7 @@ fn build_router(db :: Db, stall :: Str, dash :: Str, html_path :: Str, examples_
       None => cors_resp(resp.bad_request("missing skill name")),
       Some(name) => {
         let args := match jv.parse(c.body) { Ok(j) => j, Err(_) => JObj([]) }
-        json_resp_cors(handle_skill(db, name, args, stall, dash))
+        json_resp_cors(handle_skill(db, name, args, c.body, stall, dash, physics_url))
       },
     }
   })
@@ -836,7 +867,8 @@ fn build_router(db :: Db, stall :: Str, dash :: Str, html_path :: Str, examples_
         }
         let skill := jv_str_or(task_j, "skill", "")
         let args_j := match jv.get_field(task_j, "args") { Some(v) => v, None => JObj([]) }
-        let result := handle_skill(db, skill, args_j, stall, dash)
+        let args_raw := match jv.get_field(task_j, "args") { Some(_) => c.body, None => "{}" }
+        let result := handle_skill(db, skill, args_j, args_raw, stall, dash, physics_url)
         json_resp_cors(str.join(["{\"jsonrpc\":\"2.0\",\"id\":", json_str(rpc_id), ",\"result\":{\"kind\":\"artifact\",\"output\":", result, "}}"], ""))
       },
     }
@@ -950,15 +982,17 @@ fn run() -> [env, io, sql, net, time, proc, concurrent, crypto, random, fs_read,
   let ex_dir  := str.concat(root, "/examples")
   let db_file := db_path(port)
 
+  let physics_url := match env.get("PHYSICS_URL") { None => "", Some(v) => v }
   let stall_tag := if str.is_empty(stall) { "" } else { str.concat("  stall=", stall) }
-  let _ := io.print(str.join(["lex-robot sim sidecar on http://127.0.0.1:", int.to_str(port), stall_tag, "  db=", db_file, "  (Ctrl-C to stop)"], ""))
+  let phys_tag  := if str.is_empty(physics_url) { "" } else { str.concat("  physics=", physics_url) }
+  let _ := io.print(str.join(["lex-robot sim sidecar on http://127.0.0.1:", int.to_str(port), stall_tag, phys_tag, "  db=", db_file, "  (Ctrl-C to stop)"], ""))
 
   match sql.open(db_file) {
     Err(e) => io.print(str.concat("[sidecar] db error: ", e.message)),
     Ok(db) => {
       let _ := init_wal(db)
       let _ := init_schema(db, stall)
-      let r := build_router(db, stall, dash, html, ex_dir)
+      let r := build_router(db, stall, dash, html, ex_dir, physics_url)
       let handler := fn (req :: Request) -> [env, io, sql, net, time, proc, concurrent, crypto, random, fs_read, fs_write, llm] Response {
         let raw := { body: req.body, method: req.method, path: req.path, query: req.query, headers: req.headers }
         match router.dispatch_outcome(r, raw) {

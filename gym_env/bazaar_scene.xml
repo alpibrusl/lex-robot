@@ -1,0 +1,54 @@
+<mujoco model="bazaar">
+  <option timestep="0.02" gravity="0 0 0"/>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1=".1 .1 .2" rgb2=".0 .0 .0" width="512" height="512"/>
+    <texture name="floor_tex" type="2d" builtin="checker" rgb1=".2 .2 .25" rgb2=".15 .15 .2" width="512" height="512"/>
+    <material name="floor_mat" texture="floor_tex" texrepeat="8 8"/>
+    <material name="stall_mat" rgba=".4 .6 .9 1"/>
+    <material name="robot_mat" rgba=".9 .6 .1 1"/>
+    <material name="wall_mat" rgba=".3 .3 .35 1"/>
+  </asset>
+
+  <worldbody>
+    <!-- Floor -->
+    <geom name="floor" type="plane" size="6 6 .1" material="floor_mat"/>
+
+    <!-- Arena walls (12 m × 12 m interior) -->
+    <geom name="wall_n" type="box" pos="0  6 .5" size="6 .1 .5" material="wall_mat"/>
+    <geom name="wall_s" type="box" pos="0 -6 .5" size="6 .1 .5" material="wall_mat"/>
+    <geom name="wall_e" type="box" pos=" 6 0 .5" size=".1 6 .5" material="wall_mat"/>
+    <geom name="wall_w" type="box" pos="-6 0 .5" size=".1 6 .5" material="wall_mat"/>
+
+    <!-- Stall A: Pottery Palace  (-3,  3) -->
+    <body name="stall_pottery" pos="-3 3 0">
+      <geom name="stall_pottery_geom" type="box" size=".8 .8 .6" pos="0 0 .6" material="stall_mat"/>
+      <site name="stall_pottery_site" pos="0 0 0" size=".05"/>
+    </body>
+
+    <!-- Stall B: Textile Traders ( 3,  3) -->
+    <body name="stall_textile" pos="3 3 0">
+      <geom name="stall_textile_geom" type="box" size=".8 .8 .6" pos="0 0 .6" material="stall_mat"/>
+      <site name="stall_textile_site" pos="0 0 0" size=".05"/>
+    </body>
+
+    <!-- Stall C: Spice Garden   ( 0, -3) -->
+    <body name="stall_spices" pos="0 -3 0">
+      <geom name="stall_spices_geom" type="box" size=".8 .8 .6" pos="0 0 .6" material="stall_mat"/>
+      <site name="stall_spices_site" pos="0 0 0" size=".05"/>
+    </body>
+
+    <!-- Robot: starts at origin, moves via velocity actuator -->
+    <body name="robot" pos="0 0 .3">
+      <freejoint name="robot_joint"/>
+      <geom name="robot_geom" type="sphere" size=".3" material="robot_mat" mass="5"/>
+      <site name="robot_site" pos="0 0 0" size=".05"/>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <!-- Velocity actuators on robot x/y — give direct velocity control -->
+    <velocity name="vel_x" joint="robot_joint" gear="1 0 0 0 0 0" kv="50"/>
+    <velocity name="vel_y" joint="robot_joint" gear="0 1 0 0 0 0" kv="50"/>
+  </actuator>
+</mujoco>
