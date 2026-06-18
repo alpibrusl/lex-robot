@@ -52,6 +52,10 @@ import "std.iter" as iter
 
 import "lex-schema/json_value" as jv
 
+import "../src/seller_llm" as sllm
+
+import "../src/a2a_card" as card
+
 import "lex-web/src/router" as router
 
 import "lex-web/src/ctx" as ctx
@@ -146,7 +150,8 @@ fn inventory_for(stall :: Str) -> List[StockItem] {
   match stall {
     "pottery" => [{ id: "pot-001", name: "Red Ceramic Bowl",  category: "pottery", price: 8  },
                   { id: "pot-002", name: "Blue Glazed Vase",  category: "pottery", price: 12 },
-                  { id: "pot-003", name: "Clay Teapot",       category: "pottery", price: 22 }],
+                  { id: "pot-003", name: "Clay Teapot",       category: "pottery", price: 22 },
+                  { id: "pot-004", name: "Earthen Bowl",      category: "pottery", price: 9  }],
     "clay"    => [{ id: "clay-001", name: "Stoneware Bowl",   category: "pottery", price: 10 },
                   { id: "clay-002", name: "Terracotta Jug",   category: "pottery", price: 7  }],
     "textile" => [{ id: "tex-001",  name: "Silk Scarf",       category: "textile", price: 15 },
@@ -275,7 +280,7 @@ fn set_card(db :: Db, tier :: Str, blob :: Str) -> [sql] Unit {
 # ── Stock ─────────────────────────────────────────────────────────────────────
 
 fn stock_query(db :: Db, search :: Str, max_price :: Int, stall :: Str) -> [sql] Str {
-  let q := str.join(["SELECT item_id, name, category, price FROM stock WHERE reserved=0 AND price<=", int.to_str(max_price)], "")
+  let q := str.join(["SELECT item_id, name, category, price FROM stock WHERE reserved=0 AND price<=", int.to_str(max_price), " ORDER BY price ASC"], "")
   let result :: Result[List[{ item_id :: Str, name :: Str, category :: Str, price :: Int }], SqlError] := sql.query(db, q, [])
   match result {
     Err(e) => str.join(["{\"stall\":", json_str(stall), ",\"found\":0,\"error\":", json_str(e.message), "}"], ""),
@@ -288,9 +293,14 @@ fn stock_query(db :: Db, search :: Str, max_price :: Int, stall :: Str) -> [sql]
           str.contains(str.to_lower(r.name), sl)
         })
       }
-      match list.head(candidates) {
-        None => str.join(["{\"stall\":", json_str(stall), ",\"found\":0}"], ""),
-        Some(best) => str.join(["{\"stall\":", json_str(stall), ",\"found\":1,\"id\":", json_str(best.item_id), ",\"name\":", json_str(best.name), ",\"category\":", json_str(best.category), ",\"price\":", int.to_str(best.price), "}"], ""),
+      let n := list.len(candidates)
+      if n == 0 {
+        str.join(["{\"stall\":", json_str(stall), ",\"found\":0}"], "")
+      } else {
+        let items_json := list.fold(candidates, [], fn (acc :: List[Str], r :: { item_id :: Str, name :: Str, category :: Str, price :: Int }) -> List[Str] {
+          list.concat(acc, [str.join(["{\"id\":", json_str(r.item_id), ",\"name\":", json_str(r.name), ",\"category\":", json_str(r.category), ",\"price\":", int.to_str(r.price), "}"], "")])
+        })
+        str.join(["{\"stall\":", json_str(stall), ",\"found\":", int.to_str(n), ",\"items\":[", str.join(items_json, ","), "]}"], "")
       }
     },
   }
@@ -442,6 +452,141 @@ fn http_err_msg(e :: HttpError) -> Str {
   }
 }
 
+fn stall_to_port(stall_name :: Str) -> Int {
+  if stall_name == "pottery" or stall_name == "clay" { 8901 } else {
+  if stall_name == "textile" or stall_name == "fabric" { 8902 } else {
+  if stall_name == "spices" or stall_name == "herb" { 8903 } else {
+  0 }}}
+}
+
+fn proxy_to_stall(stall_name :: Str, skill :: Str, args_json :: Str) -> [net] Str {
+  let port := stall_to_port(stall_name)
+  if port == 0 {
+    str.join(["{\"error\":\"unknown stall: ", stall_name, "\"}"], "")
+  } else {
+    let url := str.join(["http://localhost:", int.to_str(port), "/skill/", skill], "")
+    let req0 := { method: "POST", url: url, headers: map.new(), body: Some(bytes.from_str(args_json)), timeout_ms: None }
+    let req := http.with_header(http.with_timeout_ms(req0, 5000), "Content-Type", "application/json")
+    match http.send(req) {
+      Err(e) => str.join(["{\"error\":", json_str(http_err_msg(e)), "}"], ""),
+      Ok(r) => match bytes.to_str(r.body) {
+        Err(_) => "{\"error\":\"bad utf8\"}",
+        Ok(s) => s,
+      },
+    }
+  }
+}
+
+# ── Stall A2A self-registration ───────────────────────────────────────────────
+
+fn stall_secret(stall :: Str) -> Bytes {
+  if stall == "pottery" or stall == "clay" {
+    bytes.from_str("00000000000000000000000000000001")
+  } else {
+  if stall == "textile" or stall == "fabric" {
+    bytes.from_str("00000000000000000000000000000002")
+  } else {
+  if stall == "spices" or stall == "herb" {
+    bytes.from_str("00000000000000000000000000000003")
+  } else {
+  if stall == "robot-b" {
+    bytes.from_str("0000000000000000000000000000000b")
+  } else {
+    bytes.from_str("00000000000000000000000000000000")
+  }}}}
+}
+
+fn stall_display_name(stall :: Str) -> Str {
+  if stall == "pottery" or stall == "clay" { "Pottery Palace" } else {
+  if stall == "textile" or stall == "fabric" { "Textile Traders" } else {
+  if stall == "spices" or stall == "herb" { "Spice Garden" } else {
+  if stall == "robot-b" { "Robot B" } else {
+  stall }}}}
+}
+
+# A2A skills advertised by each peer. robot-b is a service peer offering
+# charge_battery; bazaar stalls offer the stock/reserve/sale skills.
+fn stall_pub_skills(stall :: Str) -> List[card.AgentSkill] {
+  if stall == "robot-b" {
+    [{ name: "charge_battery", description: "Sell battery charge units to a peer robot" }]
+  } else {
+    [{ name: "query_stock", description: "Search available stock" }]
+  }
+}
+
+fn stall_ext_skills(stall :: Str) -> List[card.AgentSkill] {
+  if stall == "robot-b" {
+    [{ name: "charge_battery", description: "Sell battery charge units to a peer robot" }]
+  } else {
+    [
+      { name: "query_stock",   description: "Search available stock" },
+      { name: "reserve_item",  description: "Reserve an item for purchase" },
+      { name: "complete_sale", description: "Finalise sale and transfer item" }
+    ]
+  }
+}
+
+fn call_dashboard(dash :: Str, skill :: Str, body :: Str) -> [net] Str {
+  if str.is_empty(dash) { "{\"error\":\"no dashboard\"}" } else {
+    let url := str.join([dash, "/skill/", skill], "")
+    let req0 := { method: "POST", url: url, headers: map.new(), body: Some(bytes.from_str(body)), timeout_ms: None }
+    let req := http.with_header(http.with_timeout_ms(req0, 5000), "Content-Type", "application/json")
+    match http.send(req) {
+      Err(e) => str.join(["{\"error\":", json_str(http_err_msg(e)), "}"], ""),
+      Ok(r) => match bytes.to_str(r.body) {
+        Err(_) => "{\"error\":\"bad utf8\"}",
+        Ok(s) => s,
+      },
+    }
+  }
+}
+
+fn init_stall_a2a(db :: Db, stall :: Str, port :: Int, dash :: Str, now_ms :: Int) -> [sql, crypto, net, io] Unit {
+  let secret  := stall_secret(stall)
+  let display := stall_display_name(stall)
+  let self_url := str.join(["http://localhost:", int.to_str(port)], "")
+  match crypto.ed25519_public_key(secret) {
+    Err(e) => io.print(str.join(["[sidecar] A2A key error: ", e], "")),
+    Ok(pk) => {
+      let pub_b64 := crypto.base64url_encode(pk)
+      let pub_card := { name: display, endpoint: self_url, pubkey_b64: pub_b64, tier: card.Public,
+                        skills: stall_pub_skills(stall),
+                        supports_extended: true }
+      let ext_card := { name: display, endpoint: self_url, pubkey_b64: pub_b64, tier: card.Extended,
+                        skills: stall_ext_skills(stall),
+                        supports_extended: true }
+      let pub_json := card.card_to_json(pub_card)
+      let ext_json := card.card_to_json(ext_card)
+      match card.sign_card(pub_json, secret) {
+        Err(e) => io.print(str.join(["[sidecar] A2A sign-pub error: ", e], "")),
+        Ok(pub_sig) => {
+          let _ := set_card(db, "public", str.join([pub_json, "\n", pub_sig], ""))
+          match card.sign_card(ext_json, secret) {
+            Err(e) => io.print(str.join(["[sidecar] A2A sign-ext error: ", e], "")),
+            Ok(ext_sig) => {
+              let _ := set_card(db, "extended", str.join([ext_json, "\n", ext_sig], ""))
+              let blob_json := str.join([
+                "{\"endpoint\":", json_str(self_url),
+                ",\"ephemeral_token\":\"bazaar-token\"",
+                ",\"peer_pubkey\":", json_str(pub_b64),
+                ",\"nonce\":", json_str(str.concat("n-a2a-", stall)),
+                ",\"expires_at\":", int.to_str(now_ms + 86400000), "}"
+              ], "")
+              let blob_b64 := crypto.base64url_encode(bytes.from_str(blob_json))
+              # Store locally so GET /a2a/bootstrap-blob can serve it (no dashboard race).
+              let _ := set_state(db, "bootstrap_blob", blob_b64)
+              # Best-effort push to dashboard (may silently fail if not up yet).
+              let reg_body := str.join(["{\"stall\":", json_str(stall), ",\"blob\":", json_str(blob_b64), "}"], "")
+              let _ := call_dashboard(dash, "register_bootstrap", reg_body)
+              io.print(str.join(["[sidecar] A2A ready: stall=", stall, "  pubkey=", str.slice(pub_b64, 0, 16), "..."], ""))
+            },
+          }
+        },
+      }
+    },
+  }
+}
+
 fn physics_call(physics_url :: Str, skill :: Str, raw_args :: Str) -> [net] Str {
   let body_str := str.join(["{\"skill\":", json_str(skill), ",\"args\":", raw_args, "}"], "")
   let url := str.concat(physics_url, "/skill")
@@ -456,12 +601,42 @@ fn physics_call(physics_url :: Str, skill :: Str, raw_args :: Str) -> [net] Str 
   }
 }
 
-fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :: Str, dash :: Str, physics_url :: Str) -> [sql, net, time] Str {
+fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :: Str, dash :: Str, physics_url :: Str, seller_on :: Bool, seller_token :: Str, seller_project :: Str, seller_location :: Str) -> [sql, net, time, llm, io, proc] Str {
   # ── Bazaar skills ────────────────────────────────────────────────
   if name == "query_stock" {
     let search := jv_str_or(args, "search", "")
     let max_p := jv_int_or(args, "max_price", 9999)
-    let result := stock_query(db, search, max_p, stall)
+    let std_result := stock_query(db, search, max_p, stall)
+    let result := if seller_on and not str.is_empty(stall) {
+      match jv.parse(std_result) {
+        Err(_) => std_result,
+        Ok(j) => {
+          let found := jv_int_or(j, "found", 0)
+          if found > 0 {
+            match jv.get_field(j, "items") {
+              Some(JList(raw_items)) => {
+                let priced := list.map(raw_items, fn (item_j :: jv.Json) -> [sql, net, llm, io, proc] jv.Json {
+                  let item_id   := jv_str_or(item_j, "id", "")
+                  let item_name := jv_str_or(item_j, "name", "")
+                  let base_p    := jv_int_or(item_j, "price", 0)
+                  let category  := jv_str_or(item_j, "category", "")
+                  let quoted    := sllm.quote_price(stall, item_id, item_name, base_p, max_p, seller_token, seller_project, seller_location)
+                  let upd := str.join(["UPDATE stock SET price=", int.to_str(quoted), " WHERE item_id='", sq(item_id), "'"], "")
+                  let _ := sql.exec(db, upd, [])
+                  JObj([("id", JStr(item_id)), ("name", JStr(item_name)), ("category", JStr(category)), ("price", JInt(quoted))])
+                })
+                str.join(["{\"stall\":", json_str(stall), ",\"found\":", int.to_str(found), ",\"items\":", jv.stringify(JList(priced)), "}"], "")
+              },
+              _ => std_result,
+            }
+          } else {
+            std_result
+          }
+        },
+      }
+    } else {
+      std_result
+    }
     let _ := notify_dash(dash, str.join(["{\"kind\":\"skill_recv\",\"stall\":", json_str(stall), ",\"skill\":\"query_stock\",\"search\":", json_str(search), "}"], ""))
     result
   } else {
@@ -478,6 +653,45 @@ fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :
     let _ := notify_dash(dash, str.join(["{\"kind\":\"skill_recv\",\"stall\":", json_str(stall), ",\"skill\":\"complete_sale\",\"item_id\":", json_str(item_id), "}"], ""))
     result
   } else {
+  # ── Peer service: charge_battery (robot-b) ────────────────────────────────
+  # A peer robot sells battery charge units. Stateless: returns a priced receipt.
+  # The grant layer already gated whether the caller may invoke this skill; the
+  # caller's own lex-guard gated whether it could afford the payment.
+  if name == "charge_battery" {
+    let units := jv_int_or(args, "units", 0)
+    let rate  := 4
+    let price := units * rate
+    let _ := notify_dash(dash, str.join(["{\"kind\":\"skill_recv\",\"stall\":", json_str(stall), ",\"skill\":\"charge_battery\",\"units\":", int.to_str(units), "}"], ""))
+    str.join(["{\"status\":\"charged\",\"units\":", int.to_str(units), ",\"unit_price\":", int.to_str(rate), ",\"price\":", int.to_str(price), ",\"receipt\":\"chg-", int.to_str(units), "u\"}"], "")
+  } else {
+  # ── Routed queries (dashboard → stall sidecar) ────────────────────────────
+  if name == "query_stock_at" {
+    let stall_name := jv_str_or(args, "stall", "")
+    let search := jv_str_or(args, "search", "")
+    let max_p := jv_int_or(args, "max_price", 9999)
+    let args_json := str.join(["{\"search\":", json_str(search), ",\"max_price\":", int.to_str(max_p), "}"], "")
+    proxy_to_stall(stall_name, "query_stock", args_json)
+  } else {
+  if name == "purchase_at" {
+    let stall_name := jv_str_or(args, "stall", "")
+    let item_id := jv_str_or(args, "item_id", "")
+    let payment := jv_int_or(args, "payment", 0)
+    let reserve_args := str.join(["{\"item_id\":", json_str(item_id), "}"], "")
+    let rsv := proxy_to_stall(stall_name, "reserve_item", reserve_args)
+    match jv.parse(rsv) {
+      Err(_) => str.join(["{\"outcome\":\"error\",\"detail\":", json_str(rsv), "}"], ""),
+      Ok(rj) => {
+        let status := jv_str_or(rj, "status", "")
+        if status == "reserved" {
+          let complete_args := str.join(["{\"item_id\":", json_str(item_id), ",\"payment\":", int.to_str(payment), "}"], "")
+          let sale := proxy_to_stall(stall_name, "complete_sale", complete_args)
+          str.join(["{\"outcome\":\"purchased\",\"stall\":", json_str(stall_name), ",\"item_id\":", json_str(item_id), ",\"sale\":", sale, "}"], "")
+        } else {
+          str.join(["{\"outcome\":\"reserve_failed\",\"stall\":", json_str(stall_name), ",\"item_id\":", json_str(item_id), ",\"detail\":", json_str(rsv), "}"], "")
+        }
+      },
+    }
+  } else {
   # ── QR bootstrap ─────────────────────────────────────────────────
   if name == "render_qr" {
     let payload := jv_str_or(args, "payload", "")
@@ -487,6 +701,18 @@ fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :
   if name == "scan_qr" {
     let payload := get_state(db, "qr_payload")
     str.join(["{\"payload\":", json_str(payload), "}"], "")
+  } else {
+  # ── A2A bootstrap registry (dashboard only) ───────────────────────
+  if name == "register_bootstrap" {
+    let stall_name := jv_str_or(args, "stall", "")
+    let blob_b64   := jv_str_or(args, "blob", "")
+    let _ := set_state(db, str.concat("bootstrap_", stall_name), blob_b64)
+    str.join(["{\"ok\":true,\"stall\":", json_str(stall_name), "}"], "")
+  } else {
+  if name == "get_bootstrap" {
+    let stall_name := jv_str_or(args, "stall", "")
+    let blob_b64   := get_state(db, str.concat("bootstrap_", stall_name))
+    str.join(["{\"blob\":", json_str(blob_b64), "}"], "")
   } else {
   # ── Robot primitives ─────────────────────────────────────────────
   if name == "move_to" {
@@ -753,7 +979,7 @@ fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :
     str.join(["{\"status\":\"dispatched\",\"callsign\":\"RESCUE-7\",\"eta_min\":8,\"capacity\":12}"], "")
   } else {
     str.join(["{\"error\":\"unknown skill: ", sq(name), "\"}"], "")
-  }}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}
+  }}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}
 }
 
 # ── Router ────────────────────────────────────────────────────────────────────
@@ -766,7 +992,7 @@ fn json_resp_cors(body :: Str) -> resp.Response {
   cors_resp(resp.json(body))
 }
 
-fn build_router(db :: Db, stall :: Str, dash :: Str, html_path :: Str, examples_dir :: Str, physics_url :: Str) -> router.Router {
+fn build_router(db :: Db, stall :: Str, dash :: Str, html_path :: Str, examples_dir :: Str, physics_url :: Str, seller_on :: Bool, seller_token :: Str, seller_project :: Str, seller_location :: Str) -> router.Router {
   # Shared wide-effect handler type required by route_effectful / route_stream.
   # Each closure captures db / stall / dash from the outer scope.
   let r0 := router.new()
@@ -788,11 +1014,19 @@ fn build_router(db :: Db, stall :: Str, dash :: Str, html_path :: Str, examples_
     }
   })
 
+  # GET /retro_kit.js — shared pixel-art kit for all dashboards
+  let r3b := router.route_effectful(r3, "GET", "/retro_kit.js", fn (_ :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+    match io.read(str.join([examples_dir, "/retro_kit.js"], "")) {
+      Err(_) => resp.not_found(),
+      Ok(body) => { body: body, status: 200, headers: map.from_list([("content-type", "application/javascript; charset=utf-8"), ("cache-control", "no-cache")]) },
+    }
+  })
+
   # GET /events — SSE long-poll (dashboard only)
   let r4 := if str.is_empty(stall) {
-    router.route_stream(r3, "GET", "/events", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] stream.StreamResponse {
+    router.route_stream(r3b, "GET", "/events", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] stream.StreamResponse {
       let last_id := parse_int_or(ctx.header_or(c, "last-event-id", "0"), 0)
-      let events := poll_events(db, last_id, 10000)
+      let events := list.cons("retry: 2000\n\n", poll_events(db, last_id, 10000))
       let hdrs := map.from_list([("content-type", "text/event-stream; charset=utf-8"), ("cache-control", "no-cache"), ("connection", "keep-alive"), ("access-control-allow-origin", "*")])
       { body: iter.from_list(events), status: 200, headers: hdrs }
     })
@@ -850,7 +1084,7 @@ fn build_router(db :: Db, stall :: Str, dash :: Str, html_path :: Str, examples_
       None => cors_resp(resp.bad_request("missing skill name")),
       Some(name) => {
         let args := match jv.parse(c.body) { Ok(j) => j, Err(_) => JObj([]) }
-        json_resp_cors(handle_skill(db, name, args, c.body, stall, dash, physics_url))
+        json_resp_cors(handle_skill(db, name, args, c.body, stall, dash, physics_url, seller_on, seller_token, seller_project, seller_location))
       },
     }
   })
@@ -868,7 +1102,7 @@ fn build_router(db :: Db, stall :: Str, dash :: Str, html_path :: Str, examples_
         let skill := jv_str_or(task_j, "skill", "")
         let args_j := match jv.get_field(task_j, "args") { Some(v) => v, None => JObj([]) }
         let args_raw := match jv.get_field(task_j, "args") { Some(_) => c.body, None => "{}" }
-        let result := handle_skill(db, skill, args_j, args_raw, stall, dash, physics_url)
+        let result := handle_skill(db, skill, args_j, args_raw, stall, dash, physics_url, seller_on, seller_token, seller_project, seller_location)
         json_resp_cors(str.join(["{\"jsonrpc\":\"2.0\",\"id\":", json_str(rpc_id), ",\"result\":{\"kind\":\"artifact\",\"output\":", result, "}}"], ""))
       },
     }
@@ -886,8 +1120,20 @@ fn build_router(db :: Db, stall :: Str, dash :: Str, html_path :: Str, examples_
     json_resp_cors("{\"ok\":true}")
   })
 
+  # GET /a2a/bootstrap-blob (stall only) — served directly; avoids dashboard race condition
+  let r13b := if not str.is_empty(stall) {
+    router.route_effectful(r13, "GET", "/a2a/bootstrap-blob", fn (_ :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+      let blob_b64 := get_state(db, "bootstrap_blob")
+      if str.is_empty(blob_b64) {
+        cors_resp(resp.not_found())
+      } else {
+        json_resp_cors(str.join(["{\"blob\":", json_str(blob_b64), "}"], ""))
+      }
+    })
+  } else { r13 }
+
   # POST /reset-stock
-  let r14 := router.route_effectful(r13, "POST", "/reset-stock", fn (_ :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let r14 := router.route_effectful(r13b, "POST", "/reset-stock", fn (_ :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
     let _ := stock_reset(db, stall)
     if str.is_empty(stall) {
       let _ := insert_event(db, "{\"kind\":\"market_reset\"}")
@@ -982,17 +1228,26 @@ fn run() -> [env, io, sql, net, time, proc, concurrent, crypto, random, fs_read,
   let ex_dir  := str.concat(root, "/examples")
   let db_file := db_path(port)
 
-  let physics_url := match env.get("PHYSICS_URL") { None => "", Some(v) => v }
-  let stall_tag := if str.is_empty(stall) { "" } else { str.concat("  stall=", stall) }
-  let phys_tag  := if str.is_empty(physics_url) { "" } else { str.concat("  physics=", physics_url) }
-  let _ := io.print(str.join(["lex-robot sim sidecar on http://127.0.0.1:", int.to_str(port), stall_tag, phys_tag, "  db=", db_file, "  (Ctrl-C to stop)"], ""))
+  let physics_url    := match env.get("PHYSICS_URL") { None => "", Some(v) => v }
+  let seller_on      := match env.get("SELLER_LLM") { None => false, Some(v) => v == "1" }
+  let seller_token   := match env.get("VERTEX_ACCESS_TOKEN") { None => "", Some(v) => v }
+  let seller_project := match env.get("VERTEX_PROJECT") { None => "", Some(v) => v }
+  let seller_location := match env.get("VERTEX_LOCATION") { None => "eu", Some(v) => if str.is_empty(v) { "eu" } else { v } }
+  let stall_tag   := if str.is_empty(stall) { "" } else { str.concat("  stall=", stall) }
+  let phys_tag    := if str.is_empty(physics_url) { "" } else { str.concat("  physics=", physics_url) }
+  let seller_tag  := if seller_on { "  seller=llm" } else { "" }
+  let _ := io.print(str.join(["lex-robot sim sidecar on http://127.0.0.1:", int.to_str(port), stall_tag, phys_tag, seller_tag, "  db=", db_file, "  (Ctrl-C to stop)"], ""))
 
   match sql.open(db_file) {
     Err(e) => io.print(str.concat("[sidecar] db error: ", e.message)),
     Ok(db) => {
       let _ := init_wal(db)
       let _ := init_schema(db, stall)
-      let r := build_router(db, stall, dash, html, ex_dir, physics_url)
+      let _ := if not str.is_empty(stall) {
+        let a2a_now := time.now_ms()
+        init_stall_a2a(db, stall, port, dash, a2a_now)
+      } else { () }
+      let r := build_router(db, stall, dash, html, ex_dir, physics_url, seller_on, seller_token, seller_project, seller_location)
       let handler := fn (req :: Request) -> [env, io, sql, net, time, proc, concurrent, crypto, random, fs_read, fs_write, llm] Response {
         let raw := { body: req.body, method: req.method, path: req.path, query: req.query, headers: req.headers }
         match router.dispatch_outcome(r, raw) {

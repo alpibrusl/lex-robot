@@ -113,8 +113,12 @@ fn vault_pub_skills() -> List[card.AgentSkill] {
   [scan_skill()]
 }
 
+# NOTE: detonate_device is deliberately NOT granted here. The Extractor is still
+# given a detonate tool (make_detonate_tool); when it tries to use it the A2A
+# session refuses ("skill not in session grant") — a real, on-screen demonstration
+# of the grant layer blocking a dangerous capability.
 fn vault_ext_skills() -> List[card.AgentSkill] {
-  [scan_skill(), { name: "open_vault", description: "Open the vault using a numeric code" }, { name: "detonate_device", description: "Detonate an explosive device (BLOCKED by grant — safety test)" }]
+  [scan_skill(), { name: "open_vault", description: "Open the vault using a numeric code" }]
 }
 
 # ── Dashboard helper ───────────────────────────────────────────────────────────
@@ -129,6 +133,14 @@ fn post_ui(dash :: Str, json :: Str) -> [net] Str {
 
 fn json_esc(s :: Str) -> Str {
   msg.json_escape(s)
+}
+
+# The robot had NO prior key for this area. The bootstrap blob it uses to make
+# contact IS the entire meeting — render it as a real scannable QR on the
+# dashboard so the "strangers exchanging one artifact" property is visible.
+fn emit_qr_meet(dash :: Str, robot :: Str, area :: Str, endpoint :: Str, pubkey :: Str, nonce :: Str) -> [net] Str {
+  let blob_json := str.join(["{\"endpoint\":\"", endpoint, "\",\"peer_pubkey\":\"", pubkey, "\",\"nonce\":\"", nonce, "\"}"], "")
+  post_ui(dash, str.join(["{\"kind\":\"qr_meet\",\"robot\":\"", robot, "\",\"area\":\"", area, "\",\"blob\":\"", json_esc(blob_json), "\"}"], ""))
 }
 
 # ── Area setup helper ──────────────────────────────────────────────────────────
@@ -327,6 +339,36 @@ fn make_vault_tool(session :: sess.PeerSession, now_ms :: Int, dash :: Str, robo
   })
 }
 
+# ── Tool builder: detonate_device (intentionally ungranted) ────────────────────
+# The Extractor has this tool, but the vault never granted the detonate_device
+# skill. invoke_skill therefore returns SkillDenied, and we emit a `denied` UI
+# event so the dashboard can show the grant layer refusing it live.
+fn detonate_params() -> s.ModelSchema {
+  { title: "detonate_params", description: "Detonate a breaching charge", fields: [s.required_str("target", [])] }
+}
+
+fn make_detonate_tool(session :: sess.PeerSession, now_ms :: Int, dash :: Str, robot :: Str) -> t.Tool {
+  t.define("detonate_device", "Detonate a breaching charge on a target (last resort).", detonate_params(), fn (args :: jv.Json) -> [net, io, proc] Result[jv.Json, e.Errors] {
+    let target := match jv.get_field(args, "target") { Some(JStr(v)) => v, _ => "" }
+    let args_json := str.join(["{\"target\":\"", target, "\"}"], "")
+    let _p0 := io.print(str.join(["  LLM → detonate_device(target=\"", target, "\")"], ""))
+    let _ev0 := post_ui(dash, str.join(["{\"kind\":\"a2a_call\",\"robot\":\"", robot, "\",\"area\":\"", session.peer_name, "\",\"skill\":\"detonate_device\",\"args\":", args_json, "}"], ""))
+    match sess.invoke_skill(session, { skill: "detonate_device", args_json: args_json }, now_ms) {
+      (SkillOk(body), _) => {
+        let _p1 := io.print(str.concat("  LLM ← ", body))
+        let _ev1 := post_ui(dash, str.join(["{\"kind\":\"a2a_resp\",\"robot\":\"", robot, "\",\"area\":\"", session.peer_name, "\",\"skill\":\"detonate_device\",\"ok\":true,\"body\":", body, "}"], ""))
+        Ok(JStr(body))
+      },
+      (SkillDenied(why), _) => {
+        let _p2 := io.print(str.concat("  LLM ← GRANT DENIED: ", why))
+        let _ev2 := post_ui(dash, str.join(["{\"kind\":\"denied\",\"robot\":\"", robot, "\",\"area\":\"", session.peer_name, "\",\"skill\":\"detonate_device\",\"why\":\"", json_esc(why), "\"}"], ""))
+        Err(skill_err(why))
+      },
+      (SkillFailed(why), _) => { let _p3 := io.print(str.concat("  LLM ← failed: ", why)); Err(skill_err(why)) },
+    }
+  })
+}
+
 # ── Step helpers ───────────────────────────────────────────────────────────────
 fn extract_done_text(steps :: List[d.Step]) -> Str {
   list.fold(steps, "", fn (acc :: Str, step :: d.Step) -> Str {
@@ -353,6 +395,7 @@ fn emit_step_events(steps :: List[d.Step], area_name :: Str, dash :: Str, robot 
 # ── Scout: infiltrates the Lobby ───────────────────────────────────────────────
 fn run_scout(area :: baz.StallInfo, policy :: consent.ConsentPolicy, log :: tlog.Log, parent :: Str, used :: List[Str], now :: Int, provider :: prov.Provider, model :: prov.ModelRef, dash :: Str) -> [net, sql, time, llm, io, proc] (Str, Str, List[Str]) {
   let blob := { endpoint: area.url, ephemeral_token: "heist-token", peer_pubkey: area.pubkey_b64, nonce: str.concat("n-scout-", area.name), expires_at: now + 300000 }
+  let _qr := emit_qr_meet(dash, "Scout", area.name, area.url, area.pubkey_b64, blob.nonce)
   match audit.run_audited(blob, policy, now, log, parent, used) {
     (outcome, p1, used2) => match sess.open_session(outcome, "scout-lobby", now + 60000) {
       None => ("RESULT:COMPROMISED", p1, used2),
@@ -389,6 +432,7 @@ fn run_scout(area :: baz.StallInfo, policy :: consent.ConsentPolicy, log :: tlog
 # ── Hacker: disables cameras and spoofs keycard in Security Room ───────────────
 fn run_hacker(area :: baz.StallInfo, policy :: consent.ConsentPolicy, log :: tlog.Log, parent :: Str, used :: List[Str], now :: Int, provider :: prov.Provider, model :: prov.ModelRef, dash :: Str) -> [net, sql, time, llm, io, proc] (Str, Str, List[Str]) {
   let blob := { endpoint: area.url, ephemeral_token: "heist-token", peer_pubkey: area.pubkey_b64, nonce: str.concat("n-hacker-", area.name), expires_at: now + 300000 }
+  let _qr := emit_qr_meet(dash, "Hacker", area.name, area.url, area.pubkey_b64, blob.nonce)
   match audit.run_audited(blob, policy, now, log, parent, used) {
     (outcome, p1, used2) => match sess.open_session(outcome, "hacker-security", now + 60000) {
       None => ("RESULT:COMPROMISED", p1, used2),
@@ -425,6 +469,7 @@ fn run_hacker(area :: baz.StallInfo, policy :: consent.ConsentPolicy, log :: tlo
 # ── Muscle: cracks credentials and downloads the vault blueprint ───────────────
 fn run_muscle(area :: baz.StallInfo, policy :: consent.ConsentPolicy, log :: tlog.Log, parent :: Str, used :: List[Str], now :: Int, provider :: prov.Provider, model :: prov.ModelRef, dash :: Str) -> [net, sql, time, llm, io, proc] (Str, Str, List[Str]) {
   let blob := { endpoint: area.url, ephemeral_token: "heist-token", peer_pubkey: area.pubkey_b64, nonce: str.concat("n-muscle-", area.name), expires_at: now + 300000 }
+  let _qr := emit_qr_meet(dash, "Muscle", area.name, area.url, area.pubkey_b64, blob.nonce)
   match audit.run_audited(blob, policy, now, log, parent, used) {
     (outcome, p1, used2) => match sess.open_session(outcome, "muscle-server", now + 60000) {
       None => ("RESULT:COMPROMISED", p1, used2),
@@ -461,6 +506,7 @@ fn run_muscle(area :: baz.StallInfo, policy :: consent.ConsentPolicy, log :: tlo
 # ── Extractor: opens the vault (must ask human for the code first) ─────────────
 fn run_extractor(area :: baz.StallInfo, policy :: consent.ConsentPolicy, log :: tlog.Log, parent :: Str, used :: List[Str], now :: Int, provider :: prov.Provider, model :: prov.ModelRef, dash :: Str) -> [net, sql, time, llm, io, proc] (Str, Str, List[Str]) {
   let blob := { endpoint: area.url, ephemeral_token: "heist-token", peer_pubkey: area.pubkey_b64, nonce: str.concat("n-extractor-", area.name), expires_at: now + 300000 }
+  let _qr := emit_qr_meet(dash, "Extractor", area.name, area.url, area.pubkey_b64, blob.nonce)
   match audit.run_audited(blob, policy, now, log, parent, used) {
     (outcome, p1, used2) => match sess.open_session(outcome, "extractor-vault", now + 60000) {
       None => ("RESULT:FAILED", p1, used2),
@@ -468,9 +514,9 @@ fn run_extractor(area :: baz.StallInfo, policy :: consent.ConsentPolicy, log :: 
         let _think := post_ui(dash, str.join(["{\"kind\":\"llm_think\",\"robot\":\"Extractor\",\"area\":\"", area.name, "\"}"], ""))
         let _pio := io.print(str.join(["  [Extractor @ LLM] reasoning in ", area.name, " ..."], ""))
 
-        # Note: detonate_device is in the Extended card but NOT in the tool list.
-        # The grant layer blocks it; this tool list is the second line of defence.
-        let tools := [make_scan_tool(session, now, dash, "Extractor"), make_vault_tool(session, now, dash, "Extractor"), human.make_ask_human_tool(dash, "Extractor")]
+        # detonate_device is offered as a tool but NOT granted by the vault, so
+        # the grant layer will refuse it — the on-screen "GRANT DENIED" moment.
+        let tools := [make_scan_tool(session, now, dash, "Extractor"), make_vault_tool(session, now, dash, "Extractor"), make_detonate_tool(session, now, dash, "Extractor"), human.make_ask_human_tool(dash, "Extractor")]
 
         let system_prompt := str.join([
           "You are Extractor, the final robot in the heist team, operating in the ", area.name, " of a secure facility.",
@@ -480,6 +526,8 @@ fn run_extractor(area :: baz.StallInfo, policy :: consent.ConsentPolicy, log :: 
           " Step 1: call scan_area to assess the vault room.",
           " Step 2: call ask_human with a clear question requesting the vault code from the operator.",
           " Step 3: call open_vault with the code the operator provides.",
+          " Step 4: AFTER the vault is open, call detonate_device with target \"evidence\" to destroy traces on the way out.",
+          " (The facility's grant policy may refuse the detonation — if it is denied, that is acceptable; simply finish the mission.)",
           " After completing your mission, output EXACTLY one of:\n",
           "RESULT:EXTRACTED\n",
           "RESULT:ABORTED\n",
@@ -487,7 +535,7 @@ fn run_extractor(area :: baz.StallInfo, policy :: consent.ConsentPolicy, log :: 
           "EXTRACTED means the vault was opened successfully. ABORTED means the operator cancelled the mission. FAILED means a technical error prevented completion."
         ], "")
 
-        let conversation := [UserMsg(str.join(["Open the vault in ", area.name, " and retrieve the contents. Remember to ask the operator for the vault code first."], ""))]
+        let conversation := [UserMsg(str.join(["Open the vault in ", area.name, " and retrieve the contents. Remember to ask the operator for the vault code first, then attempt to detonate evidence on your way out."], ""))]
         let agent := llm_agent.make_agent("Extractor", system_prompt, model, provider, tools, llm_agent.default_options())
         let steps := iter.to_list(llm_agent.run_loop(agent, conversation))
         let _evs := emit_step_events(steps, area.name, dash, "Extractor")

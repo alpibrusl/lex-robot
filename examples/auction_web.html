@@ -309,6 +309,7 @@ input.ctrl-in:focus { border-color: var(--gold); }
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/phaser@3.70.0/dist/phaser.min.js"></script>
+<script src="/retro_kit.js"></script>
 <script>
 'use strict';
 
@@ -358,9 +359,9 @@ class AuctionScene extends Phaser.Scene {
     this.LANES   = [0.22, 0.50, 0.78, 0.16, 0.38, 0.62, 0.86, 0.30];
     this.nextLane = 0;
 
-    const SW = 155, SH = 78, AH = 17;
+    const SW = 168, SH = 96, AH = 18;
     const col = [W * 0.22, W * 0.50, W * 0.78];
-    const row = [H * 0.28, H * 0.74];
+    const row = [H * 0.30, H * 0.74];
 
     const STALL_DEFS = [
       { name: 'Pottery Palace',  col: 0, row: 0, color: 0xc2410c, sub: 'Bowl 8 · Vase 12 · Teapot 22' },
@@ -372,25 +373,12 @@ class AuctionScene extends Phaser.Scene {
     ];
 
     this._drawBg(W, H);
-
-    const lane = this.add.graphics().setDepth(1);
-    lane.lineStyle(1, 0x21262d, 1);
-    const midY = (row[0] + row[1]) / 2;
-    lane.moveTo(this.entryX + 20, midY); lane.lineTo(this.exitX - 20, midY);
-    lane.moveTo(this.entryX, row[0]);    lane.lineTo(this.entryX, row[1]);
-    lane.strokePath();
-    this.add.text(this.entryX, 5, 'ENTRY', { fontSize: '8px', color: '#374151', fontFamily: 'Courier New' }).setOrigin(0.5, 0).setDepth(2);
-    this.add.text(this.exitX,  5, 'EXIT',  { fontSize: '8px', color: '#374151', fontFamily: 'Courier New' }).setOrigin(0.5, 0).setDepth(2);
-
-    // Gold bid banner
-    this.add.text(W/2, 8, '★ COMPETE FOR LIMITED STOCK — FASTEST ROBOT WINS ★', {
-      fontSize: '8px', color: '#ffd700', fontFamily: 'Courier New', letterSpacing: 1
-    }).setOrigin(0.5, 0).setDepth(2);
+    RK.makeSign(this, this.entryX, H * 0.50, 'ENTRY');
+    RK.makeSign(this, this.exitX,  H * 0.50, 'EXIT');
 
     STALL_DEFS.forEach(def => {
       const cx = col[def.col], cy = row[def.row];
-      this.stalls[def.name] = { cx, cy, color: def.color, SW, SH,
-        ...this._makeStall(cx, cy, def.name, def.sub, def.color, SW, SH, AH) };
+      this.stalls[def.name] = RK.makeStall(this, cx, cy, def.name, def.sub, def.color, SW, SH);
     });
 
     gameScene = this;
@@ -398,51 +386,7 @@ class AuctionScene extends Phaser.Scene {
   }
 
   _drawBg(W, H) {
-    const g = this.add.graphics().setDepth(0);
-    g.fillStyle(0x0d1117, 1); g.fillRect(0, 0, W, H);
-    g.lineStyle(1, 0x161b22, 1);
-    for (let x = 0; x < W; x += 40) { g.moveTo(x, 0); g.lineTo(x, H); }
-    for (let y = 0; y < H; y += 40) { g.moveTo(0, y); g.lineTo(W, y); }
-    g.strokePath();
-    g.lineStyle(1, 0x30363d, 1); g.strokeRect(0, 0, W, H);
-    // Gold border
-    g.lineStyle(1, 0xffd70033, 1); g.strokeRect(2, 2, W-4, H-4);
-  }
-
-  _makeStall(cx, cy, name, sub, color, SW, SH, AH) {
-    const x0 = cx - SW / 2, y0 = cy - SH / 2;
-    const g = this.add.graphics().setDepth(3);
-    g.fillStyle(0x000000, 0.25); g.fillRoundedRect(x0 + 3, y0 + 3, SW, SH, 7);
-    g.fillStyle(0x1c2128, 1);    g.fillRoundedRect(x0, y0, SW, SH, 7);
-    g.fillStyle(color, 0.95);    g.fillRect(x0, y0, SW, AH);
-    g.fillStyle(0x1c2128, 1);    g.fillRect(x0, y0, 7, 7); g.fillRect(x0 + SW - 7, y0, 7, 7);
-    g.fillStyle(color, 0.95);    g.fillRoundedRect(x0, y0, SW, AH, { tl: 7, tr: 7, bl: 0, br: 0 });
-    g.lineStyle(1.5, color, 0.45); g.strokeRoundedRect(x0, y0, SW, SH, 7);
-    this.add.text(cx, y0 + AH + 12, name, {
-      fontSize: '9px', color: '#e6edf3', fontFamily: 'Courier New', fontStyle: 'bold',
-      align: 'center', wordWrap: { width: SW - 10 }
-    }).setOrigin(0.5, 0.5).setDepth(4);
-    this.add.text(cx, y0 + AH + 36, sub, {
-      fontSize: '7px', color: '#6b7280', fontFamily: 'Courier New',
-      align: 'center', wordWrap: { width: SW - 12 }
-    }).setOrigin(0.5, 0.5).setDepth(4);
-    const soldText = this.add.text(cx, cy + 6, 'SOLD OUT', {
-      fontSize: '10px', color: '#4ade80', fontFamily: 'Courier New', fontStyle: 'bold',
-      backgroundColor: '#0d1117dd', padding: { x: 6, y: 3 }
-    }).setOrigin(0.5, 0.5).setDepth(6).setVisible(false);
-    return { g, soldText };
-  }
-
-  _makeRobot(x, y, label, color, tc, r) {
-    const g = this.add.graphics();
-    g.fillStyle(0x000000, 0.25); g.fillEllipse(1, r + 3, r * 1.6, r * 0.5);
-    g.fillStyle(color, 1);       g.fillCircle(0, 0, r);
-    g.fillStyle(0xffffff, 0.18); g.fillCircle(-r * 0.28, -r * 0.32, r * 0.38);
-    // Gold crown ring for auction
-    const ring = this.add.graphics();
-    ring.lineStyle(1, 0xffd700, 0.5); ring.strokeCircle(0, 0, r + 3);
-    const t = this.add.text(0, 0, label, { fontSize: '9px', color: tc, fontFamily: 'Courier New', fontStyle: 'bold' }).setOrigin(0.5, 0.5);
-    return this.add.container(x, y, [g, ring, t]).setDepth(20);
+    RK.drawBg(this, { skyFrac: 0.17 });
   }
 
   _ensureRobot(name, phaserColor, tc) {
@@ -455,7 +399,7 @@ class AuctionScene extends Phaser.Scene {
     }
     const laneY = this.H * this.LANES[this.nextLane % this.LANES.length];
     this.nextLane++;
-    const con = this._makeRobot(this.entryX, laneY, name[0].toUpperCase(), phaserColor, tc, this.ROBOT_R);
+    const con = RK.makeRobot(this, this.entryX, laneY, name[0].toUpperCase(), phaserColor);
     const r = { container: con, homeX: this.entryX, homeY: laneY, doneX: this.exitX, doneY: laneY, color: phaserColor, thinkTween: null, thinkRing: null, bubble: null };
     this.robots[name] = r;
     return r;
@@ -493,13 +437,13 @@ class AuctionScene extends Phaser.Scene {
     const robot = this.robots[customer]; if (!robot) return;
     this._clearThink(customer);
     const ring = this.add.graphics().setDepth(18);
-    ring.lineStyle(2, 0xffd700, 1); ring.strokeCircle(0, 0, 14);
+    ring.lineStyle(2, RK.C.GOLD, 1); ring.strokeCircle(0, 0, 14);
     ring.setPosition(robot.container.x, robot.container.y);
     robot.thinkRing = ring;
     robot.thinkTween = this.tweens.add({ targets: ring, scaleX: 2.8, scaleY: 2.8, alpha: 0, duration: 900, repeat: -1, ease: 'Sine.easeOut',
       onRepeat: () => { ring.setPosition(robot.container.x, robot.container.y).setAlpha(1).setScale(1); }
     });
-    const bub = this.add.text(robot.container.x, robot.container.y - 20, '· · ·', { fontSize: '9px', color: '#ffd700', fontFamily: 'Courier New' }).setOrigin(0.5, 1).setDepth(25);
+    const bub = this.add.text(robot.container.x, robot.container.y - 20, '· · ·', { fontSize: '15px', color: '#ffd166', fontFamily: RK.PX }).setOrigin(0.5, 1).setDepth(25);
     robot.bubble = bub;
     this.tweens.add({ targets: bub, y: bub.y - 9, duration: 700, repeat: -1, yoyo: true, ease: 'Sine.easeInOut' });
   }
@@ -525,10 +469,10 @@ class AuctionScene extends Phaser.Scene {
           // Gold confetti
           for (let i = 0; i < 12; i++) {
             const angle = (i / 12) * Math.PI * 2;
-            const p = this.add.graphics().setDepth(32); p.fillStyle(0xffd700, 1); p.fillCircle(0, 0, 4); p.setPosition(robot.doneX, robot.doneY);
+            const p = this.add.graphics().setDepth(32); p.fillStyle(RK.C.GOLD, 1); p.fillCircle(0, 0, 4); p.setPosition(robot.doneX, robot.doneY);
             this.tweens.add({ targets: p, x: robot.doneX + Math.cos(angle) * 55, y: robot.doneY + Math.sin(angle) * 55, scaleX: 0, scaleY: 0, alpha: 0, duration: 700, ease: 'Quad.easeOut', onComplete: () => p.destroy() });
           }
-          const chk = this.add.text(robot.doneX, robot.doneY - 22, '★ WON ★', { fontSize: '12px', color: '#ffd700', fontFamily: 'Courier New', fontStyle: 'bold' }).setOrigin(0.5, 1).setDepth(33);
+          const chk = this.add.text(robot.doneX, robot.doneY - 22, 'WON', { fontSize: '10px', color: '#ffd166', fontFamily: RK.PXH }).setOrigin(0.5, 1).setDepth(33);
           this.tweens.add({ targets: chk, y: chk.y - 28, alpha: 0, duration: 2000, onComplete: () => chk.destroy() });
         } else {
           robot.container.setAlpha(0.4);
@@ -538,8 +482,7 @@ class AuctionScene extends Phaser.Scene {
   }
 
   _onAllDone() {
-    const txt = this.add.text(this.W / 2, this.H / 2, 'AUCTION COMPLETE!', { fontSize: '16px', color: '#ffd700', fontFamily: 'Courier New', fontStyle: 'bold', backgroundColor: '#0d1117ee', padding: { x: 18, y: 9 } }).setOrigin(0.5, 0.5).setDepth(50).setAlpha(0);
-    this.tweens.add({ targets: txt, alpha: 1, duration: 500, onComplete: () => this.tweens.add({ targets: txt, alpha: 0, duration: 600, delay: 3500, onComplete: () => txt.destroy() }) });
+    RK.capBanner(this, 'AUCTION COMPLETE', 'grant');
   }
 
   _celebrateSale(stallName, customer) {
@@ -548,16 +491,16 @@ class AuctionScene extends Phaser.Scene {
     this.tweens.add({ targets: stall.soldText, alpha: 1, duration: 280 });
     for (let i = 0; i < 10; i++) {
       const angle = (i / 10) * Math.PI * 2;
-      const p = this.add.graphics().setDepth(30); p.fillStyle(0xffd700, 1); p.fillCircle(0, 0, 4); p.setPosition(stall.cx, stall.cy);
+      const p = this.add.graphics().setDepth(30); p.fillStyle(stall.color, 1); p.fillCircle(0, 0, 4); p.setPosition(stall.cx, stall.cy);
       this.tweens.add({ targets: p, x: stall.cx + Math.cos(angle) * 52, y: stall.cy + Math.sin(angle) * 52, scaleX: 0, scaleY: 0, alpha: 0, duration: 620, ease: 'Quad.easeOut', onComplete: () => p.destroy() });
     }
-    const pop = this.add.text(stall.cx, stall.cy - stall.SH * 0.3, '★ SOLD! ★', { fontSize: '12px', color: '#ffd700', fontFamily: 'Courier New', fontStyle: 'bold' }).setOrigin(0.5, 1).setDepth(30);
+    const pop = this.add.text(stall.cx, stall.cy - stall.SH * 0.3, 'SOLD!', { fontSize: '10px', color: '#ffd166', fontFamily: RK.PXH }).setOrigin(0.5, 1).setDepth(30);
     this.tweens.add({ targets: pop, y: pop.y - 30, alpha: 0, duration: 1600, onComplete: () => pop.destroy() });
   }
 
   _pulseStall(stallName) {
     const s = this.stalls[stallName]; if (!s) return;
-    const hl = this.add.graphics().setDepth(5); hl.lineStyle(2.5, 0xffd700, 1); hl.strokeRoundedRect(s.cx - s.SW / 2, s.cy - s.SH / 2, s.SW, s.SH, 7);
+    const hl = this.add.graphics().setDepth(5); hl.lineStyle(2.5, RK.C.GOLD, 1); hl.strokeRect(s.cx - s.SW / 2 - 3, s.cy - s.SH / 2 - 3, s.SW + 6, s.SH + 6);
     this.tweens.add({ targets: hl, alpha: 0, duration: 1100, onComplete: () => hl.destroy() });
   }
 
@@ -577,10 +520,8 @@ class AuctionScene extends Phaser.Scene {
 window.addEventListener('load', () => {
   const container = document.getElementById('game-container');
   const W = Math.max(container.clientWidth || 900, 400);
-  new Phaser.Game({ type: Phaser.AUTO, parent: 'game-container', width: W, height: 232,
-    backgroundColor: 0x0d1117, scene: AuctionScene,
-    scale: { mode: Phaser.Scale.NONE }, render: { antialias: true, pixelArt: false }
-  });
+  const H = Math.max(container.clientHeight || 420, 300);
+  RK.startWhenFontsReady(() => new Phaser.Game(RK.gameConfig('game-container', W, H, AuctionScene)));
 });
 
 // ── Interactive controls ───────────────────────────────────────
@@ -863,7 +804,11 @@ function connect() {
   const es = new EventSource('/events');
   es.onopen = () => { dot.className = 'live'; sts.textContent = 'connected'; };
   es.onmessage = e => { try { handleEvent(JSON.parse(e.data)); } catch(err) { console.warn('bad event', e.data, err); } };
-  es.onerror = () => { dot.className = ''; sts.textContent = 'reconnecting…'; es.close(); setTimeout(connect, 2000); };
+  // The /events endpoint is a long-poll: it returns a batch then CLOSES the
+  // connection, which fires onerror every cycle. That is NOT a real disconnect.
+  // Native EventSource reconnects automatically with the correct Last-Event-ID,
+  // so we must NOT close/reopen here — that would replay events from id 0.
+  es.onerror = () => { dot.className = ''; sts.textContent = 'reconnecting…'; };
 }
 connect();
 

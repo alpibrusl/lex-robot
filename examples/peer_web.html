@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Peer Meet — A2A + lex-guard</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg: #0a1420; --bg2: #0f1f2d; --bg3: #16273a; --border: #24384a;
+  --text: #dfeaf2; --muted: #7f9bb0;
+  --gold: #ffd166; --green: #4ade80; --red: #f87171; --blue: #7fd4ff;
+}
+html, body { height: 100%; overflow: hidden; }
+body { background: var(--bg); color: var(--text); font-family: 'VT323', 'Courier New', monospace; font-size: 15px; display: flex; flex-direction: column; height: 100dvh; }
+header { background: var(--bg2); border-bottom: 1px solid var(--border); padding: 0 16px; display: flex; align-items: center; gap: 14px; flex-shrink: 0; height: 42px; }
+header h1 { font-family: '"Press Start 2P"', monospace; font-size: 11px; color: var(--gold); letter-spacing: .08em; }
+#h-meta { color: var(--muted); font-size: 14px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#h-conn { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
+#h-dot { width: 9px; height: 9px; border-radius: 50%; background: #2a3f50; }
+#h-dot.live { background: var(--green); box-shadow: 0 0 8px var(--green); }
+#h-dot.run { background: var(--gold); box-shadow: 0 0 8px var(--gold); animation: blink 1s infinite; }
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
+#main { flex: 1; min-height: 0; display: flex; flex-direction: row; overflow: hidden; }
+#game-col { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
+#game-container { flex: 1; min-height: 0; overflow: hidden; background: var(--bg); }
+#game-container canvas { display: block; }
+#log-section { flex: 1; min-height: 0; background: var(--bg); display: flex; flex-direction: column; overflow: hidden; }
+#log-hdr { font-family: '"Press Start 2P"', monospace; font-size: 7px; letter-spacing: .12em; color: var(--muted); padding: 6px 11px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+#log { overflow-y: auto; flex: 1; padding: 4px 11px; }
+.ll { font-size: 12px; color: var(--muted); white-space: nowrap; line-height: 1.7; }
+.ll .ts { color: #3a5266; margin-right: 7px; }
+.ll .ev { color: var(--blue); margin-right: 6px; }
+.ll .ok { color: var(--green); } .ll .er { color: var(--red); }
+#sidebar { width: 300px; flex-shrink: 0; background: var(--border); border-left: 1px solid var(--border); display: flex; flex-direction: column; gap: 1px; overflow: hidden; }
+.panel { background: var(--bg); padding: 9px 11px; display: flex; flex-direction: column; gap: 6px; overflow: hidden; }
+.panel-title { font-family: '"Press Start 2P"', monospace; font-size: 7px; letter-spacing: .12em; color: var(--muted); border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+.kv { display: flex; justify-content: space-between; font-size: 14px; }
+.kv .k { color: var(--muted); } .kv .v { color: var(--text); }
+#feed { flex-shrink: 0; min-height: 0; max-height: 42%; }
+#feed-list { display: flex; flex-direction: column; gap: 4px; overflow-y: auto; flex: 1; }
+.msg { padding: 5px 8px; border-radius: 5px; font-size: 13px; border: 1px solid transparent; line-height: 1.4; word-break: break-word; }
+.msg-call { background: #11233a; border-color: #244a6b; }
+.msg-resp { background: #122a1a; border-color: #2d4a2d; }
+.msg-deny { background: #2a1212; border-color: var(--red); color: #ffd7d7; }
+.msg-ok   { background: #122a1a; border-color: var(--green); color: #d7ffe0; }
+.msg-meet { background: #11283a; border-color: var(--blue); color: #d7f1ff; }
+</style>
+</head>
+<body>
+<header>
+  <h1>PEER MEET</h1>
+  <span id="h-meta">two robots that never met — A2A handshake + lex-guard spend wall</span>
+  <div id="h-conn"><div id="h-dot"></div><span id="h-status">connecting</span></div>
+</header>
+
+<div id="main">
+  <div id="game-col">
+    <div id="game-container"></div>
+  </div>
+  <div id="sidebar">
+    <div class="panel">
+      <div class="panel-title">Robot A · consumer</div>
+      <div class="kv"><span class="k">battery</span><span class="v" id="s-batt">—</span></div>
+      <div class="kv"><span class="k">budget /tx</span><span class="v" id="s-cap">—</span></div>
+      <div class="kv"><span class="k">spent</span><span class="v" id="s-spent">0 cr</span></div>
+    </div>
+    <div class="panel" id="feed">
+      <div class="panel-title">A2A · lex-guard feed</div>
+      <div id="feed-list"><span style="color:var(--muted);font-size:13px">awaiting peer encounter…</span></div>
+    </div>
+    <!-- Event log — now a tall, readable side panel -->
+    <div id="log-section">
+      <div id="log-hdr">Event Log</div>
+      <div id="log"></div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/phaser/3.70.0/phaser.min.js"></script>
+<script src="/retro_kit.js"></script>
+<script>
+'use strict';
+let gameScene = null;
+const eventQueue = [];
+
+class PeerScene extends Phaser.Scene {
+  constructor() { super({ key: 'PeerScene' }); }
+
+  create() {
+    const W = this.scale.width, H = this.scale.height;
+    this.W = W; this.H = H;
+    RK.drawBg(this, { skyFrac: 0.16 });
+    RK.makeSign(this, W * 0.5, H * 0.30, 'MEETING POINT');
+    this.aHome = { x: W * 0.20, y: H * 0.66 };
+    this.bHome = { x: W * 0.80, y: H * 0.66 };
+    this.A = RK.makeRobot(this, this.aHome.x, this.aHome.y, 'A', 0x60a5fa);
+    this.B = RK.makeRobot(this, this.bHome.x, this.bHome.y, 'B', 0x4ade80);
+    this.add.text(this.bHome.x, this.bHome.y + 30, '⚡ charge peer', { fontFamily: RK.PX, fontSize: '13px', color: '#8aa0aa' }).setOrigin(0.5, 0);
+    this.battery = 0;
+    this._buildBattery();
+    gameScene = this;
+    while (eventQueue.length) this.handleEvent(eventQueue.shift());
+  }
+
+  _buildBattery() {
+    const x = this.aHome.x, y = this.aHome.y - 40;
+    this.battX = x; this.battY = y;
+    this.battGfx = this.add.graphics().setDepth(22);
+    this.battTxt = this.add.text(x, y - 12, '', { fontFamily: RK.PX, fontSize: '13px', color: '#ffd166' }).setOrigin(0.5, 1).setDepth(22);
+    this._drawBattery();
+  }
+  _drawBattery() {
+    const g = this.battGfx, x = this.battX - 22, y = this.battY, w = 44, h = 14;
+    g.clear();
+    g.fillStyle(0x0a1a1f, 0.6); g.fillRect(x - 2, y - 2, w + 6, h + 4);
+    g.fillStyle(0x2a3f50, 1);  g.fillRect(x, y, w, h);
+    g.fillStyle(RK.C.GOLD, 1); g.fillRect(x + w, y + 3, 3, h - 6);          // nub
+    const lvl = Math.max(0, Math.min(100, this.battery));
+    const col = lvl < 25 ? RK.C.RED : (lvl < 60 ? RK.C.GOLD : RK.C.GREEN);
+    g.fillStyle(col, 1); g.fillRect(x + 1, y + 1, Math.round((w - 2) * lvl / 100), h - 2);
+    if (this.battTxt) this.battTxt.setText(lvl + '%');
+  }
+  _setBattery(lvl) {
+    const from = this.battery;
+    this.tweens.addCounter({ from, to: lvl, duration: 900, ease: 'Cubic.easeOut',
+      onUpdate: (tw) => { this.battery = Math.round(tw.getValue()); this._drawBattery(); },
+      onComplete: () => { this.battery = lvl; this._drawBattery(); } });
+  }
+
+  handleEvent(ev) {
+    const k = ev.kind;
+    if      (k === 'peer_start')   { this.battery = ev.battery || 0; this._drawBattery(); }
+    else if (k === 'qr_meet')      this._onMeet(ev.blob || '');
+    else if (k === 'a2a_call')     this._say(this.A, `→ ${ev.skill||''}`, '#11233aee');
+    else if (k === 'a2a_resp')     this._say(this.B, `${ev.ok===false?'✗':'✓'} ${ev.skill||''}`, ev.ok===false?'#2a1212ee':'#122a1aee');
+    else if (k === 'spend_check')  RK.capBanner(this, `lex-guard ▸ check ${ev.amount}cr`, 'audit');
+    else if (k === 'spend_denied') { RK.capStamp(this, this.A.x, this.A.y - 26, '⛔ DENIED', 'deny'); RK.capBanner(this, `⛔ GRANT DENIED\n${ev.amount}cr > cap`, 'deny'); }
+    else if (k === 'spend_ok')     RK.capBanner(this, `✓ PAID ${ev.amount}cr`, 'grant');
+    else if (k === 'battery')      this._setBattery(ev.level || this.battery);
+    else if (k === 'done')         RK.capBanner(this, 'PEER CHARGE COMPLETE', 'grant');
+  }
+
+  _say(who, text, bg) { if (who) RK.speech(this, who.x, who.y - 24, text, bg); }
+
+  // The meeting: A walks toward B; the bootstrap blob it received renders as a QR.
+  _onMeet(blob) {
+    const mx = this.W * 0.5, my = this.H * 0.52;
+    this.tweens.add({ targets: this.A, x: this.W * 0.38, y: this.aHome.y, duration: 700, ease: 'Cubic.easeInOut' });
+    if (typeof RK !== 'undefined') RK.makeQR(this, mx, my, blob, 58, (grp) => {
+      const tag = this.add.text(mx, my + 36, 'bootstrap blob — no prior key', { fontFamily: RK.PX, fontSize: '12px', color: '#7fd4ff' }).setOrigin(0.5, 0).setDepth(27).setAlpha(0);
+      this.tweens.add({ targets: tag, alpha: 1, duration: 200 });
+      RK.scanBeam(this, this.W * 0.38, this.aHome.y - 10, mx, my);
+      this.time.delayedCall(1100, () => {
+        this.tweens.add({ targets: tag, alpha: 0, duration: 350, onComplete: () => tag.destroy() });
+        this.tweens.add({ targets: [grp.bg, grp.img], alpha: 0, duration: 400, onComplete: () => grp.destroy() });
+      });
+    });
+  }
+}
+
+window.addEventListener('load', () => {
+  const c = document.getElementById('game-container');
+  const W = Math.max(c.clientWidth || 900, 400);
+  const H = Math.max(c.clientHeight || 360, 300);
+  RK.startWhenFontsReady(() => new Phaser.Game(RK.gameConfig('game-container', W, H, PeerScene)));
+});
+
+// ── HTML side ───────────────────────────────────────────────────
+let spent = 0;
+function ts() { return new Date().toTimeString().slice(0, 8); }
+function addLog(kind, body, cls) {
+  const el = document.createElement('div'); el.className = 'll';
+  el.innerHTML = `<span class="ts">${ts()}</span><span class="ev">${kind}</span><span class="${cls||''}">${body}</span>`;
+  const log = document.getElementById('log'); log.appendChild(el); log.scrollTop = log.scrollHeight;
+}
+function addMsg(type, body) {
+  const feed = document.getElementById('feed-list');
+  if (feed.firstElementChild && !feed.firstElementChild.classList.contains('msg')) feed.innerHTML = '';
+  const el = document.createElement('div'); el.className = `msg ${type}`; el.innerHTML = body;
+  feed.appendChild(el); feed.scrollTop = feed.scrollHeight;
+  while (feed.children.length > 60) feed.removeChild(feed.firstChild);
+}
+function setKV(id, v) { const el = document.getElementById(id); if (el) el.textContent = v; }
+
+// Animation queue — pace the burst of events so the canvas reads as a story.
+const ANIM_DELAY = { peer_start: 250, budget_token: 600, qr_meet: 1200, a2a_call: 350, a2a_resp: 500, spend_check: 500, spend_denied: 1100, spend_ok: 900, battery: 700, done: 750 };
+const _q = []; let _qt = null;
+function _qDrain() {
+  if (!_q.length) { _qt = null; return; }
+  const { ev, fn, delay } = _q.shift();
+  if (ev) { if (gameScene) gameScene.handleEvent(ev); else eventQueue.push(ev); }
+  if (fn) fn();
+  _qt = setTimeout(_qDrain, delay ?? 0);
+}
+function enqueue(ev, fn, delay) { _q.push({ ev, fn, delay: delay ?? 0 }); if (!_qt) _qDrain(); }
+
+function handleEvent(ev) {
+  const k = ev.kind;
+  const fn = () => {
+    if      (k === 'peer_start')   { setKV('s-batt', (ev.battery||0) + '%'); document.getElementById('h-dot').className = 'run'; document.getElementById('h-status').textContent = 'running'; addLog('peer_start', `${ev.a} meets ${ev.b}`, ''); }
+    else if (k === 'budget_token') { setKV('s-cap', `${ev.cap_tx} ${ev.currency}`); addMsg('msg-meet', `🔑 budget token verified — cap ${ev.cap_tx}cr/tx`); addLog('budget_token', 'signed allowance verified', 'ok'); }
+    else if (k === 'qr_meet')      { addMsg('msg-meet', `⊞ scanned <b>bootstrap blob</b> — A had no prior key for B`); addLog('qr_meet', 'bootstrap QR exchanged', ''); }
+    else if (k === 'a2a_call')     { addMsg('msg-call', `${ev.from} → ${ev.to}: <b>${ev.skill}</b>`); addLog('a2a_call', `${ev.from}→${ev.to} ${ev.skill}`, ''); }
+    else if (k === 'a2a_resp')     { const ok = ev.ok !== false; addMsg('msg-resp', `${ev.from} → ${ev.to}: ${ev.skill} ${ok?'✓':'✗'}${ev.body?(' <code>'+String(ev.body).slice(0,60)+'</code>'):''}`); addLog('a2a_resp', `${ev.skill}`, ok?'ok':'er'); }
+    else if (k === 'spend_check')  { addMsg('msg-call', `lex-guard ▸ authorize <b>${ev.amount}cr</b> (${ev.units} units)`); addLog('spend_check', `${ev.amount}cr`, ''); }
+    else if (k === 'spend_denied') { addMsg('msg-deny', `⛔ DENIED ${ev.amount}cr — ${ev.reason||'over cap'}`); addLog('spend_denied', `${ev.amount}cr: ${ev.reason||''}`, 'er'); }
+    else if (k === 'spend_ok')     { spent += ev.amount||0; setKV('s-spent', spent + ' cr'); addMsg('msg-ok', `✓ PAID ${ev.amount}cr — ref ${ev.ref||''}`); addLog('spend_ok', `${ev.amount}cr`, 'ok'); }
+    else if (k === 'battery')      { setKV('s-batt', (ev.level||0) + '%'); addLog('battery', `→ ${ev.level}%`, 'ok'); }
+    else if (k === 'done')         { document.getElementById('h-dot').className = 'live'; document.getElementById('h-status').textContent = 'complete'; addMsg('msg-ok', `<b>${ev.result||'done'}</b>`); addLog('done', ev.result||'', 'ok'); }
+    else addLog(k, JSON.stringify(ev).slice(0, 80), '');
+  };
+  enqueue(ev, fn, ANIM_DELAY[k] ?? 0);
+}
+
+function connect() {
+  const dot = document.getElementById('h-dot'), sts = document.getElementById('h-status');
+  dot.className = ''; sts.textContent = 'connecting';
+  const es = new EventSource('/events');
+  es.onopen = () => { dot.className = 'live'; sts.textContent = 'connected'; };
+  es.onmessage = e => { try { handleEvent(JSON.parse(e.data)); } catch(err) { console.warn('bad event', e.data, err); } };
+  // Long-poll closes each batch → onerror fires; let native EventSource reconnect
+  // (preserves Last-Event-ID). Do NOT close/reopen (that replays from id 0).
+  es.onerror = () => { dot.className = ''; sts.textContent = 'reconnecting…'; };
+}
+connect();
+</script>
+</body>
+</html>

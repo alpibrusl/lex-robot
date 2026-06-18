@@ -65,6 +65,12 @@ header h1 { font-size: 13px; color: var(--green); letter-spacing: .15em; font-we
   grid-template-columns: 280px 1fr; background: var(--border); gap: 1px; overflow: hidden;
 }
 
+/* Right column: ops feed (compact, top) + event log (tall, flex:1 below) */
+#right-col {
+  display: flex; flex-direction: column; gap: 1px;
+  background: var(--border); overflow: hidden; min-height: 0;
+}
+
 #left-col {
   display: flex; flex-direction: column; gap: 1px;
   background: var(--border); overflow: hidden;
@@ -108,9 +114,9 @@ header h1 { font-size: 13px; color: var(--green); letter-spacing: .15em; font-we
 .ml-row { font-size: 9px; color: var(--muted); padding: 2px 0; border-bottom: 1px solid #0c140c; flex-shrink: 0; }
 .ml-row .ml-ts { color: #1a2a1a; margin-right: 5px; }
 
-/* A2A feed */
+/* A2A feed — compact top half of the right column */
 #a2a-panel {
-  background: var(--bg); padding: 8px 10px;
+  background: var(--bg); padding: 8px 10px; flex: 1; min-height: 0;
   display: flex; flex-direction: column; gap: 5px; overflow: hidden;
 }
 #a2a-feed { overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 4px; }
@@ -127,13 +133,14 @@ header h1 { font-size: 13px; color: var(--green); letter-spacing: .15em; font-we
 .msg-think    { background: #050a05; border-color: #1a3a1a; align-self: flex-start; }
 .msg-question { background: #1a1500; border-color: var(--amber); align-self: flex-start; }
 
+/* Event log — now a tall, readable panel in the right column */
 #log-section {
-  flex-shrink: 0; height: 110px; background: var(--bg);
-  border-top: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden;
+  flex: 1; min-height: 0; background: var(--bg);
+  display: flex; flex-direction: column; overflow: hidden;
 }
-#log-hdr { font-size: 9px; text-transform: uppercase; letter-spacing: .14em; color: var(--muted); padding: 4px 11px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
-#log     { overflow-y: auto; flex: 1; padding: 3px 11px; }
-.ll      { font-size: 10px; color: var(--muted); white-space: nowrap; line-height: 1.6; }
+#log-hdr { font-size: 9px; text-transform: uppercase; letter-spacing: .14em; color: var(--muted); padding: 6px 11px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+#log     { overflow-y: auto; flex: 1; padding: 4px 11px; }
+.ll      { font-size: 12px; color: var(--muted); white-space: nowrap; line-height: 1.7; }
 .ll .ts  { color: #1a2a1a; margin-right: 7px; }
 .ll .ev  { color: var(--green); margin-right: 5px; }
 .ll .cu  { font-weight: bold; margin-right: 4px; }
@@ -179,20 +186,24 @@ header h1 { font-size: 13px; color: var(--green); letter-spacing: .15em; font-we
     </div>
   </div>
 
-  <div id="a2a-panel">
-    <div class="panel-title">Operations Feed</div>
-    <div id="a2a-feed">
-      <div style="color:var(--muted);font-size:11px;text-align:center;margin-top:24px">[STANDBY] — Awaiting mission activation</div>
+  <div id="right-col">
+    <div id="a2a-panel">
+      <div class="panel-title">Operations Feed</div>
+      <div id="a2a-feed">
+        <div style="color:var(--muted);font-size:11px;text-align:center;margin-top:24px">[STANDBY] — Awaiting mission activation</div>
+      </div>
+    </div>
+
+    <!-- Event log — now a tall, readable side panel -->
+    <div id="log-section">
+      <div id="log-hdr">Event Log</div>
+      <div id="log"></div>
     </div>
   </div>
 </div>
 
-<div id="log-section">
-  <div id="log-hdr">Event Log</div>
-  <div id="log"></div>
-</div>
-
 <script src="https://cdn.jsdelivr.net/npm/phaser@3.70.0/dist/phaser.min.js"></script>
+<script src="/retro_kit.js"></script>
 <script>
 'use strict';
 
@@ -232,114 +243,78 @@ class HeistScene extends Phaser.Scene {
   }
 
   _drawBg(W, H) {
-    const g = this.add.graphics().setDepth(0);
-    g.fillStyle(0x050a05, 1); g.fillRect(0, 0, W, H);
-    g.lineStyle(1, 0x080f08, 1);
-    for (let x = 0; x < W; x += 50) { g.moveTo(x, 0); g.lineTo(x, H); }
-    for (let y = 0; y < H; y += 50) { g.moveTo(0, y); g.lineTo(W, y); }
-    g.strokePath();
+    RK.drawBg(this, { skyFrac: 0.13 });
   }
 
   _buildRooms(W, H) {
-    const RW = W * 0.44, RH = H * 0.44;
+    const RW = W * 0.40, RH = H * 0.34;
     const positions = {
-      Lobby:    { col: 0, row: 0, color: 0x1a3a1a, label: 'LOBBY'         },
-      Security: { col: 1, row: 0, color: 0x3a1a00, label: 'SECURITY'      },
-      Server:   { col: 0, row: 1, color: 0x001a3a, label: 'SERVER ROOM'   },
-      Vault:    { col: 1, row: 1, color: 0x2a001a, label: 'VAULT'         },
+      Lobby:    { col: 0, row: 0, accent: 0x6d8c3a, label: 'LOBBY'       },
+      Security: { col: 1, row: 0, accent: 0xc2410c, label: 'SECURITY'    },
+      Server:   { col: 0, row: 1, accent: 0x2b6cb0, label: 'SERVER ROOM' },
+      Vault:    { col: 1, row: 1, accent: 0x8b5cf6, label: 'VAULT'       },
     };
-
-    const padX = W * 0.04, padY = H * 0.06;
-    const gapX = W * 0.08, gapY = H * 0.08;
+    const padX = W * 0.07, padY = H * 0.20;
+    const gapX = W * 0.10, gapY = H * 0.30;
 
     Object.entries(positions).forEach(([name, def]) => {
-      const cx = padX + def.col * (RW + gapX) + RW/2;
-      const cy = padY + def.row * (RH + gapY) + RH/2;
-      const x0 = cx - RW/2, y0 = cy - RH/2;
-
-      const g = this.add.graphics().setDepth(2);
-      g.fillStyle(def.color, 1); g.fillRect(x0, y0, RW, RH);
-      g.fillStyle(0x000000, 0.3); g.fillRect(x0, y0, RW, 16);
-      g.lineStyle(1, def.color + 0x202020, 0.8); g.strokeRect(x0, y0, RW, RH);
-
-      this.add.text(cx, y0 + 8, def.label, {
-        fontSize: '8px', color: '#00ff41', fontFamily: 'Courier New', fontStyle: 'bold', align: 'center', letterSpacing: 3
-      }).setOrigin(0.5, 0.5).setDepth(4);
-
-      const highlight = this.add.graphics().setDepth(3).setVisible(false);
-      this.rooms[name] = { cx, cy, x0, y0, RW, RH, g, highlight, color: def.color };
-
-      // Camera icons in Security room
-      if (name === 'Security') {
-        this._buildCameras(cx, cy, RW, RH, x0, y0);
-      }
-      // Vault door
-      if (name === 'Vault') {
-        this._buildVaultDoor(cx, cy, x0, y0, RW, RH);
-      }
+      const cx = padX + def.col * (RW + gapX) + RW / 2;
+      const cy = padY + def.row * (RH + gapY) + RH / 2;
+      const b = RK.makeBuilding(this, cx, cy, RW, RH, def.label, null, def.accent, { icon: name === 'Vault' ? '✦' : '' });
+      this.rooms[name] = { cx, cy, x0: cx - RW / 2, y0: cy - RH / 2, RW, RH, g: b.g, color: def.accent };
+      if (name === 'Security') this._buildCameras(cx, cy, RW, RH, cx - RW / 2, cy - RH / 2);
+      if (name === 'Vault')    this._buildVaultDoor(cx, cy, cx - RW / 2, cy - RH / 2, RW, RH);
     });
   }
 
   _buildCameras(cx, cy, RW, RH, x0, y0) {
     const camPos = [
-      { x: x0 + RW * 0.2, y: y0 + RH * 0.45 },
-      { x: x0 + RW * 0.5, y: y0 + RH * 0.45 },
-      { x: x0 + RW * 0.8, y: y0 + RH * 0.45 },
+      { x: x0 + RW * 0.22, y: y0 + RH * 0.62 },
+      { x: x0 + RW * 0.50, y: y0 + RH * 0.62 },
+      { x: x0 + RW * 0.78, y: y0 + RH * 0.62 },
     ];
     this.cams = camPos.map(pos => {
       const g = this.add.graphics().setDepth(5);
-      this._drawCam(g, pos.x, pos.y, 0x00ff41, true);
+      this._drawCam(g, pos.x, pos.y, RK.C.GOLD, true);
       return { g, x: pos.x, y: pos.y, active: true };
     });
   }
 
   _drawCam(g, x, y, color, active) {
     g.clear();
-    const col = active ? color : 0x2a2a2a;
-    g.fillStyle(col, active ? 1 : 0.5);
-    g.fillRect(x - 7, y - 4, 14, 8);
-    g.fillTriangle(x + 7, y - 5, x + 14, y - 7, x + 7, y + 5);
-    if (active) {
-      g.lineStyle(1, col, 0.4); g.strokeRect(x - 7, y - 4, 14, 8);
-    }
+    const col = active ? color : 0x4a4a4a;
+    g.fillStyle(0x2a1c10, 1); g.fillRect(x - 8, y - 5, 16, 10);
+    g.fillStyle(col, active ? 1 : 0.5); g.fillRect(x - 6, y - 3, 12, 6);
+    g.fillTriangle(x + 6, y - 5, x + 13, y - 8, x + 6, y + 5);
+    g.fillStyle(active ? 0xffffff : 0x666666, active ? 0.9 : 0.4); g.fillRect(x - 4, y - 1, 2, 2);
   }
 
   _buildVaultDoor(cx, cy, x0, y0, RW, RH) {
-    const dw = RW * 0.45, dh = RH * 0.55;
-    const dx = cx - dw/2, dy = cy - dh/2 + 10;
+    const dw = Math.min(40, RW * 0.4), dh = Math.min(46, RH * 0.6);
+    const dx = cx - dw / 2, dy = cy - dh / 2 + 8;
     const g = this.add.graphics().setDepth(5);
-    g.fillStyle(0x444466, 1); g.fillRect(dx, dy, dw, dh);
-    g.lineStyle(2, 0xcc66ff, 0.8); g.strokeRect(dx, dy, dw, dh);
-    // Circles on door
-    g.lineStyle(1, 0xcc66ff, 0.5); g.strokeCircle(cx, cy + 10, dh * 0.3);
-    g.fillStyle(0xcc66ff, 0.6); g.fillCircle(cx, cy + 10, 5);
-    g.lineStyle(1, 0xcc66ff, 0.3); g.strokeCircle(cx, cy + 10, dh * 0.5);
+    g.fillStyle(0x2a3340, 1);                     g.fillRect(dx - 2, dy - 2, dw + 4, dh + 4);
+    g.fillStyle(RK.C.STONE_HI, 1);                g.fillRect(dx, dy, dw, dh);
+    g.fillStyle(RK.shade(RK.C.STONE_HI, 0.7), 1); g.fillRect(dx + 3, dy + 3, dw - 6, dh - 6);
+    g.fillStyle(RK.C.GOLD, 1);                    g.fillCircle(cx, dy + dh / 2, 6);
+    g.fillStyle(0x2a1c10, 1);                     g.fillCircle(cx, dy + dh / 2, 2);
+    for (let a = 0; a < 8; a++) { const an = a / 8 * Math.PI * 2; g.fillStyle(RK.C.GOLD, 1); g.fillRect(cx + Math.cos(an) * 9 - 1, dy + dh / 2 + Math.sin(an) * 9 - 1, 2, 2); }
     this.vaultDoor = { g, dx, dy, dw, dh, cx, cy };
-    this.add.text(cx, cy + 10, 'LOCKED', { fontSize: '8px', color: '#cc66ff88', fontFamily: 'Courier New' }).setOrigin(0.5, 0.5).setDepth(6);
+    this.vaultLabel = this.add.text(cx, dy + dh + 5, 'LOCKED', { fontFamily: RK.PX, fontSize: '11px', color: '#c08a3a' }).setOrigin(0.5, 0).setDepth(6);
   }
 
   _buildAgents(W, H) {
     const startPositions = {
-      Scout:     { x: W * 0.08, y: H * 0.35 },
-      Hacker:    { x: W * 0.20, y: H * 0.55 },
-      Muscle:    { x: W * 0.08, y: H * 0.55 },
-      Extractor: { x: W * 0.20, y: H * 0.35 },
+      Scout:     { x: W * 0.06, y: H * 0.40 },
+      Hacker:    { x: W * 0.06, y: H * 0.62 },
+      Muscle:    { x: W * 0.06, y: H * 0.84 },
+      Extractor: { x: W * 0.13, y: H * 0.51 },
     };
     Object.entries(AGENTS).forEach(([name, cfg]) => {
       const pos = startPositions[name];
-      const con = this._makeAgent(pos.x, pos.y, name[0], cfg.color, cfg.tc);
+      const con = RK.makeRobot(this, pos.x, pos.y, name[0], cfg.color);
       this.agents[name] = { container: con, homeX: pos.x, homeY: pos.y, color: cfg.color, thinkTween: null, thinkRing: null, bubble: null };
     });
-  }
-
-  _makeAgent(x, y, label, color, tc) {
-    const r = this.R;
-    const g = this.add.graphics();
-    g.fillStyle(0x000000, 0.35); g.fillEllipse(1, r+3, r*1.5, r*0.5);
-    g.fillStyle(color, 1); g.fillCircle(0, 0, r);
-    g.fillStyle(0xffffff, 0.15); g.fillCircle(-r*0.28, -r*0.32, r*0.38);
-    const t = this.add.text(0, 0, label, { fontSize: '9px', color: tc, fontFamily: 'Courier New', fontStyle: 'bold' }).setOrigin(0.5, 0.5);
-    return this.add.container(x, y, [g, t]).setDepth(20);
   }
 
   _moveAgent(name, roomName) {
@@ -372,33 +347,24 @@ class HeistScene extends Phaser.Scene {
       const flash = this.add.graphics().setDepth(8);
       flash.fillStyle(0xff3333, 0.15); flash.fillRect(room.x0, room.y0, room.RW, room.RH);
       this.tweens.add({ targets: flash, alpha: 0, duration: 1000, onComplete: () => flash.destroy() });
-      this.add.text(room.cx, room.cy + 25, 'OFFLINE', { fontSize: '9px', color: '#ff333388', fontFamily: 'Courier New' }).setOrigin(0.5, 0.5).setDepth(9);
+      this.add.text(room.cx, room.cy + 24, 'OFFLINE', { fontFamily: RK.PX, fontSize: '12px', color: '#f87171' }).setOrigin(0.5, 0.5).setDepth(9);
     }
   }
 
   _openVault() {
     if (this.vaultOpen || !this.vaultDoor) return;
     this.vaultOpen = true;
-    const { g, dx, dy, dw, dh, cx, cy } = this.vaultDoor;
-    this.tweens.add({ targets: g, x: -dw, duration: 1200, ease: 'Cubic.easeInOut',
-      onUpdate: () => {
-        g.clear();
-        const nx = g.x || 0;
-        g.fillStyle(0x444466, 1); g.fillRect(dx + nx, dy, dw + nx, dh);
-        g.lineStyle(2, 0x4ade80, 0.8); g.strokeRect(dx + nx, dy, dw + nx, dh);
-      },
+    const { g, dx, dw } = this.vaultDoor;
+    if (this.vaultLabel) { this.vaultLabel.setText('OPEN').setColor('#4ade80'); }
+    this.tweens.add({ targets: g, x: -(dx + dw + 8), alpha: 0.2, duration: 1100, ease: 'Cubic.easeInOut',
       onComplete: () => {
-        g.clear();
         const room = this.rooms['Vault'];
         if (room) {
           const flash = this.add.graphics().setDepth(10);
           flash.fillStyle(0x4ade80, 0.25); flash.fillRect(room.x0, room.y0, room.RW, room.RH);
           this.tweens.add({ targets: flash, alpha: 0, duration: 1200, onComplete: () => flash.destroy() });
         }
-        const open = this.add.text(cx, cy + 10, '■ OPEN ■', {
-          fontSize: '11px', color: '#4ade80', fontFamily: 'Courier New', fontStyle: 'bold'
-        }).setOrigin(0.5, 0.5).setDepth(11);
-        this.tweens.add({ targets: open, scaleX: 1.2, scaleY: 1.2, duration: 300, yoyo: true, ease: 'Sine.easeOut' });
+        RK.capBanner(this, '✓ VAULT OPENED', 'grant');
       }
     });
   }
@@ -407,15 +373,22 @@ class HeistScene extends Phaser.Scene {
     const agent = this.agents[name]; if (!agent) return;
     this._clearThink(name);
     const ring = this.add.graphics().setDepth(18);
-    ring.lineStyle(2, 0x00ff41, 1); ring.strokeCircle(0, 0, 15);
+    ring.lineStyle(2, RK.C.GOLD, 1); ring.strokeCircle(0, 0, 15);
     ring.setPosition(agent.container.x, agent.container.y);
     agent.thinkRing = ring;
     agent.thinkTween = this.tweens.add({ targets: ring, scaleX: 2.5, scaleY: 2.5, alpha: 0, duration: 900, repeat: -1, ease: 'Sine.easeOut',
       onRepeat: () => ring.setPosition(agent.container.x, agent.container.y).setAlpha(1).setScale(1)
     });
-    const bub = this.add.text(agent.container.x, agent.container.y - 20, '· · ·', { fontSize: '9px', color: '#00ff41', fontFamily: 'Courier New' }).setOrigin(0.5, 1).setDepth(25);
+    const bub = this.add.text(agent.container.x, agent.container.y - 22, '· · ·', { fontFamily: RK.PX, fontSize: '15px', color: '#ffd166' }).setOrigin(0.5, 1).setDepth(25);
     agent.bubble = bub;
     this.tweens.add({ targets: bub, y: bub.y - 9, duration: 700, repeat: -1, yoyo: true, ease: 'Sine.easeInOut' });
+  }
+
+  // Lex grant layer refused a skill — stamp the agent and flash a banner.
+  _onDenied(name, skill, why) {
+    const a = this.agents[name];
+    if (a) RK.capStamp(this, a.container.x, a.container.y - 26, '⛔ DENIED', 'deny');
+    RK.capBanner(this, '⛔ GRANT DENIED\n' + (skill || 'skill'), 'deny');
   }
 
   _bounce(name) {
@@ -439,14 +412,18 @@ class HeistScene extends Phaser.Scene {
       Object.keys(this.agents).forEach(n => { this._clearThink(n); this.agents[n].container.setAlpha(1); });
     }
     else if (k === 'phase') {
-      const txt = this.add.text(this.W/2, 15, `PHASE: ${(ev.phase||'').toUpperCase()}`, {
-        fontSize: '10px', color: '#00ff41', fontFamily: 'Courier New', letterSpacing: 4,
-        backgroundColor: '#050a05dd', padding: { x: 10, y: 3 }
+      const txt = this.add.text(this.W/2, 10, `PHASE: ${(ev.phase||'').toUpperCase()}`, {
+        fontFamily: RK.PXH, fontSize: '7px', color: '#ffd166',
+        backgroundColor: '#0a1a1fdd', padding: { x: 10, y: 6 }
       }).setOrigin(0.5, 0).setDepth(50).setAlpha(0);
       this.tweens.add({ targets: txt, alpha: 1, duration: 300,
-        onComplete: () => this.tweens.add({ targets: txt, alpha: 0, duration: 400, delay: 2500, onComplete: () => txt.destroy() })
+        onComplete: () => this.tweens.add({ targets: txt, alpha: 0, duration: 400, delay: 1100, onComplete: () => txt.destroy() })
       });
     }
+    else if (k === 'denied') {
+      this._onDenied(name, ev.skill || '', ev.why || '');
+    }
+    else if (k === 'qr_meet') this._onQRMeet(name, ev.blob || '');
     else if (k === 'area_scanned' || k === 'a2a_call') {
       if (name && area) this._moveAgent(name, area);
       else if (name) this._onThink(name);
@@ -469,24 +446,32 @@ class HeistScene extends Phaser.Scene {
     }
     else if (k === 'done') {
       const txt = this.add.text(this.W/2, this.H/2, 'HEIST COMPLETE', {
-        fontSize: '16px', color: '#00ff41', fontFamily: 'Courier New', fontStyle: 'bold',
-        backgroundColor: '#050a05ee', padding: { x: 18, y: 9 }
+        fontFamily: RK.PXH, fontSize: '14px', color: '#4ade80',
+        backgroundColor: '#0a1a1fee', padding: { x: 18, y: 12 }
       }).setOrigin(0.5, 0.5).setDepth(50).setAlpha(0);
       this.tweens.add({ targets: txt, alpha: 1, duration: 500,
-        onComplete: () => this.tweens.add({ targets: txt, alpha: 0, duration: 600, delay: 3500, onComplete: () => txt.destroy() })
+        onComplete: () => this.tweens.add({ targets: txt, alpha: 0, duration: 600, delay: 1800, onComplete: () => txt.destroy() })
       });
     }
+  }
+
+  _onQRMeet(agentName, blob) {
+    const a = this.agents[agentName]; if (!a || typeof RK === 'undefined') return;
+    const qx = a.container.x, qy = a.container.y - 46;
+    RK.makeQR(this, qx, qy, blob, 50, (grp) => {
+      const tag = this.add.text(qx, qy + 30, 'bootstrap blob — no prior key', { fontFamily: RK.PX, fontSize: '11px', color: '#7fd4ff' }).setOrigin(0.5,0).setDepth(27).setAlpha(0);
+      this.tweens.add({ targets: tag, alpha: 1, duration: 200 });
+      RK.scanBeam(this, a.container.x, a.container.y - 10, qx, qy);
+      this.time.delayedCall(1100, () => { this.tweens.add({ targets: tag, alpha: 0, duration: 350, onComplete: () => tag.destroy() }); this.tweens.add({ targets: [grp.bg, grp.img], alpha: 0, duration: 400, onComplete: () => grp.destroy() }); });
+    });
   }
 }
 
 window.addEventListener('load', () => {
   const container = document.getElementById('game-container');
   const W = Math.max(container.clientWidth || 900, 400);
-  new Phaser.Game({
-    type: Phaser.AUTO, parent: 'game-container', width: W, height: 242,
-    backgroundColor: 0x050a05, scene: HeistScene,
-    scale: { mode: Phaser.Scale.NONE }, render: { antialias: true, pixelArt: false }
-  });
+  const H = Math.max(container.clientHeight || 250, 240);
+  RK.startWhenFontsReady(() => new Phaser.Game(RK.gameConfig('game-container', W, H, HeistScene)));
 });
 
 async function answerQuestion(qid, btn) {
@@ -637,6 +622,17 @@ function handleEvent(ev) {
     addLog('vault_opened', agent, 'vault open', 'ok');
     return;
   }
+  if (k === 'denied') {
+    addMsg('msg-alert', agent, '⛔ grant denied', `<strong>${ev.skill || 'skill'}</strong> — ${ev.why || 'not in session grant'}`);
+    addMission(`⛔ GRANT DENIED: ${agent} → ${ev.skill || ''}`, '#ff3333');
+    addLog('denied', agent, `${ev.skill || ''}: ${ev.why || 'denied'}`, 'er');
+    return;
+  }
+  if (k === 'qr_meet') {
+    addMsg('msg-call', agent, '⊞ meet', 'scanned <code>bootstrap blob</code> — no prior key');
+    addLog('qr_meet', agent, `${area}: bootstrap QR`, '');
+    return;
+  }
   if (k === 'human_question') {
     addQuestion(ev.id, agent, ev.question || '');
     addMsg('msg-question', agent, '❓ vault auth', ev.question || '');
@@ -676,7 +672,10 @@ function connect() {
   const es = new EventSource('/events');
   es.onopen = () => { dot.className = 'live'; sts.textContent = 'connected'; };
   es.onmessage = e => { try { handleEvent(JSON.parse(e.data)); } catch(err) { console.warn('bad event', e.data, err); } };
-  es.onerror = () => { dot.className = ''; sts.textContent = 'reconnecting…'; es.close(); setTimeout(connect, 2000); };
+  // The /events long-poll closes after each batch, firing onerror. That is NOT a
+  // real disconnect — let the native EventSource reconnect (it preserves
+  // Last-Event-ID). Manually closing + reopening would replay from id 0.
+  es.onerror = () => { dot.className = ''; sts.textContent = 'reconnecting…'; };
 }
 connect();
 </script>

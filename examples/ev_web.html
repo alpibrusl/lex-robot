@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>EV Fleet — A2A charging + lex-guard</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg: #0a1420; --bg2: #0f1f2d; --bg3: #16273a; --border: #24384a;
+  --text: #dfeaf2; --muted: #7f9bb0;
+  --gold: #ffd166; --green: #4ade80; --red: #f87171; --blue: #7fd4ff;
+}
+html, body { height: 100%; overflow: hidden; }
+body { background: var(--bg); color: var(--text); font-family: 'VT323','Courier New',monospace; font-size: 15px; display: flex; flex-direction: column; height: 100dvh; }
+header { background: var(--bg2); border-bottom: 1px solid var(--border); padding: 0 16px; display: flex; align-items: center; gap: 14px; flex-shrink: 0; height: 42px; }
+header h1 { font-family: '"Press Start 2P"',monospace; font-size: 11px; color: var(--gold); letter-spacing: .08em; }
+#h-meta { color: var(--muted); font-size: 14px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#h-conn { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
+#h-dot { width: 9px; height: 9px; border-radius: 50%; background: #2a3f50; }
+#h-dot.live { background: var(--green); box-shadow: 0 0 8px var(--green); }
+#h-dot.run { background: var(--gold); box-shadow: 0 0 8px var(--gold); animation: blink 1s infinite; }
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
+#main { flex: 1; min-height: 0; display: flex; flex-direction: row; overflow: hidden; }
+#game-col { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
+#game-container { flex: 1; min-height: 0; overflow: hidden; background: var(--bg); }
+#game-container canvas { display: block; }
+#sidebar { width: 320px; flex-shrink: 0; background: var(--border); border-left: 1px solid var(--border); display: flex; flex-direction: column; gap: 1px; overflow: hidden; }
+.panel { background: var(--bg); padding: 9px 11px; display: flex; flex-direction: column; gap: 6px; overflow: hidden; }
+.panel-title { font-family: '"Press Start 2P"',monospace; font-size: 7px; letter-spacing: .12em; color: var(--muted); border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+.kv { display: flex; justify-content: space-between; font-size: 14px; }
+.kv .k { color: var(--muted); } .kv .v { color: var(--text); }
+/* Fleet budget meter */
+#budget-bar { height: 14px; background: #2a3f50; border-radius: 3px; overflow: hidden; margin-top: 3px; }
+#budget-fill { height: 100%; width: 0%; background: var(--green); transition: width .5s ease, background .3s; }
+#feed { flex-shrink: 0; min-height: 0; max-height: 34%; }
+#feed-list { display: flex; flex-direction: column; gap: 4px; overflow-y: auto; flex: 1; }
+.msg { padding: 5px 8px; border-radius: 5px; font-size: 13px; border: 1px solid transparent; line-height: 1.4; word-break: break-word; }
+.msg-call { background: #11233a; border-color: #244a6b; }
+.msg-resp { background: #122a1a; border-color: #2d4a2d; }
+.msg-deny { background: #2a1212; border-color: var(--red); color: #ffd7d7; }
+.msg-ok   { background: #122a1a; border-color: var(--green); color: #d7ffe0; }
+.msg-meet { background: #11283a; border-color: var(--blue); color: #d7f1ff; }
+#log-section { flex: 1; min-height: 0; background: var(--bg); display: flex; flex-direction: column; overflow: hidden; }
+#log-hdr { font-family: '"Press Start 2P"',monospace; font-size: 7px; letter-spacing: .12em; color: var(--muted); padding: 6px 11px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+#log { overflow-y: auto; flex: 1; padding: 4px 11px; }
+.ll { font-size: 12px; color: var(--muted); white-space: nowrap; line-height: 1.7; }
+.ll .ts { color: #3a5266; margin-right: 7px; }
+.ll .ev { color: var(--blue); margin-right: 6px; }
+.ll .ok { color: var(--green); } .ll .er { color: var(--red); }
+</style>
+</head>
+<body>
+<header>
+  <h1>EV FLEET</h1>
+  <span id="h-meta">vehicles meet chargers via A2A · paid under a shared fleet budget (lex-guard)</span>
+  <div id="h-conn"><div id="h-dot"></div><span id="h-status">connecting</span></div>
+</header>
+<div id="main">
+  <div id="game-col"><div id="game-container"></div></div>
+  <div id="sidebar">
+    <div class="panel">
+      <div class="panel-title">Fleet budget</div>
+      <div class="kv"><span class="k">spent / cap</span><span class="v" id="s-budget">0 / 100 cr</span></div>
+      <div id="budget-bar"><div id="budget-fill"></div></div>
+    </div>
+    <div class="panel">
+      <div class="panel-title">Vehicles</div>
+      <div class="kv"><span class="k">EV-1</span><span class="v" id="s-ev1">—</span></div>
+      <div class="kv"><span class="k">EV-2</span><span class="v" id="s-ev2">—</span></div>
+    </div>
+    <div class="panel" id="feed">
+      <div class="panel-title">A2A · lex-guard feed</div>
+      <div id="feed-list"><span style="color:var(--muted);font-size:13px">fleet idle…</span></div>
+    </div>
+    <div id="log-section">
+      <div id="log-hdr">Event Log</div>
+      <div id="log"></div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/phaser/3.70.0/phaser.min.js"></script>
+<script src="/retro_kit.js"></script>
+<script>
+'use strict';
+let gameScene = null;
+const eventQueue = [];
+
+const CHARGERS = [
+  { key: 'Standard', rate: 2, accent: 0x4ade80 },
+  { key: 'Fast',     rate: 5, accent: 0xffd166 },
+  { key: 'Premium',  rate: 9, accent: 0xf87171 },
+];
+const VEHICLES = [
+  { key: 'EV-1', label: 'E1', color: 0x60a5fa },
+  { key: 'EV-2', label: 'E2', color: 0x22d3ee },
+];
+
+class EVScene extends Phaser.Scene {
+  constructor() { super({ key: 'EVScene' }); this.chargers = {}; this.vehicles = {}; }
+
+  create() {
+    const W = this.scale.width, H = this.scale.height;
+    this.W = W; this.H = H;
+    RK.drawBg(this, { skyFrac: 0.15 });
+    RK.makeSign(this, W * 0.5, H * 0.92, 'DEPOT');
+
+    // Charging stations across the top.
+    const cols = [W * 0.22, W * 0.5, W * 0.78];
+    CHARGERS.forEach((c, i) => {
+      const cx = cols[i], cy = H * 0.34;
+      RK.makeBuilding(this, cx, cy, 120, 70, c.key, c.rate + ' cr/kWh', c.accent, { icon: '⚡' });
+      this.chargers[c.key] = { cx, cy, accent: c.accent };
+    });
+
+    // Vehicles parked at the depot.
+    const vx = [W * 0.40, W * 0.60];
+    VEHICLES.forEach((v, i) => {
+      const x = vx[i], y = H * 0.80;
+      const con = RK.makeRobot(this, x, y, v.label, v.color);
+      this.vehicles[v.key] = { container: con, homeX: x, homeY: y, battery: 0, battGfx: this.add.graphics().setDepth(22), battTxt: this.add.text(x, y - 30, '', { fontFamily: RK.PX, fontSize: '12px', color: '#ffd166' }).setOrigin(0.5, 1).setDepth(22) };
+      this._drawBattery(v.key);
+    });
+
+    gameScene = this;
+    while (eventQueue.length) this.handleEvent(eventQueue.shift());
+  }
+
+  _drawBattery(key) {
+    const v = this.vehicles[key]; if (!v) return;
+    const g = v.battGfx, x = v.container.x - 18, y = v.container.y - 26, w = 36, h = 10;
+    g.clear();
+    g.fillStyle(0x0a1a1f, 0.6); g.fillRect(x - 2, y - 2, w + 6, h + 4);
+    g.fillStyle(0x2a3f50, 1);   g.fillRect(x, y, w, h);
+    g.fillStyle(RK.C.GOLD, 1);  g.fillRect(x + w, y + 2, 3, h - 4);
+    const lvl = Math.max(0, Math.min(100, v.battery));
+    const col = lvl < 25 ? RK.C.RED : (lvl < 60 ? RK.C.GOLD : RK.C.GREEN);
+    g.fillStyle(col, 1); g.fillRect(x + 1, y + 1, Math.round((w - 2) * lvl / 100), h - 2);
+    v.battTxt.setPosition(v.container.x, v.container.y - 30).setText(lvl + '%');
+  }
+  _setBattery(key, lvl) {
+    const v = this.vehicles[key]; if (!v) return;
+    this.tweens.addCounter({ from: v.battery, to: lvl, duration: 800, ease: 'Cubic.easeOut',
+      onUpdate: (tw) => { v.battery = Math.round(tw.getValue()); this._drawBattery(key); },
+      onComplete: () => { v.battery = lvl; this._drawBattery(key); } });
+  }
+
+  handleEvent(ev) {
+    const k = ev.kind;
+    if      (k === 'fleet_start')  { if (this.vehicles['EV-1']) { this.vehicles['EV-1'].battery = ev.ev1 || 0; this._drawBattery('EV-1'); } if (this.vehicles['EV-2']) { this.vehicles['EV-2'].battery = ev.ev2 || 0; this._drawBattery('EV-2'); } }
+    else if (k === 'drive')        this._drive(ev.vehicle, ev.charger);
+    else if (k === 'qr_meet')      this._meet(ev.vehicle, ev.blob || '');
+    else if (k === 'a2a_call')     this._sayFrom(ev.from, `→ ${ev.skill||''}`, '#11233aee');
+    else if (k === 'a2a_resp')     this._sayCharger(ev.to, `${ev.ok===false?'✗':'✓'} ${ev.skill||''}`, ev.ok===false?'#2a1212ee':'#122a1aee');
+    else if (k === 'spend_check')  RK.capBanner(this, `lex-guard ▸ ${ev.vehicle} ${ev.amount}cr`, 'audit');
+    else if (k === 'spend_denied') { const v = this.vehicles[ev.vehicle]; if (v) RK.capStamp(this, v.container.x, v.container.y - 30, '⛔ DENIED', 'deny'); RK.capBanner(this, `⛔ GRANT DENIED\n${ev.vehicle} ${ev.amount}cr`, 'deny'); }
+    else if (k === 'spend_ok')     RK.capBanner(this, `✓ ${ev.vehicle} PAID ${ev.amount}cr`, 'grant');
+    else if (k === 'battery')      this._setBattery(ev.vehicle, ev.level || 0);
+    else if (k === 'done')         RK.capBanner(this, 'FLEET CHARGED', 'grant');
+  }
+
+  _sayFrom(vehicleKey, text, bg) { const v = this.vehicles[vehicleKey]; if (v) RK.speech(this, v.container.x, v.container.y - 24, text, bg); }
+  _sayCharger(vehicleKey, text, bg) { const v = this.vehicles[vehicleKey]; if (v && v._lastCharger && this.chargers[v._lastCharger]) { const c = this.chargers[v._lastCharger]; RK.speech(this, c.cx, c.cy - 30, text, bg); } else if (v) { RK.speech(this, v.container.x, v.container.y - 24, text, bg); } }
+
+  _drive(vehicleKey, chargerKey) {
+    const v = this.vehicles[vehicleKey], c = this.chargers[chargerKey];
+    if (!v || !c) return;
+    v._lastCharger = chargerKey;
+    this.tweens.killTweensOf(v.container);
+    const tx = c.cx + (vehicleKey === 'EV-2' ? 18 : -18), ty = c.cy + 46;
+    this.tweens.add({ targets: v.container, x: tx, y: ty, duration: 600, ease: 'Cubic.easeInOut',
+      onUpdate: () => this._drawBattery(vehicleKey),
+      onComplete: () => this._drawBattery(vehicleKey) });
+  }
+
+  _meet(vehicleKey, blob) {
+    const v = this.vehicles[vehicleKey]; if (!v || typeof RK === 'undefined') return;
+    const qx = v.container.x, qy = v.container.y - 50;
+    RK.makeQR(this, qx, qy, blob, 50, (grp) => {
+      const tag = this.add.text(qx, qy + 30, 'bootstrap blob — no prior key', { fontFamily: RK.PX, fontSize: '11px', color: '#7fd4ff' }).setOrigin(0.5, 0).setDepth(27).setAlpha(0);
+      this.tweens.add({ targets: tag, alpha: 1, duration: 150 });
+      RK.scanBeam(this, v.container.x, v.container.y - 10, qx, qy);
+      this.time.delayedCall(1100, () => { this.tweens.add({ targets: tag, alpha: 0, duration: 300, onComplete: () => tag.destroy() }); this.tweens.add({ targets: [grp.bg, grp.img], alpha: 0, duration: 350, onComplete: () => grp.destroy() }); });
+    });
+  }
+}
+
+window.addEventListener('load', () => {
+  const c = document.getElementById('game-container');
+  const W = Math.max(c.clientWidth || 900, 400);
+  const H = Math.max(c.clientHeight || 360, 300);
+  RK.startWhenFontsReady(() => new Phaser.Game(RK.gameConfig('game-container', W, H, EVScene)));
+});
+
+// ── HTML side ───────────────────────────────────────────────────
+let spent = 0, capTotal = 100;
+function ts() { return new Date().toTimeString().slice(0, 8); }
+function addLog(kind, body, cls) {
+  const el = document.createElement('div'); el.className = 'll';
+  el.innerHTML = `<span class="ts">${ts()}</span><span class="ev">${kind}</span><span class="${cls||''}">${body}</span>`;
+  const log = document.getElementById('log'); log.appendChild(el); log.scrollTop = log.scrollHeight;
+}
+function addMsg(type, body) {
+  const feed = document.getElementById('feed-list');
+  if (feed.firstElementChild && !feed.firstElementChild.classList.contains('msg')) feed.innerHTML = '';
+  const el = document.createElement('div'); el.className = `msg ${type}`; el.innerHTML = body;
+  feed.appendChild(el); feed.scrollTop = feed.scrollHeight;
+  while (feed.children.length > 60) feed.removeChild(feed.firstChild);
+}
+function setKV(id, v) { const el = document.getElementById(id); if (el) el.textContent = v; }
+function setBudget() {
+  setKV('s-budget', `${spent} / ${capTotal} cr`);
+  const fill = document.getElementById('budget-fill');
+  const pct = Math.min(100, Math.round(spent / capTotal * 100));
+  fill.style.width = pct + '%';
+  fill.style.background = pct < 60 ? 'var(--green)' : (pct < 90 ? 'var(--gold)' : 'var(--red)');
+}
+
+const ANIM_DELAY = { fleet_start: 300, budget_token: 500, drive: 700, qr_meet: 1100, a2a_call: 300, a2a_resp: 450, spend_check: 500, spend_denied: 1100, spend_ok: 800, battery: 700, done: 700 };
+const _q = []; let _qt = null;
+function _qDrain() {
+  if (!_q.length) { _qt = null; return; }
+  const { ev, fn, delay } = _q.shift();
+  if (ev) { if (gameScene) gameScene.handleEvent(ev); else eventQueue.push(ev); }
+  if (fn) fn();
+  _qt = setTimeout(_qDrain, delay ?? 0);
+}
+function enqueue(ev, fn, delay) { _q.push({ ev, fn, delay: delay ?? 0 }); if (!_qt) _qDrain(); }
+
+function handleEvent(ev) {
+  const k = ev.kind;
+  const fn = () => {
+    if      (k === 'fleet_start')  { setKV('s-ev1', (ev.ev1||0)+'%'); setKV('s-ev2', (ev.ev2||0)+'%'); capTotal = ev.cap_total||100; setBudget(); document.getElementById('h-dot').className='run'; document.getElementById('h-status').textContent='running'; addLog('fleet_start', 'fleet dispatched', ''); }
+    else if (k === 'budget_token') { addMsg('msg-meet', `🔑 fleet budget token verified — ${ev.cap_tx}cr/tx, ${ev.cap_total}cr total`); addLog('budget_token','signed fleet allowance','ok'); }
+    else if (k === 'drive')        { addLog('drive', `${ev.vehicle} → ${ev.charger}`, ''); }
+    else if (k === 'qr_meet')      { addMsg('msg-meet', `${ev.vehicle} ⊞ scanned bootstrap blob — no prior key`); addLog('qr_meet', `${ev.vehicle}: bootstrap QR`, ''); }
+    else if (k === 'a2a_call')     { addMsg('msg-call', `${ev.from} → ${ev.to}: <b>${ev.skill}</b>`); addLog('a2a_call', `${ev.from} ${ev.skill}`, ''); }
+    else if (k === 'a2a_resp')     { const ok = ev.ok!==false; addMsg('msg-resp', `${ev.from} → ${ev.to}: ${ev.skill} ${ok?'✓':'✗'}${ev.body?(' <code>'+String(ev.body).slice(0,56)+'</code>'):''}`); addLog('a2a_resp', `${ev.skill}`, ok?'ok':'er'); }
+    else if (k === 'spend_check')  { addMsg('msg-call', `lex-guard ▸ ${ev.vehicle} authorize <b>${ev.amount}cr</b> (${ev.kwh} kWh @ ${ev.charger})`); addLog('spend_check', `${ev.vehicle} ${ev.amount}cr`, ''); }
+    else if (k === 'spend_denied') { addMsg('msg-deny', `⛔ ${ev.vehicle} DENIED ${ev.amount}cr — ${ev.reason||'over cap'}`); addLog('spend_denied', `${ev.vehicle} ${ev.amount}cr: ${ev.reason||''}`, 'er'); }
+    else if (k === 'spend_ok')     { spent += ev.amount||0; setBudget(); addMsg('msg-ok', `✓ ${ev.vehicle} PAID ${ev.amount}cr @ ${ev.charger}`); addLog('spend_ok', `${ev.vehicle} ${ev.amount}cr`, 'ok'); }
+    else if (k === 'battery')      { setKV(ev.vehicle === 'EV-1' ? 's-ev1' : 's-ev2', (ev.level||0)+'%'); addLog('battery', `${ev.vehicle} → ${ev.level}%`, 'ok'); }
+    else if (k === 'done')         { document.getElementById('h-dot').className='live'; document.getElementById('h-status').textContent='complete'; addMsg('msg-ok', `<b>${ev.result||'done'}</b>`); addLog('done', ev.result||'', 'ok'); }
+    else addLog(k, JSON.stringify(ev).slice(0,80), '');
+  };
+  enqueue(ev, fn, ANIM_DELAY[k] ?? 0);
+}
+
+function connect() {
+  const dot = document.getElementById('h-dot'), sts = document.getElementById('h-status');
+  dot.className = ''; sts.textContent = 'connecting';
+  const es = new EventSource('/events');
+  es.onopen = () => { dot.className = 'live'; sts.textContent = 'connected'; };
+  es.onmessage = e => { try { handleEvent(JSON.parse(e.data)); } catch(err) { console.warn('bad event', e.data, err); } };
+  // long-poll closes each batch → onerror; let native EventSource reconnect (keeps Last-Event-ID).
+  es.onerror = () => { dot.className = ''; sts.textContent = 'reconnecting…'; };
+}
+connect();
+</script>
+</body>
+</html>
