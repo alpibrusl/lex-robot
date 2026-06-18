@@ -351,6 +351,13 @@ fn stock_reset(db :: Db, stall :: Str) -> [sql, time] Unit {
   seed_stock(db, stall)
 }
 
+# A supplier delivers a new item into the stall's stock (logistics restock).
+fn stock_add(db :: Db, item_id :: Str, name :: Str, category :: Str, price :: Int) -> [sql] Str {
+  let q := str.join(["INSERT OR REPLACE INTO stock (item_id, name, category, price, reserved) VALUES ('", sq(item_id), "','", sq(name), "','", sq(category), "',", int.to_str(price), ",0)"], "")
+  let _ := sql.exec(db, q, [])
+  str.join(["{\"status\":\"restocked\",\"item_id\":\"", sq(item_id), "\",\"name\":\"", sq(name), "\",\"price\":", int.to_str(price), "}"], "")
+}
+
 fn stock_list_json(db :: Db, stall :: Str) -> [sql] Str {
   let result :: Result[List[{ item_id :: Str, name :: Str, category :: Str, price :: Int, reserved :: Int }], SqlError] := sql.query(db, "SELECT item_id, name, category, price, reserved FROM stock", [])
   match result {
@@ -521,7 +528,8 @@ fn stall_ext_skills(stall :: Str) -> List[card.AgentSkill] {
     [
       { name: "query_stock",   description: "Search available stock" },
       { name: "reserve_item",  description: "Reserve an item for purchase" },
-      { name: "complete_sale", description: "Finalise sale and transfer item" }
+      { name: "complete_sale", description: "Finalise sale and transfer item" },
+      { name: "restock",       description: "Accept a restock delivery from an authorised supplier" }
     ]
   }
 }
@@ -651,6 +659,17 @@ fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :
     let payment := jv_int_or(args, "payment", 0)
     let result := stock_complete(db, item_id, payment)
     let _ := notify_dash(dash, str.join(["{\"kind\":\"skill_recv\",\"stall\":", json_str(stall), ",\"skill\":\"complete_sale\",\"item_id\":", json_str(item_id), "}"], ""))
+    result
+  } else {
+  # ── Logistics: accept a restock delivery from a supplier ──────────────────
+  if name == "restock" {
+    let supplier := jv_str_or(args, "supplier", "?")
+    let item_id  := jv_str_or(args, "item_id", "")
+    let it_name  := jv_str_or(args, "name", "item")
+    let category := jv_str_or(args, "category", "general")
+    let price    := jv_int_or(args, "price", 0)
+    let result   := stock_add(db, item_id, it_name, category, price)
+    let _ := notify_dash(dash, str.join(["{\"kind\":\"restock\",\"stall\":", json_str(stall), ",\"supplier\":", json_str(supplier), ",\"item_id\":", json_str(item_id), ",\"name\":", json_str(it_name), ",\"price\":", int.to_str(price), "}"], ""))
     result
   } else {
   # ── Peer service: charge_battery (robot-b) ────────────────────────────────
@@ -979,7 +998,7 @@ fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :
     str.join(["{\"status\":\"dispatched\",\"callsign\":\"RESCUE-7\",\"eta_min\":8,\"capacity\":12}"], "")
   } else {
     str.join(["{\"error\":\"unknown skill: ", sq(name), "\"}"], "")
-  }}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}
+  }}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}
 }
 
 # ── Router ────────────────────────────────────────────────────────────────────

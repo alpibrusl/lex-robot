@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Logistics — A2A restock + provenance</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root { --bg:#0a1420; --bg2:#0f1f2d; --border:#24384a; --text:#dfeaf2; --muted:#7f9bb0; --gold:#ffd166; --green:#4ade80; --red:#f87171; --blue:#7fd4ff; }
+html, body { height: 100%; overflow: hidden; }
+body { background: var(--bg); color: var(--text); font-family: 'VT323','Courier New',monospace; font-size: 15px; display: flex; flex-direction: column; height: 100dvh; }
+header { background: var(--bg2); border-bottom: 1px solid var(--border); padding: 0 16px; display: flex; align-items: center; gap: 14px; flex-shrink: 0; height: 42px; }
+header h1 { font-family: '"Press Start 2P"',monospace; font-size: 11px; color: var(--gold); letter-spacing: .08em; }
+#h-meta { color: var(--muted); font-size: 14px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#h-conn { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
+#h-dot { width: 9px; height: 9px; border-radius: 50%; background: #2a3f50; }
+#h-dot.live { background: var(--green); box-shadow: 0 0 8px var(--green); }
+#h-dot.run { background: var(--gold); box-shadow: 0 0 8px var(--gold); animation: blink 1s infinite; }
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
+#main { flex: 1; min-height: 0; display: flex; flex-direction: row; overflow: hidden; }
+#game-col { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
+#game-container { flex: 1; min-height: 0; overflow: hidden; background: var(--bg); }
+#game-container canvas { display: block; }
+#sidebar { width: 320px; flex-shrink: 0; background: var(--border); border-left: 1px solid var(--border); display: flex; flex-direction: column; gap: 1px; overflow: hidden; }
+.panel { background: var(--bg); padding: 9px 11px; display: flex; flex-direction: column; gap: 6px; overflow: hidden; }
+.panel-title { font-family: '"Press Start 2P"',monospace; font-size: 7px; letter-spacing: .12em; color: var(--muted); border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+.kv { display: flex; justify-content: space-between; font-size: 14px; }
+.kv .k { color: var(--muted); } .kv .v { color: var(--text); }
+#prov-panel { flex: 1; min-height: 0; }
+#prov { overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 3px; }
+.prov-row { font-size: 12px; line-height: 1.4; color: var(--text); border-left: 2px solid var(--green); padding-left: 6px; }
+.prov-row .hash { color: var(--blue); font-size: 11px; }
+.prov-row .sup { color: var(--gold); }
+#log-section { flex-shrink: 0; height: 26%; background: var(--bg); border-top: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden; }
+#log-hdr { font-family: '"Press Start 2P"',monospace; font-size: 7px; letter-spacing: .12em; color: var(--muted); padding: 6px 11px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+#log { overflow-y: auto; flex: 1; padding: 4px 11px; }
+.ll { font-size: 12px; color: var(--muted); white-space: nowrap; line-height: 1.7; }
+.ll .ts { color: #3a5266; margin-right: 7px; } .ll .ev { color: var(--blue); margin-right: 6px; } .ll .ok { color: var(--green); }
+</style>
+</head>
+<body>
+<header>
+  <h1>LOGISTICS</h1>
+  <span id="h-meta">suppliers restock the bazaar over A2A · audit trail = provenance</span>
+  <div id="h-conn"><div id="h-dot"></div><span id="h-status">connecting</span></div>
+</header>
+<div id="main">
+  <div id="game-col"><div id="game-container"></div></div>
+  <div id="sidebar">
+    <div class="panel">
+      <div class="panel-title">Stalls restocked</div>
+      <div class="kv"><span class="k">Pottery</span><span class="v" id="s-pottery">0 items</span></div>
+      <div class="kv"><span class="k">Textile</span><span class="v" id="s-textile">0 items</span></div>
+      <div class="kv"><span class="k">Spices</span><span class="v" id="s-spices">0 items</span></div>
+    </div>
+    <div class="panel" id="prov-panel">
+      <div class="panel-title">Provenance chain (lex-trail)</div>
+      <div id="prov"><span style="color:var(--muted);font-size:12px">no deliveries yet…</span></div>
+    </div>
+    <div id="log-section">
+      <div id="log-hdr">Event Log</div>
+      <div id="log"></div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/phaser/3.70.0/phaser.min.js"></script>
+<script src="/retro_kit.js"></script>
+<script>
+'use strict';
+let gameScene = null;
+const eventQueue = [];
+
+const STALLS3 = [
+  { key: 'pottery', name: 'Pottery', accent: 0xc2410c },
+  { key: 'textile', name: 'Textile', accent: 0x6d28d9 },
+  { key: 'spices',  name: 'Spices',  accent: 0x15803d },
+];
+const SUPPLIERS = [
+  { key: 'Kiln Works',    label: 'K', color: 0xfb923c, stall: 'pottery' },
+  { key: 'Loom Co',       label: 'L', color: 0xa78bfa, stall: 'textile' },
+  { key: 'Spice Caravan', label: 'C', color: 0x4ade80, stall: 'spices'  },
+];
+
+class LogiScene extends Phaser.Scene {
+  constructor() { super({ key: 'LogiScene' }); this.stalls = {}; this.sups = {}; }
+  create() {
+    const W = this.scale.width, H = this.scale.height;
+    this.W = W; this.H = H;
+    RK.drawBg(this, { skyFrac: 0.15 });
+    const cols = [W * 0.22, W * 0.5, W * 0.78];
+    STALLS3.forEach((s, i) => { const cx = cols[i], cy = H * 0.34; RK.makeBuilding(this, cx, cy, 130, 74, s.name, 'retailer', s.accent, { icon: '🏪' }); this.stalls[s.key] = { cx, cy }; });
+    const sx = [W * 0.22, W * 0.5, W * 0.78];
+    SUPPLIERS.forEach((sp, i) => { const x = sx[i], y = H * 0.82; const con = RK.makeRobot(this, x, y, sp.label, sp.color); this.add.text(x, y + 28, sp.key, { fontFamily: RK.PX, fontSize: '12px', color: '#8aa0aa' }).setOrigin(0.5, 0); this.sups[sp.key] = { container: con, homeX: x, homeY: y, stall: sp.stall }; });
+    gameScene = this;
+    while (eventQueue.length) this.handleEvent(eventQueue.shift());
+  }
+  handleEvent(ev) {
+    const k = ev.kind;
+    if      (k === 'drive')      this._drive(ev.supplier, ev.stall);
+    else if (k === 'qr_meet')    this._meet(ev.supplier, ev.blob || '');
+    else if (k === 'a2a_call')   { const s = this.sups[ev.from]; if (s) RK.speech(this, s.container.x, s.container.y - 24, `→ ${ev.skill||''}`, '#11233aee'); }
+    else if (k === 'a2a_resp')   { const s = this.sups[ev.to]; if (s && this.stalls[s.stall]) RK.speech(this, this.stalls[s.stall].cx, this.stalls[s.stall].cy - 34, `${ev.ok===false?'✗':'✓'} ${ev.skill||''}`, '#122a1aee'); }
+    else if (k === 'restock')    this._restock(ev.stall, ev.name || 'item');
+    else if (k === 'done')       RK.capBanner(this, 'BAZAAR RESTOCKED', 'grant');
+  }
+  _drive(supKey, stallKey) {
+    const s = this.sups[supKey], st = this.stalls[stallKey]; if (!s || !st) return;
+    this.tweens.killTweensOf(s.container);
+    this.tweens.add({ targets: s.container, x: st.cx, y: st.cy + 50, duration: 600, ease: 'Cubic.easeInOut' });
+  }
+  _restock(stallKey, name) {
+    const st = this.stalls[stallKey]; if (!st) return;
+    const t = this.add.text(st.cx, st.cy - 30, '+ ' + name, { fontFamily: RK.PX, fontSize: '13px', color: '#4ade80' }).setOrigin(0.5, 1).setDepth(30).setAlpha(0);
+    this.tweens.add({ targets: t, alpha: 1, duration: 150 });
+    this.tweens.add({ targets: t, y: t.y - 26, alpha: 0, delay: 700, duration: 450, onComplete: () => t.destroy() });
+  }
+  _meet(supKey, blob) {
+    const s = this.sups[supKey]; if (!s || typeof RK === 'undefined') return;
+    const qx = s.container.x, qy = s.container.y - 48;
+    RK.makeQR(this, qx, qy, blob, 48, (grp) => {
+      const tag = this.add.text(qx, qy + 28, 'bootstrap — no prior key', { fontFamily: RK.PX, fontSize: '11px', color: '#7fd4ff' }).setOrigin(0.5, 0).setDepth(27).setAlpha(0);
+      this.tweens.add({ targets: tag, alpha: 1, duration: 150 });
+      RK.scanBeam(this, s.container.x, s.container.y - 10, qx, qy);
+      this.time.delayedCall(1000, () => { this.tweens.add({ targets: tag, alpha: 0, duration: 300, onComplete: () => tag.destroy() }); this.tweens.add({ targets: [grp.bg, grp.img], alpha: 0, duration: 350, onComplete: () => grp.destroy() }); });
+    });
+  }
+}
+
+window.addEventListener('load', () => {
+  const c = document.getElementById('game-container');
+  const W = Math.max(c.clientWidth || 900, 400), H = Math.max(c.clientHeight || 360, 300);
+  RK.startWhenFontsReady(() => new Phaser.Game(RK.gameConfig('game-container', W, H, LogiScene)));
+});
+
+// ── HTML side ───────────────────────────────────────────────────
+const counts = { pottery: 0, textile: 0, spices: 0 };
+function ts() { return new Date().toTimeString().slice(0, 8); }
+function addLog(kind, body, cls) { const el = document.createElement('div'); el.className = 'll'; el.innerHTML = `<span class="ts">${ts()}</span><span class="ev">${kind}</span><span class="${cls||''}">${body}</span>`; const log = document.getElementById('log'); log.appendChild(el); log.scrollTop = log.scrollHeight; }
+function addProv(supplier, stall, item, id, parent) {
+  const prov = document.getElementById('prov');
+  if (prov.firstElementChild && !prov.firstElementChild.classList.contains('prov-row')) prov.innerHTML = '';
+  const el = document.createElement('div'); el.className = 'prov-row';
+  el.innerHTML = `<span class="sup">${supplier}</span> → ${stall}: ${item}<br><span class="hash">${parent ? parent + ' ◂ ' : ''}${id}</span>`;
+  prov.appendChild(el); prov.scrollTop = prov.scrollHeight;
+}
+
+const ANIM_DELAY = { logistics_start: 200, drive: 700, qr_meet: 1000, a2a_call: 300, a2a_resp: 450, restock: 600, provenance: 350, done: 700 };
+const _q = []; let _qt = null;
+function _qDrain() { if (!_q.length) { _qt = null; return; } const { ev, fn, delay } = _q.shift(); if (ev) { if (gameScene) gameScene.handleEvent(ev); else eventQueue.push(ev); } if (fn) fn(); _qt = setTimeout(_qDrain, delay ?? 0); }
+function enqueue(ev, fn, delay) { _q.push({ ev, fn, delay: delay ?? 0 }); if (!_qt) _qDrain(); }
+
+function handleEvent(ev) {
+  const k = ev.kind;
+  const fn = () => {
+    if      (k === 'logistics_start') { document.getElementById('h-dot').className = 'run'; document.getElementById('h-status').textContent = 'running'; addLog('logistics_start', 'suppliers dispatched', ''); }
+    else if (k === 'drive')        addLog('drive', `${ev.supplier} → ${ev.stall}`, '');
+    else if (k === 'qr_meet')      addLog('qr_meet', `${ev.supplier}: bootstrap QR`, '');
+    else if (k === 'a2a_call')     addLog('a2a_call', `${ev.from} → ${ev.to} ${ev.skill}`, '');
+    else if (k === 'a2a_resp')     addLog('a2a_resp', `${ev.skill} ${ev.ok!==false?'✓':'✗'}`, ev.ok!==false?'ok':'');
+    else if (k === 'restock')      { if (counts[ev.stall] !== undefined) { counts[ev.stall]++; const el = document.getElementById('s-'+ev.stall); if (el) el.textContent = counts[ev.stall] + ' items'; } addLog('restock', `${ev.supplier} +${ev.name} @ ${ev.stall} (${ev.price}cr)`, 'ok'); }
+    else if (k === 'provenance')   { addProv(ev.supplier, ev.stall, ev.item, ev.id, ev.parent); addLog('provenance', `${ev.item} ${ev.id}`, ''); }
+    else if (k === 'done')         { document.getElementById('h-dot').className = 'live'; document.getElementById('h-status').textContent = 'complete'; addLog('done', ev.result||'', 'ok'); }
+    else addLog(k, JSON.stringify(ev).slice(0,80), '');
+  };
+  enqueue(ev, fn, ANIM_DELAY[k] ?? 0);
+}
+function connect() {
+  const dot = document.getElementById('h-dot'), sts = document.getElementById('h-status');
+  dot.className = ''; sts.textContent = 'connecting';
+  const es = new EventSource('/events');
+  es.onopen = () => { dot.className = 'live'; sts.textContent = 'connected'; };
+  es.onmessage = e => { try { handleEvent(JSON.parse(e.data)); } catch(err) { console.warn('bad event', e.data, err); } };
+  es.onerror = () => { dot.className = ''; sts.textContent = 'reconnecting…'; };
+}
+connect();
+</script>
+</body>
+</html>
