@@ -37,7 +37,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 # rollouts step the same env at once and corrupt each other.
 _SKILL_LOCK = threading.Lock()
 
-HOST = "127.0.0.1"
+HOST = os.environ.get("LEX_ROBOT_SIDECAR_HOST", "127.0.0.1")
 PORT = int(os.environ.get("LEX_ROBOT_SIDECAR_PORT", "8900"))
 ENV_ID = os.environ.get("LEX_ROBOT_GYM_ENV", "gym_pusht/PushT-v0")
 DATASET_REPO = os.environ.get("LEX_ROBOT_DATASET", "lerobot/pusht")  # stats for normalization
@@ -45,6 +45,26 @@ SOLVE_REWARD = float(os.environ.get("LEX_ROBOT_SOLVE_REWARD", "0.90"))  # diffus
 # PushT renders/acts in a 0..512 pixel plane. lex-robot poses are arbitrary
 # units; we treat the incoming x,y as normalised [0,1] and scale to the plane.
 PLANE = 512.0
+
+from trail import Trail
+EPISODE = Trail()
+_TS = {"n": 0}
+
+
+def _next_ts() -> int:
+    _TS["n"] += 1
+    return _TS["n"]
+
+
+def record_skill_trail(name: str, args: dict, result: dict) -> None:
+    """Append a cap.invoked + cap.completed pair for one skill call."""
+    EPISODE.emit("cap.invoked",
+                 json.dumps({"capability": name, "args": args}, sort_keys=True),
+                 ts_ms=_next_ts())
+    outcome = result.get("outcome", "reached")
+    EPISODE.emit("cap.completed",
+                 json.dumps({"capability": name, "result": outcome}, sort_keys=True),
+                 ts_ms=_next_ts())
 
 
 class Sim:
@@ -271,6 +291,13 @@ class Handler(BaseHTTPRequestHandler):
         try:
             with _SKILL_LOCK:
                 result = handle_skill(name, args)
+                record_skill_trail(name, args, result)
+                trail_path = os.environ.get("LEX_ROBOT_TRAIL", "/tmp/robot-trail.json")
+                try:
+                    with open(trail_path, "w") as f:
+                        f.write(EPISODE.to_json())
+                except OSError:
+                    pass
             self._send(200, result)
         except Exception as e:  # surface sim errors to the Lex side as a stall
             self._send(200, {"outcome": "stalled", "detail": f"sim error: {e}"})
