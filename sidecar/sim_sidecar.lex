@@ -780,6 +780,103 @@ fn ev_dispatch(db :: Db, name :: Str, args :: jv.Json) -> [sql, time, crypto] St
   ev_state(db) }}}
 }
 
+# ── lex-games: Co-op Infiltration — a capability-gated heist (cooperation) ─────
+# Two specialists must clear a 6-stage path to the vault IN ORDER, but they hold
+# DIFFERENT capabilities: the Hacker (P1) can defeat electronic stages, the
+# Muscle (P2, an A2A agent) the physical ones. The current stage decides whose
+# turn it is; the capability layer enforces that only the matching role can clear
+# it — you cannot brute-force a stage you lack the capability for. A wrong-role
+# attempt trips a shared ALARM; three trips and the team is busted. Clear all six
+# and the loot is secured — a cooperative win. Every clear is hash-chained, so the
+# operation log is tamper-evident.
+fn hx_name(i :: Int) -> Str { if i == 0 { "Perimeter Fence" } else { if i == 1 { "Door Keypad" } else { if i == 2 { "CCTV Loop" } else { if i == 3 { "Guard Patrol" } else { if i == 4 { "Vault Firewall" } else { if i == 5 { "Vault Door" } else { "?" } } } } } } }
+fn hx_role(i :: Int) -> Str { if i == 0 { "MUSCLE" } else { if i == 1 { "HACK" } else { if i == 2 { "HACK" } else { if i == 3 { "MUSCLE" } else { if i == 4 { "HACK" } else { if i == 5 { "MUSCLE" } else { "?" } } } } } } }
+# The side that holds the capability for stage i (HACK → P1, MUSCLE → P2).
+fn hx_side(i :: Int) -> Str { if hx_role(i) == "HACK" { "P1" } else { "P2" } }
+
+fn hx_secret() -> Bytes { bytes.from_str("lexgames-heist-secret-seed-00000") }
+fn hx_pubkey() -> [crypto] Str { match crypto.ed25519_public_key(hx_secret()) { Ok(pk) => crypto.base64url_encode(pk), Err(_) => "" } }
+
+fn hx_at(db :: Db) -> [sql] Int { match str.to_int(get_state(db, "hx_at")) { Some(n) => n, None => 0 } }
+fn hx_alarm(db :: Db) -> [sql] Int { match str.to_int(get_state(db, "hx_alarm")) { Some(n) => n, None => 0 } }
+fn hx_turn(db :: Db) -> [sql] Str {
+  let at := hx_at(db)
+  if at >= 6 { "" } else { hx_side(at) }
+}
+fn hx_stages_json(db :: Db) -> [sql] Str {
+  let at := hx_at(db)
+  let items := list.map([0,1,2,3,4,5], fn (i :: Int) -> Str {
+    str.join(["{\"i\":", int.to_str(i), ",\"name\":\"", hx_name(i), "\",\"role\":\"", hx_role(i), "\",\"cleared\":", (if i < at { "true" } else { "false" }), ",\"current\":", (if i == at { "true" } else { "false" }), "}"], "")
+  })
+  str.join(["[", str.join(items, ","), "]"], "")
+}
+fn hx_state(db :: Db) -> [sql] Str {
+  let at := hx_at(db)
+  let over := get_state(db, "hx_over") == "1"
+  let result := if over { if at >= 6 { "win" } else { "bust" } } else { "" }
+  str.join(["{\"stages\":", hx_stages_json(db), ",\"at\":", int.to_str(at), ",\"turn\":\"", hx_turn(db), "\",\"alarm\":", int.to_str(hx_alarm(db)), ",\"over\":", (if over { "true" } else { "false" }), ",\"result\":\"", result, "\"}"], "")
+}
+fn hx_reset(db :: Db) -> [sql, time] Str {
+  let _ := set_state(db, "hx_at", "0")
+  let _ := set_state(db, "hx_alarm", "0")
+  let _ := set_state(db, "hx_over", "0")
+  let _ := set_state(db, "hx_chain", "")
+  let _ := insert_event(db, "{\"kind\":\"hx_start\",\"stages\":6}")
+  "{\"status\":\"reset\"}"
+}
+fn hx_join(db :: Db, side :: Str) -> [sql, crypto, time] Str {
+  if side != "P1" and side != "P2" { "{\"error\":\"bad side\"}" } else {
+    let key := str.concat("hx_taken_", side)
+    if get_state(db, key) == "1" { str.join(["{\"error\":\"side taken\",\"side\":\"", side, "\"}"], "") } else {
+      let _ := set_state(db, key, "1")
+      let _ := insert_event(db, str.join(["{\"kind\":\"hx_joined\",\"side\":\"", side, "\",\"role\":\"", (if side == "P1" { "HACK" } else { "MUSCLE" }), "\"}"], ""))
+      str.join(["{\"side\":\"", side, "\",\"role\":\"", (if side == "P1" { "HACK" } else { "MUSCLE" }), "\",\"token\":\"", game.issue_token(hx_secret(), side), "\"}"], "")
+    }
+  }
+}
+fn hx_win(db :: Db) -> [sql, time] Str {
+  let _ := set_state(db, "hx_over", "1")
+  let _ := insert_event(db, "{\"kind\":\"hx_win\",\"stages\":6}")
+  "{\"status\":\"win\"}"
+}
+fn hx_bust(db :: Db) -> [sql, time] Str {
+  let _ := set_state(db, "hx_over", "1")
+  let _ := insert_event(db, str.join(["{\"kind\":\"hx_bust\",\"alarm\":", int.to_str(hx_alarm(db)), "}"], ""))
+  "{\"status\":\"bust\"}"
+}
+fn hx_move(db :: Db, by :: Str, token :: Str) -> [sql, time, crypto] Str {
+  if get_state(db, "hx_over") == "1" { "{\"status\":\"over\"}" } else {
+    let at := hx_at(db)
+    if at >= 6 { "{\"status\":\"over\"}" } else {
+      let turn := hx_side(at)
+      match game.gate(game.token_side(hx_pubkey(), token), by, turn) {
+        MoveReject(why) => {
+          # Wrong role for this stage → you lack the capability → trip the alarm.
+          let alarm := hx_alarm(db) + 1
+          let _ := set_state(db, "hx_alarm", int.to_str(alarm))
+          let _ := insert_event(db, str.join(["{\"kind\":\"hx_trip\",\"by\":\"", by, "\",\"stage\":", int.to_str(at), ",\"name\":\"", hx_name(at), "\",\"reason\":\"", why, "\",\"alarm\":", int.to_str(alarm), "}"], ""))
+          if alarm >= 3 { hx_bust(db) } else { str.join(["{\"status\":\"trip\",\"alarm\":", int.to_str(alarm), ",\"reason\":\"", why, "\"}"], "") }
+        },
+        MoveOk => {
+          let payload := str.join(["{\"by\":\"", by, "\",\"stage\":", int.to_str(at), ",\"role\":\"", hx_role(at), "\"}"], "")
+          let prev := get_state(db, "hx_chain")
+          let head := str.slice(crypto.base64url_encode(crypto.blake2b(bytes.from_str(str.concat(prev, payload)))), 0, 10)
+          let _ := set_state(db, "hx_chain", head)
+          let _ := insert_event(db, str.join(["{\"kind\":\"hx_clear\",\"by\":\"", by, "\",\"stage\":", int.to_str(at), ",\"name\":\"", hx_name(at), "\",\"role\":\"", hx_role(at), "\",\"chain\":\"", head, "\"}"], ""))
+          let _ := set_state(db, "hx_at", int.to_str(at + 1))
+          if at + 1 >= 6 { hx_win(db) } else { str.join(["{\"status\":\"ok\",\"stage\":", int.to_str(at), ",\"next\":", int.to_str(at + 1), "}"], "") }
+        },
+      }
+    }
+  }
+}
+fn hx_dispatch(db :: Db, name :: Str, args :: jv.Json) -> [sql, time, crypto] Str {
+  if name == "hx_join" { hx_join(db, jv_str_or(args, "side", "")) } else {
+  if name == "hx_reset" { hx_reset(db) } else {
+  if name == "hx_move" { hx_move(db, jv_str_or(args, "by", ""), jv_str_or(args, "token", "")) } else {
+  hx_state(db) }}}
+}
+
 # A supplier delivers a new item into the stall's stock (logistics restock).
 fn stock_add(db :: Db, item_id :: Str, name :: Str, category :: Str, price :: Int) -> [sql] Str {
   let q := str.join(["INSERT OR REPLACE INTO stock (item_id, name, category, price, reserved) VALUES ('", sq(item_id), "','", sq(name), "','", sq(category), "',", int.to_str(price), ",0)"], "")
@@ -1110,6 +1207,9 @@ fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :
   } else {
   if name == "ev_join" or name == "ev_reset" or name == "ev_move" or name == "ev_state" {
     ev_dispatch(db, name, args)
+  } else {
+  if name == "hx_join" or name == "hx_reset" or name == "hx_move" or name == "hx_state" {
+    hx_dispatch(db, name, args)
   } else {
   if name == "game_join" {
     ttt_join(db, jv_str_or(args, "side", ""))
@@ -1449,7 +1549,7 @@ fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :
     str.join(["{\"status\":\"dispatched\",\"callsign\":\"RESCUE-7\",\"eta_min\":8,\"capacity\":12}"], "")
   } else {
     str.join(["{\"error\":\"unknown skill: ", sq(name), "\"}"], "")
-  }}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}
+  }}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}
 }
 
 # ── Router ────────────────────────────────────────────────────────────────────

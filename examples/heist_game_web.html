@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>lex-games · Co-op Infiltration</title>
+<link href="https://fonts.googleapis.com/css2?family=VT323&family=Press+Start+2P&display=swap" rel="stylesheet">
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root { --bg:#0a0a12; --bg2:#13131f; --bg3:#1c1c2e; --border:#33334a; --text:#e6e6f2; --muted:#8a8aab; --gold:#ffd166; --green:#4ade80; --red:#f87171; --blue:#7fd4ff; --purple:#c08bff; }
+html, body { height: 100%; overflow: hidden; }
+body { background: var(--bg); color: var(--text); font-family: 'VT323','Courier New',monospace; font-size: 16px; display: flex; flex-direction: column; height: 100dvh; }
+header { background: var(--bg2); border-bottom: 1px solid var(--border); padding: 0 16px; display: flex; align-items: center; gap: 14px; flex-shrink: 0; height: 42px; }
+header h1 { font-family: '"Press Start 2P"',monospace; font-size: 11px; color: var(--purple); letter-spacing: .08em; }
+#h-meta { color: #8a8aab; font-size: 14px; flex: 1; }
+#h-dot { width: 9px; height: 9px; border-radius: 50%; background: #33334a; } #h-dot.live { background: var(--green); box-shadow: 0 0 8px var(--green); }
+#main { flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; padding: 16px; }
+#status { font-size: 20px; min-height: 26px; } #status.deny { color: var(--red); } #status.win { color: var(--green); } #status.bust { color: var(--red); }
+#roles { display: flex; gap: 26px; font-size: 15px; }
+.role { font-family: '"Press Start 2P"',monospace; font-size: 9px; }
+.role.hack { color: var(--blue); } .role.muscle { color: var(--gold); }
+.role.active { text-shadow: 0 0 10px currentColor; }
+#alarm { display: flex; gap: 8px; align-items: center; font-size: 15px; color: #8a8aab; }
+.pip { width: 16px; height: 16px; border-radius: 50%; border: 1px solid var(--border); background: var(--bg3); }
+.pip.on { background: var(--red); border-color: var(--red); box-shadow: 0 0 8px var(--red); }
+#path { display: flex; gap: 8px; align-items: stretch; }
+.stage { width: 120px; background: var(--bg3); border: 1px solid var(--border); border-radius: 8px; padding: 10px 8px; display: flex; flex-direction: column; gap: 4px; align-items: center; opacity: .55; transition: opacity .15s, border-color .15s, transform .1s; }
+.stage .ic { font-size: 24px; } .stage .nm { font-size: 15px; text-align: center; line-height: 1.05; }
+.stage .rl { font-size: 11px; font-family: '"Press Start 2P"',monospace; }
+.stage .rl.HACK { color: var(--blue); } .stage .rl.MUSCLE { color: var(--gold); }
+.stage.cleared { opacity: 1; border-color: var(--green); }
+.stage.cleared .ic::after { content:' ✓'; color: var(--green); }
+.stage.current { opacity: 1; border-color: var(--purple); transform: translateY(-3px); box-shadow: 0 0 12px rgba(192,139,255,.4); }
+.stage.current.mine { cursor: pointer; border-color: var(--blue); }
+.arrow { align-self: center; color: var(--muted); font-size: 18px; }
+.btn { background: var(--bg3); border: 1px solid var(--border); color: var(--text); font-family: 'VT323',monospace; font-size: 16px; padding: 6px 14px; border-radius: 5px; cursor: pointer; }
+.btn:hover { border-color: var(--purple); color: var(--purple); }
+.btn.cheat:hover { border-color: var(--red); color: var(--red); }
+</style>
+</head>
+<body>
+<header>
+  <h1>CO-OP INFILTRATION</h1>
+  <span id="h-meta">two roles, one goal · only the right capability clears each stage · 3 trips = busted</span>
+  <div id="h-dot"></div>
+</header>
+<div id="main">
+  <div id="status">Joining…</div>
+  <div id="roles">
+    <span class="role hack" id="r-hack">YOU · HACKER (P1)</span>
+    <span class="role muscle" id="r-muscle">BOT · MUSCLE (P2)</span>
+  </div>
+  <div id="alarm"><span>ALARM</span><div class="pip" id="a0"></div><div class="pip" id="a1"></div><div class="pip" id="a2"></div></div>
+  <div id="path"></div>
+  <div style="display:flex;gap:10px">
+    <button class="btn" onclick="newGame()">New run</button>
+    <button class="btn cheat" onclick="cheat()">Force a stage you can't (trip alarm)</button>
+  </div>
+</div>
+
+<script>
+'use strict';
+let TOKEN = '', state = null;
+const ICON = { HACK:'💻', MUSCLE:'💪' };
+
+async function joinP1() {
+  try { const r = await fetch('/skill/hx_join', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ side:'P1' }) }); const j = await r.json(); if (j.token) TOKEN = j.token; } catch(e){}
+}
+async function fetchState() {
+  try { const r = await fetch('/skill/hx_state', { method:'POST', headers:{'Content-Type':'application/json'}, body:'{}' }); state = await r.json(); render(); } catch(e){}
+}
+async function attempt(by) {
+  try { await fetch('/skill/hx_move', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ by, token: TOKEN }) }); } catch(e){}
+}
+function cheat() { attempt('P1'); } // attempt the current stage as P1; if it's a MUSCLE stage the capability layer refuses → alarm trips
+async function newGame() { try { await fetch('/skill/hx_reset', { method:'POST', headers:{'Content-Type':'application/json'}, body:'{}' }); } catch(e){} if (!TOKEN) await joinP1(); fetchState(); }
+
+function render() {
+  if (!state) return;
+  const path = document.getElementById('path');
+  path.innerHTML = '';
+  (state.stages||[]).forEach((s, idx) => {
+    if (idx > 0) { const a = document.createElement('div'); a.className = 'arrow'; a.textContent = '→'; path.appendChild(a); }
+    const d = document.createElement('div');
+    const mine = s.current && s.role === 'HACK';
+    d.className = 'stage' + (s.cleared ? ' cleared' : '') + (s.current && !state.over ? ' current' : '') + (mine && !state.over ? ' mine' : '');
+    d.innerHTML = `<span class="ic">${ICON[s.role]||'🔒'}</span><span class="nm">${s.name}</span><span class="rl ${s.role}">${s.role}</span>`;
+    if (mine && !state.over) d.onclick = () => attempt('P1');
+    path.appendChild(d);
+  });
+  for (let i=0;i<3;i++) document.getElementById('a'+i).className = 'pip' + (i < (state.alarm||0) ? ' on' : '');
+  document.getElementById('r-hack').classList.toggle('active', state.turn==='P1' && !state.over);
+  document.getElementById('r-muscle').classList.toggle('active', state.turn==='P2' && !state.over);
+  if (!state.over) setStatus(state.turn==='P1' ? 'Your move — click the highlighted stage to HACK it' : 'Muscle (P2) is working the physical stage…');
+}
+function setStatus(t, cls) { const s = document.getElementById('status'); s.textContent = t; s.className = cls||''; }
+
+function handleEvent(ev) {
+  const k = ev.kind;
+  if (k === 'hx_trip') setStatus(`⚠ ${ev.reason} — alarm ${ev.alarm}/3`, 'deny');
+  else if (k === 'hx_win') { fetchState(); setStatus('💰 LOOT SECURED — both roles cleared all six stages', 'win'); }
+  else if (k === 'hx_bust') { fetchState(); setStatus('🚨 BUSTED — the alarm tripped three times', 'bust'); }
+  else fetchState(); // hx_start / hx_clear / hx_joined → refresh
+}
+function connect() {
+  const dot = document.getElementById('h-dot');
+  const es = new EventSource('/events');
+  es.onopen = () => { dot.className = 'live'; };
+  es.onmessage = e => { try { handleEvent(JSON.parse(e.data)); } catch(err) { console.warn('bad event', e.data, err); } };
+  es.onerror = () => { dot.className = ''; };
+}
+newGame();
+connect();
+</script>
+</body>
+</html>
