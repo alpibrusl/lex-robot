@@ -363,10 +363,6 @@ fn ttt_line(b :: Str, a :: Int, c :: Int, d :: Int) -> Str {
 fn ttt_winner(b :: Str) -> Str {
   list.fold([ttt_line(b,0,1,2), ttt_line(b,3,4,5), ttt_line(b,6,7,8), ttt_line(b,0,3,6), ttt_line(b,1,4,7), ttt_line(b,2,5,8), ttt_line(b,0,4,8), ttt_line(b,2,4,6)], "", fn (acc :: Str, w :: Str) -> Str { if str.is_empty(acc) { w } else { acc } })
 }
-fn ttt_bot(b :: Str) -> Int {
-  # prefer centre, then a winning/blocking-ish first-empty heuristic (simple: centre, corners, edges)
-  list.fold([4,0,2,6,8,1,3,5,7], -1, fn (acc :: Int, i :: Int) -> Int { if acc >= 0 { acc } else { if ttt_cell(b, i) == "." { i } else { acc } } })
-}
 fn ttt_board(db :: Db) -> [sql] Str { let b := get_state(db, "ttt_board") b2(b) }
 fn b2(b :: Str) -> Str { if str.is_empty(b) { "........." } else { b } }
 fn ttt_turn(db :: Db) -> [sql] Str { let t := get_state(db, "ttt_turn") t2(t) }
@@ -399,14 +395,22 @@ fn ttt_reset(db :: Db) -> [sql, time] Str {
   "{\"status\":\"reset\"}"
 }
 
-# The human's gated move (endpoint controls side X). On a legal X move the bot
-# (side O) replies. Cheats — claiming O, or moving out of turn — are refused by
-# game.gate before any board change.
-fn ttt_move(db :: Db, by :: Str, cl :: Int) -> [sql, time, crypto] Str {
+# A move's capability is its token: tok-X grants side X, tok-O grants side O.
+# (In production these would be signed; here a shared per-side token suffices to
+# show that a connection can only act as the side it holds.)
+fn side_of(token :: Str) -> Str {
+  if token == "tok-X" { "X" } else { if token == "tok-O" { "O" } else { "none" } }
+}
+
+# A single gated move by either side. The submitter's TOKEN determines which side
+# it may act as; game.gate refuses a move that claims a side the token doesn't
+# grant, or that is out of turn — before any board change. No in-server bot: each
+# side is played by an independent agent (the human for X, ttt_bot.lex for O).
+fn ttt_move(db :: Db, by :: Str, cl :: Int, token :: Str) -> [sql, time, crypto] Str {
   let board := ttt_board(db)
   let turn  := ttt_turn(db)
   if get_state(db, "ttt_over") == "1" { "{\"status\":\"over\"}" } else {
-    match game.gate("X", by, turn) {
+    match game.gate(side_of(token), by, turn) {
       MoveReject(why) => {
         let _ := ttt_emit(db, str.join(["{\"kind\":\"refused\",\"by\":\"", by, "\",\"cell\":", int.to_str(cl), ",\"reason\":\"", why, "\"}"], ""))
         str.join(["{\"status\":\"refused\",\"reason\":\"", why, "\"}"], "")
@@ -415,37 +419,31 @@ fn ttt_move(db :: Db, by :: Str, cl :: Int) -> [sql, time, crypto] Str {
         let _ := ttt_emit(db, str.join(["{\"kind\":\"refused\",\"by\":\"", by, "\",\"cell\":", int.to_str(cl), ",\"reason\":\"cell not playable\"}"], ""))
         "{\"status\":\"refused\",\"reason\":\"cell not playable\"}"
       } else {
-        let nb := ttt_apply(db, board, "X", cl)
-        let w1 := ttt_winner(nb)
-        if not str.is_empty(w1) {
-          let _ := ttt_emit(db, str.join(["{\"kind\":\"win\",\"winner\":\"X\",\"board\":\"", nb, "\"}"], ""))
-          let _ := set_state(db, "ttt_board", nb)
+        let nb := ttt_apply(db, board, by, cl)
+        let _ := set_state(db, "ttt_board", nb)
+        let w := ttt_winner(nb)
+        if not str.is_empty(w) {
+          let _ := ttt_emit(db, str.join(["{\"kind\":\"win\",\"winner\":\"", w, "\",\"board\":\"", nb, "\"}"], ""))
           let _ := set_state(db, "ttt_over", "1")
-          "{\"status\":\"win\",\"winner\":\"X\"}"
+          str.join(["{\"status\":\"win\",\"winner\":\"", w, "\"}"], "")
         } else {
-          let oc := ttt_bot(nb)
-          if oc < 0 {
-            let _ := set_state(db, "ttt_board", nb)
+          if str.contains(nb, ".") {
+            let _ := set_state(db, "ttt_turn", if by == "X" { "O" } else { "X" })
+            str.join(["{\"status\":\"ok\",\"board\":\"", nb, "\"}"], "")
+          } else {
             let _ := ttt_emit(db, str.join(["{\"kind\":\"win\",\"winner\":\"draw\",\"board\":\"", nb, "\"}"], ""))
             let _ := set_state(db, "ttt_over", "1")
             "{\"status\":\"draw\"}"
-          } else {
-            let nb2 := ttt_apply(db, nb, "O", oc)
-            let w2 := ttt_winner(nb2)
-            let _ := set_state(db, "ttt_board", nb2)
-            if not str.is_empty(w2) {
-              let _ := ttt_emit(db, str.join(["{\"kind\":\"win\",\"winner\":\"O\",\"board\":\"", nb2, "\"}"], ""))
-              let _ := set_state(db, "ttt_over", "1")
-              "{\"status\":\"win\",\"winner\":\"O\"}"
-            } else {
-              let _ := set_state(db, "ttt_turn", "X")
-              str.join(["{\"status\":\"ok\",\"board\":\"", nb2, "\"}"], "")
-            }
           }
         }
       },
     }
   }
+}
+
+# Read-only game state (for an agent to observe before moving).
+fn ttt_state(db :: Db) -> [sql] Str {
+  str.join(["{\"board\":\"", ttt_board(db), "\",\"turn\":\"", ttt_turn(db), "\",\"over\":", (if get_state(db, "ttt_over") == "1" { "true" } else { "false" }), "}"], "")
 }
 
 # A supplier delivers a new item into the stall's stock (logistics restock).
@@ -774,7 +772,10 @@ fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :
     ttt_reset(db)
   } else {
   if name == "game_move" {
-    ttt_move(db, jv_str_or(args, "by", "X"), jv_int_or(args, "cell", -1))
+    ttt_move(db, jv_str_or(args, "by", "X"), jv_int_or(args, "cell", -1), jv_str_or(args, "token", ""))
+  } else {
+  if name == "game_state" {
+    ttt_state(db)
   } else {
   # ── Peer service: charge_battery (robot-b) ────────────────────────────────
   # A peer robot sells battery charge units. Stateless: returns a priced receipt.
@@ -1102,7 +1103,7 @@ fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :
     str.join(["{\"status\":\"dispatched\",\"callsign\":\"RESCUE-7\",\"eta_min\":8,\"capacity\":12}"], "")
   } else {
     str.join(["{\"error\":\"unknown skill: ", sq(name), "\"}"], "")
-  }}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}
+  }}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}
 }
 
 # ── Router ────────────────────────────────────────────────────────────────────

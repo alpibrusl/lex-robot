@@ -82,11 +82,13 @@ function renderBoard() {
 function setStatus(text, cls) { const s = document.getElementById('status'); s.textContent = text; s.className = cls || ''; }
 function firstEmpty() { for (let i = 0; i < 9; i++) if (board[i] === '.') return i; return 0; }
 
+// The X client holds only the X capability token. Claiming O with it is refused.
+const X_TOKEN = 'tok-X';
 async function move(by, cell) {
-  try { await fetch('/skill/game_move', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ by, cell }) }); }
+  try { await fetch('/skill/game_move', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ by, cell, token: X_TOKEN }) }); }
   catch (e) {}
 }
-function cheat() { move('O', firstEmpty()); }   // claim O while controlling X → server refuses
+function cheat() { move('O', firstEmpty()); }   // claim O while holding tok-X → server refuses (capability)
 async function newGame() { try { await fetch('/skill/game_reset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }); } catch (e) {} }
 
 function addChain(by, cell, hash) {
