@@ -54,6 +54,8 @@ import "lex-schema/json_value" as jv
 
 import "../src/seller_llm" as sllm
 
+import "../src/lex_games" as game
+
 import "../src/a2a_card" as card
 
 import "lex-web/src/router" as router
@@ -351,6 +353,101 @@ fn stock_reset(db :: Db, stall :: Str) -> [sql, time] Unit {
   seed_stock(db, stall)
 }
 
+# ── Tic-tac-toe (lex-games) — capability-gated, verifiable, agent-playable ────
+fn ttt_cell(b :: Str, i :: Int) -> Str { str.slice(b, i, i + 1) }
+fn ttt_set(b :: Str, i :: Int, c :: Str) -> Str { str.concat(str.slice(b, 0, i), str.concat(c, str.slice(b, i + 1, 9))) }
+fn ttt_line(b :: Str, a :: Int, c :: Int, d :: Int) -> Str {
+  let x := ttt_cell(b, a)
+  if x != "." and ttt_cell(b, c) == x and ttt_cell(b, d) == x { x } else { "" }
+}
+fn ttt_winner(b :: Str) -> Str {
+  list.fold([ttt_line(b,0,1,2), ttt_line(b,3,4,5), ttt_line(b,6,7,8), ttt_line(b,0,3,6), ttt_line(b,1,4,7), ttt_line(b,2,5,8), ttt_line(b,0,4,8), ttt_line(b,2,4,6)], "", fn (acc :: Str, w :: Str) -> Str { if str.is_empty(acc) { w } else { acc } })
+}
+fn ttt_bot(b :: Str) -> Int {
+  # prefer centre, then a winning/blocking-ish first-empty heuristic (simple: centre, corners, edges)
+  list.fold([4,0,2,6,8,1,3,5,7], -1, fn (acc :: Int, i :: Int) -> Int { if acc >= 0 { acc } else { if ttt_cell(b, i) == "." { i } else { acc } } })
+}
+fn ttt_board(db :: Db) -> [sql] Str { let b := get_state(db, "ttt_board") b2(b) }
+fn b2(b :: Str) -> Str { if str.is_empty(b) { "........." } else { b } }
+fn ttt_turn(db :: Db) -> [sql] Str { let t := get_state(db, "ttt_turn") t2(t) }
+fn t2(t :: Str) -> Str { if str.is_empty(t) { "X" } else { t } }
+# Hash-chained move log: chain_n = base64url(blake2b(prev_chain ++ payload)).
+fn ttt_chain(db :: Db, payload :: Str) -> [sql, crypto] Str {
+  let prev := get_state(db, "ttt_chain")
+  let h := crypto.base64url_encode(crypto.blake2b(bytes.from_str(str.concat(prev, payload))))
+  let head := str.slice(h, 0, 10)
+  let _ := set_state(db, "ttt_chain", head)
+  head
+}
+fn ttt_emit(db :: Db, j :: Str) -> [sql, time] Unit { insert_event(db, j) }
+
+# Apply one move, hash-chain it, broadcast it; returns the new board.
+fn ttt_apply(db :: Db, board :: Str, by :: Str, cl :: Int) -> [sql, time, crypto] Str {
+  let nb := ttt_set(board, cl, by)
+  let payload := str.join(["{\"by\":\"", by, "\",\"cell\":", int.to_str(cl), ",\"board\":\"", nb, "\"}"], "")
+  let head := ttt_chain(db, payload)
+  let _ := ttt_emit(db, str.join(["{\"kind\":\"move\",\"by\":\"", by, "\",\"cell\":", int.to_str(cl), ",\"board\":\"", nb, "\",\"chain\":\"", head, "\"}"], ""))
+  nb
+}
+
+fn ttt_reset(db :: Db) -> [sql, time] Str {
+  let _ := set_state(db, "ttt_board", ".........")
+  let _ := set_state(db, "ttt_turn", "X")
+  let _ := set_state(db, "ttt_over", "0")
+  let _ := set_state(db, "ttt_chain", "")
+  let _ := ttt_emit(db, "{\"kind\":\"game_start\",\"board\":\".........\",\"x\":\"human\",\"o\":\"bot\"}")
+  "{\"status\":\"reset\"}"
+}
+
+# The human's gated move (endpoint controls side X). On a legal X move the bot
+# (side O) replies. Cheats — claiming O, or moving out of turn — are refused by
+# game.gate before any board change.
+fn ttt_move(db :: Db, by :: Str, cl :: Int) -> [sql, time, crypto] Str {
+  let board := ttt_board(db)
+  let turn  := ttt_turn(db)
+  if get_state(db, "ttt_over") == "1" { "{\"status\":\"over\"}" } else {
+    match game.gate("X", by, turn) {
+      MoveReject(why) => {
+        let _ := ttt_emit(db, str.join(["{\"kind\":\"refused\",\"by\":\"", by, "\",\"cell\":", int.to_str(cl), ",\"reason\":\"", why, "\"}"], ""))
+        str.join(["{\"status\":\"refused\",\"reason\":\"", why, "\"}"], "")
+      },
+      MoveOk => if cl < 0 or cl > 8 or ttt_cell(board, cl) != "." {
+        let _ := ttt_emit(db, str.join(["{\"kind\":\"refused\",\"by\":\"", by, "\",\"cell\":", int.to_str(cl), ",\"reason\":\"cell not playable\"}"], ""))
+        "{\"status\":\"refused\",\"reason\":\"cell not playable\"}"
+      } else {
+        let nb := ttt_apply(db, board, "X", cl)
+        let w1 := ttt_winner(nb)
+        if not str.is_empty(w1) {
+          let _ := ttt_emit(db, str.join(["{\"kind\":\"win\",\"winner\":\"X\",\"board\":\"", nb, "\"}"], ""))
+          let _ := set_state(db, "ttt_board", nb)
+          let _ := set_state(db, "ttt_over", "1")
+          "{\"status\":\"win\",\"winner\":\"X\"}"
+        } else {
+          let oc := ttt_bot(nb)
+          if oc < 0 {
+            let _ := set_state(db, "ttt_board", nb)
+            let _ := ttt_emit(db, str.join(["{\"kind\":\"win\",\"winner\":\"draw\",\"board\":\"", nb, "\"}"], ""))
+            let _ := set_state(db, "ttt_over", "1")
+            "{\"status\":\"draw\"}"
+          } else {
+            let nb2 := ttt_apply(db, nb, "O", oc)
+            let w2 := ttt_winner(nb2)
+            let _ := set_state(db, "ttt_board", nb2)
+            if not str.is_empty(w2) {
+              let _ := ttt_emit(db, str.join(["{\"kind\":\"win\",\"winner\":\"O\",\"board\":\"", nb2, "\"}"], ""))
+              let _ := set_state(db, "ttt_over", "1")
+              "{\"status\":\"win\",\"winner\":\"O\"}"
+            } else {
+              let _ := set_state(db, "ttt_turn", "X")
+              str.join(["{\"status\":\"ok\",\"board\":\"", nb2, "\"}"], "")
+            }
+          }
+        }
+      },
+    }
+  }
+}
+
 # A supplier delivers a new item into the stall's stock (logistics restock).
 fn stock_add(db :: Db, item_id :: Str, name :: Str, category :: Str, price :: Int) -> [sql] Str {
   let q := str.join(["INSERT OR REPLACE INTO stock (item_id, name, category, price, reserved) VALUES ('", sq(item_id), "','", sq(name), "','", sq(category), "',", int.to_str(price), ",0)"], "")
@@ -609,7 +706,7 @@ fn physics_call(physics_url :: Str, skill :: Str, raw_args :: Str) -> [net] Str 
   }
 }
 
-fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :: Str, dash :: Str, physics_url :: Str, seller_on :: Bool, seller_token :: Str, seller_project :: Str, seller_location :: Str) -> [sql, net, time, llm, io, proc] Str {
+fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :: Str, dash :: Str, physics_url :: Str, seller_on :: Bool, seller_token :: Str, seller_project :: Str, seller_location :: Str) -> [sql, net, time, llm, io, proc, crypto] Str {
   # ── Bazaar skills ────────────────────────────────────────────────
   if name == "query_stock" {
     let search := jv_str_or(args, "search", "")
@@ -671,6 +768,13 @@ fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :
     let result   := stock_add(db, item_id, it_name, category, price)
     let _ := notify_dash(dash, str.join(["{\"kind\":\"restock\",\"stall\":", json_str(stall), ",\"supplier\":", json_str(supplier), ",\"item_id\":", json_str(item_id), ",\"name\":", json_str(it_name), ",\"price\":", int.to_str(price), "}"], ""))
     result
+  } else {
+  # ── lex-games: tic-tac-toe (capability-gated, verifiable, agent-playable) ──
+  if name == "game_reset" {
+    ttt_reset(db)
+  } else {
+  if name == "game_move" {
+    ttt_move(db, jv_str_or(args, "by", "X"), jv_int_or(args, "cell", -1))
   } else {
   # ── Peer service: charge_battery (robot-b) ────────────────────────────────
   # A peer robot sells battery charge units. Stateless: returns a priced receipt.
@@ -998,7 +1102,7 @@ fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :
     str.join(["{\"status\":\"dispatched\",\"callsign\":\"RESCUE-7\",\"eta_min\":8,\"capacity\":12}"], "")
   } else {
     str.join(["{\"error\":\"unknown skill: ", sq(name), "\"}"], "")
-  }}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}
+  }}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}
 }
 
 # ── Router ────────────────────────────────────────────────────────────────────
