@@ -29,6 +29,8 @@ import "std.time"  as time
 
 import "lex-schema/json_value" as jv
 
+import "../src/human_goal"    as hgoal
+
 import "../src/a2a_bootstrap" as boot
 import "../src/a2a_handshake" as hs
 import "../src/a2a_session"   as sess
@@ -216,12 +218,20 @@ fn run() -> [env, net, io, sql, time, fs_write] Unit {
           io.print("[A] could not meet Robot B")
         },
         Some(session) => {
-          # Round 1: ask for more than the per-transaction cap allows → DENIED.
-          let _ := io.print("[A] --- round 1: over-budget request ---")
-          let b1 := buy_charge(session, 20, dash, log, gpolicy, now, battery0)
-          # Round 2: an affordable request → APPROVED, battery fills.
-          let _ := io.print("[A] --- round 2: affordable request ---")
-          let b2 := buy_charge(session, 10, dash, log, gpolicy, now + 1, b1)
+          # The charge amount is set by the human (PEER_UNITS env if scripted, else
+          # ask the operator). lex-guard caps each charge at 50cr (12 units @ 4cr):
+          # if the operator asks for more it's denied, and A falls back to the
+          # largest affordable charge.
+          let desired := match env.get("PEER_UNITS") {
+            Some(v) => match str.to_int(str.trim(v)) { Some(n) => n, None => 18 },
+            None    => match str.to_int(str.trim(hgoal.ask_goal(dash, "Robot A", "How much charge does Robot A need? (units — note the budget caps each charge at 50cr)"))) { Some(n) => n, None => 18 },
+          }
+          let _ := io.print(str.join(["[A] operator wants ", int.to_str(desired), " units"], ""))
+          let b1 := buy_charge(session, desired, dash, log, gpolicy, now, battery0)
+          let b2 := if b1 == battery0 {
+            let _ := io.print("[A] over the per-charge cap — falling back to the largest affordable charge (12 units)")
+            buy_charge(session, 12, dash, log, gpolicy, now + 1, battery0)
+          } else { b1 }
           let result := str.join(["battery ", int.to_str(b2), "% after guarded charge"], "")
           let _ := notify(dash, str.join(["{\"kind\":\"done\",\"result\":", json_str(result), "}"], ""))
           io.print(str.concat("\n[peer_meet] result: ", result))

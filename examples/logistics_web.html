@@ -152,6 +152,8 @@ function enqueue(ev, fn, delay) { _q.push({ ev, fn, delay: delay ?? 0 }); if (!_
 
 function handleEvent(ev) {
   const k = ev.kind;
+  if (k === 'human_question') { RK.humanPrompt(ev.question || '', ev.id); return; }
+  if (k === 'human_answered') { RK.dismissHumanPrompt(ev.id); return; }
   const fn = () => {
     if      (k === 'logistics_start') { document.getElementById('h-dot').className = 'run'; document.getElementById('h-status').textContent = 'running'; addLog('logistics_start', 'suppliers dispatched', ''); }
     else if (k === 'drive')        addLog('drive', `${ev.supplier} → ${ev.stall}`, '');

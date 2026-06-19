@@ -29,6 +29,8 @@ import "std.time"  as time
 
 import "lex-schema/json_value" as jv
 
+import "../src/human_goal"    as hgoal
+
 import "../src/a2a_bootstrap" as boot
 import "../src/a2a_handshake" as hs
 import "../src/a2a_session"   as sess
@@ -153,20 +155,20 @@ fn drive_meet_charge(charger_url :: Str, charger_label :: Str, vehicle :: Str, k
 
 # ── Budget token: control plane signs the fleet allowance; the fleet verifies it.
 fn issuer_seed() -> Bytes { bytes.from_str("ffffffffffffffffffffffffffffffff") }
-fn fleet_policy() -> gmod.Policy {
+fn fleet_policy(cap_total :: Int) -> gmod.Policy {
   { token_id: "tok-fleet", agent_id: "ev-fleet", currency: "EUR",
-    cap_total: 100, cap_per_day: 100, cap_per_transaction: 50,
+    cap_total: cap_total, cap_per_day: cap_total, cap_per_transaction: 50,
     merchants_allow: ["Standard", "Fast", "Premium"], categories_allow: ["energy"],
     max_tx_per_hour: 0, expires_at: 0, not_before: 0, require_memo: false, policy_version: 1 }
 }
-fn verified_policy(dash :: Str) -> [net] gmod.Policy {
-  match gtok.issue(issuer_seed(), fleet_policy()) {
-    Err(_) => fleet_policy(),
+fn verified_policy(dash :: Str, cap_total :: Int) -> [net] gmod.Policy {
+  match gtok.issue(issuer_seed(), fleet_policy(cap_total)) {
+    Err(_) => fleet_policy(cap_total),
     Ok(tok) => match gtok.public_key(issuer_seed()) {
-      Err(_) => fleet_policy(),
+      Err(_) => fleet_policy(cap_total),
       Ok(pk) => match gtok.verify(pk, tok) {
-        Err(_) => fleet_policy(),
-        Ok(bt) => { let _ := notify(dash, "{\"kind\":\"budget_token\",\"cap_tx\":50,\"cap_total\":100,\"currency\":\"EUR\"}"); bt.policy },
+        Err(_) => fleet_policy(cap_total),
+        Ok(bt) => { let _ := notify(dash, str.join(["{\"kind\":\"budget_token\",\"cap_tx\":50,\"cap_total\":", int.to_str(cap_total), ",\"currency\":\"EUR\"}"], "")); bt.policy },
       },
     },
   }
@@ -183,9 +185,15 @@ fn run() -> [env, net, io, sql, time, fs_write] Unit {
   let _ := io.print("══════════════════════════════════════════════════════")
   let _ := io.print("   EV FLEET  ·  charging under a shared budget (lex-guard)")
   let _ := io.print("══════════════════════════════════════════════════════")
-  let _ := notify(dash, "{\"kind\":\"fleet_start\",\"ev1\":22,\"ev2\":40,\"cap_total\":100}")
+  # The fleet budget (cap_total) is set by the human, not hardcoded: use EV_BUDGET
+  # if scripted, otherwise ask the operator via the dashboard and block.
+  let cap_total := match env.get("EV_BUDGET") {
+    Some(v) => match str.to_int(str.trim(v)) { Some(n) => n, None => 100 },
+    None    => match str.to_int(str.trim(hgoal.ask_goal(dash, "fleet", "Set the fleet charging budget — total credits the fleet may spend (e.g. 100)"))) { Some(n) => n, None => 100 },
+  }
+  let _ := notify(dash, str.join(["{\"kind\":\"fleet_start\",\"ev1\":22,\"ev2\":40,\"cap_total\":", int.to_str(cap_total), "}"], ""))
 
-  let gpolicy := verified_policy(dash)
+  let gpolicy := verified_policy(dash, cap_total)
   let cpolicy := { allowed_pubkeys: [], allowed_skills: [], max_tier: card.Extended, require_https: false, max_budget_actions: 20, max_budget_ms: 120000 }
 
   match trail.open("/tmp/lex-ev-fleet.db") {

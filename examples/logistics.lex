@@ -26,6 +26,7 @@ import "../src/a2a_handshake" as hs
 import "../src/a2a_session"   as sess
 import "../src/a2a_consent"   as consent
 import "../src/a2a_card"      as card
+import "../src/human_goal"    as hgoal
 
 import "lex-trail/log" as trail
 
@@ -128,6 +129,19 @@ fn run() -> [env, net, io, sql, time, fs_write] Unit {
   let _ := io.print("══════════════════════════════════════════════════════")
   let _ := notify(dash, "{\"kind\":\"logistics_start\"}")
 
+  # Human-in-the-loop gate: the operator must authorise the supply run before any
+  # supplier delivers. Scripted via LOGI_APPROVE, else ask the operator and block.
+  let approval := match env.get("LOGI_APPROVE") {
+    Some(v) => v,
+    None    => hgoal.ask_goal(dash, "operator", "Authorise today's bazaar restock run? (type 'yes' to dispatch the suppliers)"),
+  }
+  let approved := str.contains(approval, "yes") or str.contains(approval, "YES") or str.contains(approval, "Yes") or str.trim(approval) == "y"
+  if not approved {
+    let _ := notify(dash, "{\"kind\":\"gate\",\"approved\":false}")
+    let _ := notify(dash, "{\"kind\":\"done\",\"result\":\"restock declined by operator\"}")
+    io.print("[logistics] operator declined the restock run")
+  } else {
+  let _ := notify(dash, "{\"kind\":\"gate\",\"approved\":true}")
   match trail.open("/tmp/lex-logistics.db") {
     Err(e) => io.print(str.concat("[logistics] trail open failed: ", e)),
     Ok(log) => {
@@ -146,6 +160,7 @@ fn run() -> [env, net, io, sql, time, fs_write] Unit {
       let _ := notify(dash, "{\"kind\":\"done\",\"result\":\"bazaar restocked — provenance recorded\"}")
       io.print("\n[logistics] all suppliers delivered; provenance chain written to /tmp/lex-logistics.db")
     },
+  }
   }
   io.print("══════════════════════════════════════════════════════")
 }

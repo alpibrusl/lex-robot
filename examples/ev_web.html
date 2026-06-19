@@ -230,6 +230,10 @@ function enqueue(ev, fn, delay) { _q.push({ ev, fn, delay: delay ?? 0 }); if (!_
 
 function handleEvent(ev) {
   const k = ev.kind;
+  // Human prompts (the agent asking the operator for its goal) are shown
+  // immediately, not queued behind animations.
+  if (k === 'human_question') { RK.humanPrompt(ev.question || '', ev.id); return; }
+  if (k === 'human_answered') { RK.dismissHumanPrompt(ev.id); return; }
   const fn = () => {
     if      (k === 'fleet_start')  { setKV('s-ev1', (ev.ev1||0)+'%'); setKV('s-ev2', (ev.ev2||0)+'%'); capTotal = ev.cap_total||100; setBudget(); document.getElementById('h-dot').className='run'; document.getElementById('h-status').textContent='running'; addLog('fleet_start', 'fleet dispatched', ''); }
     else if (k === 'budget_token') { addMsg('msg-meet', `🔑 fleet budget token verified — ${ev.cap_tx}cr/tx, ${ev.cap_total}cr total`); addLog('budget_token','signed fleet allowance','ok'); }

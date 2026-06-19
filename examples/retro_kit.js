@@ -305,6 +305,36 @@ const RK = (() => {
       onComplete: () => scene.tweens.add({ targets: g, alpha: 0, duration: 350, onComplete: () => g.destroy() }) });
   }
 
+  // ── Human prompt (the reusable "operator answers" UI) ───────────────────
+  // Any dashboard calls RK.humanPrompt(question, id) on a `human_question` event
+  // to show a floating answer box; submitting POSTs /answer-human {id, answer}.
+  // dismissHumanPrompt(id) clears it (call on `human_answered`).
+  const _prompts = {};
+  function humanPrompt(question, qid) {
+    if (_prompts[qid]) { _prompts[qid].q.textContent = question; return; }
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'position:fixed;left:50%;bottom:18px;transform:translateX(-50%);z-index:9999;background:#0a1a1fee;border:2px solid #ffd166;border-radius:8px;padding:12px 14px;display:flex;flex-direction:column;gap:8px;width:min(540px,92vw);box-shadow:0 6px 28px #000a;font-family:VT323,monospace;';
+    const q = document.createElement('div'); q.textContent = question; q.style.cssText = 'color:#ffd166;font-size:16px;line-height:1.3;';
+    const row = document.createElement('div'); row.style.cssText = 'display:flex;gap:8px;';
+    const inp = document.createElement('input'); inp.type = 'text'; inp.placeholder = 'your answer…';
+    inp.style.cssText = 'flex:1;background:#16273a;border:1px solid #24384a;color:#dfeaf2;font-family:VT323,monospace;font-size:15px;padding:6px 9px;border-radius:4px;outline:none;';
+    const btn = document.createElement('button'); btn.textContent = 'Send';
+    btn.style.cssText = 'background:#16273a;border:1px solid #ffd166;color:#ffd166;font-family:VT323,monospace;font-size:15px;padding:6px 14px;border-radius:4px;cursor:pointer;';
+    const submit = () => {
+      const a = inp.value.trim(); if (!a) return;
+      btn.disabled = true;
+      fetch('/answer-human', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: qid, answer: a }) }).catch(() => {});
+      dismissHumanPrompt(qid);
+    };
+    btn.onclick = submit;
+    inp.addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
+    row.appendChild(inp); row.appendChild(btn); wrap.appendChild(q); wrap.appendChild(row);
+    document.body.appendChild(wrap);
+    _prompts[qid] = { wrap, q };
+    setTimeout(() => inp.focus(), 50);
+  }
+  function dismissHumanPrompt(qid) { const p = _prompts[qid]; if (p) { p.wrap.remove(); delete _prompts[qid]; } }
+
   // ── Phaser config + font-gated start ────────────────────────────────────
   function gameConfig(parent, W, H, scene) {
     return { type: Phaser.AUTO, parent, width: W, height: H,
@@ -316,5 +346,5 @@ const RK = (() => {
   }
 
   return { PX, PXH, C, shade, mix, drawBg, makeSign, makeRobot, pixPerson, makeWare,
-           makeStall, makeBuilding, speech, capBanner, capStamp, makeQR, scanBeam, gameConfig, startWhenFontsReady };
+           makeStall, makeBuilding, speech, capBanner, capStamp, makeQR, scanBeam, humanPrompt, dismissHumanPrompt, gameConfig, startWhenFontsReady };
 })();

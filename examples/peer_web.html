@@ -197,6 +197,8 @@ function enqueue(ev, fn, delay) { _q.push({ ev, fn, delay: delay ?? 0 }); if (!_
 
 function handleEvent(ev) {
   const k = ev.kind;
+  if (k === 'human_question') { RK.humanPrompt(ev.question || '', ev.id); return; }
+  if (k === 'human_answered') { RK.dismissHumanPrompt(ev.id); return; }
   const fn = () => {
     if      (k === 'peer_start')   { setKV('s-batt', (ev.battery||0) + '%'); document.getElementById('h-dot').className = 'run'; document.getElementById('h-status').textContent = 'running'; addLog('peer_start', `${ev.a} meets ${ev.b}`, ''); }
     else if (k === 'budget_token') { setKV('s-cap', `${ev.cap_tx} ${ev.currency}`); addMsg('msg-meet', `🔑 budget token verified — cap ${ev.cap_tx}cr/tx`); addLog('budget_token', 'signed allowance verified', 'ok'); }
