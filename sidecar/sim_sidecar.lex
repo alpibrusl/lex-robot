@@ -679,6 +679,107 @@ fn love_dispatch(db :: Db, name :: Str, args :: jv.Json) -> [sql, time, crypto] 
   love_state(db) }}}
 }
 
+# ── lex-games: Charger Duel — EV fleet charging as a capability-gated race ─────
+# Two fleet operators (P1 human, P2 an A2A agent) compete for a shared bank of
+# chargers before a departure deadline. Each charger occupies a stall for some
+# MINUTES and delivers some kWh of energy. Each operator has a fixed time budget
+# (60 min); on your turn you claim one free charger you can still fit. It is a
+# knapsack race: grab the efficient (high-kWh, low-minute) chargers before your
+# rival does. Each claim is capability-gated by a signed token and hash-chained.
+# When neither operator can fit another charger, the most energy secured wins.
+fn ev_name(i :: Int) -> Str { if i == 0 { "Slow-7" } else { if i == 1 { "AC-22" } else { if i == 2 { "DC-50" } else { if i == 3 { "DC-100" } else { if i == 4 { "Hyper-150" } else { if i == 5 { "Pad-3" } else { "?" } } } } } } }
+fn ev_min(i :: Int)  -> Int { if i == 0 { 30 } else { if i == 1 { 20 } else { if i == 2 { 12 } else { if i == 3 { 10 } else { if i == 4 { 8 } else { if i == 5 { 25 } else { 999 } } } } } } }
+fn ev_kwh(i :: Int)  -> Int { if i == 0 { 8 } else { if i == 1 { 12 } else { if i == 2 { 18 } else { if i == 3 { 22 } else { if i == 4 { 26 } else { if i == 5 { 5 } else { 0 } } } } } } }
+
+fn ev_secret() -> Bytes { bytes.from_str("lexgames-evcd-secret-seed-000000") }
+fn ev_pubkey() -> [crypto] Str { match crypto.ed25519_public_key(ev_secret()) { Ok(pk) => crypto.base64url_encode(pk), Err(_) => "" } }
+
+fn ev_owner(db :: Db, i :: Int) -> [sql] Str { get_state(db, str.concat("ev_own_", int.to_str(i))) }
+fn ev_turn(db :: Db) -> [sql] Str {
+  let t := get_state(db, "ev_turn")
+  if str.is_empty(t) { "P1" } else { t }
+}
+fn ev_budget(db :: Db, p :: Str) -> [sql] Int {
+  let v := get_state(db, str.concat("ev_bud_", p))
+  match str.to_int(v) { Some(n) => n, None => 60 }
+}
+fn ev_energy(db :: Db, p :: Str) -> [sql] Int {
+  list.fold([0,1,2,3,4,5], 0, fn (acc :: Int, i :: Int) -> [sql] Int { if ev_owner(db, i) == p { acc + ev_kwh(i) } else { acc } })
+}
+# Can operator p still fit any free charger within its remaining minutes?
+fn ev_can_move(db :: Db, p :: Str) -> [sql] Bool {
+  let bud := ev_budget(db, p)
+  list.fold([0,1,2,3,4,5], false, fn (acc :: Bool, i :: Int) -> [sql] Bool { if acc { acc } else { ev_owner(db, i) == "" and ev_min(i) <= bud } })
+}
+fn ev_pool_json(db :: Db) -> [sql] Str {
+  let items := list.map([0,1,2,3,4,5], fn (i :: Int) -> [sql] Str {
+    str.join(["{\"i\":", int.to_str(i), ",\"name\":\"", ev_name(i), "\",\"min\":", int.to_str(ev_min(i)), ",\"kwh\":", int.to_str(ev_kwh(i)), ",\"owner\":\"", ev_owner(db, i), "\"}"], "")
+  })
+  str.join(["[", str.join(items, ","), "]"], "")
+}
+fn ev_state(db :: Db) -> [sql] Str {
+  str.join(["{\"pool\":", ev_pool_json(db), ",\"turn\":\"", ev_turn(db), "\",\"over\":", (if get_state(db, "ev_over") == "1" { "true" } else { "false" }), ",\"bud\":{\"P1\":", int.to_str(ev_budget(db, "P1")), ",\"P2\":", int.to_str(ev_budget(db, "P2")), "},\"nrg\":{\"P1\":", int.to_str(ev_energy(db, "P1")), ",\"P2\":", int.to_str(ev_energy(db, "P2")), "}}"], "")
+}
+fn ev_reset(db :: Db) -> [sql, time] Str {
+  let _ := list.fold([0,1,2,3,4,5], (), fn (_ :: Unit, i :: Int) -> [sql] Unit { set_state(db, str.concat("ev_own_", int.to_str(i)), "") })
+  let _ := set_state(db, "ev_bud_P1", "60")
+  let _ := set_state(db, "ev_bud_P2", "60")
+  let _ := set_state(db, "ev_turn", "P1")
+  let _ := set_state(db, "ev_over", "0")
+  let _ := set_state(db, "ev_chain", "")
+  let _ := insert_event(db, "{\"kind\":\"ev_start\",\"deadline\":60}")
+  "{\"status\":\"reset\"}"
+}
+fn ev_join(db :: Db, side :: Str) -> [sql, crypto, time] Str {
+  if side != "P1" and side != "P2" { "{\"error\":\"bad side\"}" } else {
+    let key := str.concat("ev_taken_", side)
+    if get_state(db, key) == "1" { str.join(["{\"error\":\"side taken\",\"side\":\"", side, "\"}"], "") } else {
+      let _ := set_state(db, key, "1")
+      let _ := insert_event(db, str.join(["{\"kind\":\"ev_joined\",\"side\":\"", side, "\"}"], ""))
+      str.join(["{\"side\":\"", side, "\",\"token\":\"", game.issue_token(ev_secret(), side), "\"}"], "")
+    }
+  }
+}
+fn ev_finish(db :: Db) -> [sql, time] Str {
+  let e1 := ev_energy(db, "P1")
+  let e2 := ev_energy(db, "P2")
+  let w := if e1 > e2 { "P1" } else { if e2 > e1 { "P2" } else { "draw" } }
+  let _ := set_state(db, "ev_over", "1")
+  let _ := insert_event(db, str.join(["{\"kind\":\"ev_win\",\"winner\":\"", w, "\",\"p1\":", int.to_str(e1), ",\"p2\":", int.to_str(e2), "}"], ""))
+  str.join(["{\"status\":\"over\",\"winner\":\"", w, "\"}"], "")
+}
+fn ev_move(db :: Db, by :: Str, i :: Int, token :: Str) -> [sql, time, crypto] Str {
+  if get_state(db, "ev_over") == "1" { "{\"status\":\"over\"}" } else {
+    let turn := ev_turn(db)
+    match game.gate(game.token_side(ev_pubkey(), token), by, turn) {
+      MoveReject(why) => {
+        let _ := insert_event(db, str.join(["{\"kind\":\"ev_refused\",\"by\":\"", by, "\",\"charger\":", int.to_str(i), ",\"reason\":\"", why, "\"}"], ""))
+        str.join(["{\"status\":\"refused\",\"reason\":\"", why, "\"}"], "")
+      },
+      MoveOk => if i < 0 or i > 5 or ev_owner(db, i) != "" or ev_min(i) > ev_budget(db, by) {
+        let _ := insert_event(db, str.join(["{\"kind\":\"ev_refused\",\"by\":\"", by, "\",\"charger\":", int.to_str(i), ",\"reason\":\"taken or no time left\"}"], ""))
+        "{\"status\":\"refused\",\"reason\":\"taken or no time left\"}"
+      } else {
+        let _ := set_state(db, str.concat("ev_own_", int.to_str(i)), by)
+        let _ := set_state(db, str.concat("ev_bud_", by), int.to_str(ev_budget(db, by) - ev_min(i)))
+        let payload := str.join(["{\"by\":\"", by, "\",\"charger\":", int.to_str(i), ",\"min\":", int.to_str(ev_min(i)), "}"], "")
+        let prev := get_state(db, "ev_chain")
+        let head := str.slice(crypto.base64url_encode(crypto.blake2b(bytes.from_str(str.concat(prev, payload)))), 0, 10)
+        let _ := set_state(db, "ev_chain", head)
+        let _ := insert_event(db, str.join(["{\"kind\":\"ev_claim\",\"by\":\"", by, "\",\"charger\":", int.to_str(i), ",\"name\":\"", ev_name(i), "\",\"min\":", int.to_str(ev_min(i)), ",\"kwh\":", int.to_str(ev_kwh(i)), ",\"chain\":\"", head, "\"}"], ""))
+        let _ := set_state(db, "ev_turn", if by == "P1" { "P2" } else { "P1" })
+        if ev_can_move(db, "P1") or ev_can_move(db, "P2") { str.join(["{\"status\":\"ok\",\"charger\":", int.to_str(i), "}"], "") } else { ev_finish(db) }
+      },
+    }
+  }
+}
+fn ev_dispatch(db :: Db, name :: Str, args :: jv.Json) -> [sql, time, crypto] Str {
+  if name == "ev_join" { ev_join(db, jv_str_or(args, "side", "")) } else {
+  if name == "ev_reset" { ev_reset(db) } else {
+  if name == "ev_move" { ev_move(db, jv_str_or(args, "by", ""), jv_int_or(args, "charger", -1), jv_str_or(args, "token", "")) } else {
+  ev_state(db) }}}
+}
+
 # A supplier delivers a new item into the stall's stock (logistics restock).
 fn stock_add(db :: Db, item_id :: Str, name :: Str, category :: Str, price :: Int) -> [sql] Str {
   let q := str.join(["INSERT OR REPLACE INTO stock (item_id, name, category, price, reserved) VALUES ('", sq(item_id), "','", sq(name), "','", sq(category), "',", int.to_str(price), ",0)"], "")
@@ -1006,6 +1107,9 @@ fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :
   } else {
   if name == "love_join" or name == "love_reset" or name == "love_move" or name == "love_state" {
     love_dispatch(db, name, args)
+  } else {
+  if name == "ev_join" or name == "ev_reset" or name == "ev_move" or name == "ev_state" {
+    ev_dispatch(db, name, args)
   } else {
   if name == "game_join" {
     ttt_join(db, jv_str_or(args, "side", ""))
@@ -1345,7 +1449,7 @@ fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :
     str.join(["{\"status\":\"dispatched\",\"callsign\":\"RESCUE-7\",\"eta_min\":8,\"capacity\":12}"], "")
   } else {
     str.join(["{\"error\":\"unknown skill: ", sq(name), "\"}"], "")
-  }}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}
+  }}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}
 }
 
 # ── Router ────────────────────────────────────────────────────────────────────
