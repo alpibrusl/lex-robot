@@ -56,6 +56,8 @@ import "../src/seller_llm" as sllm
 
 import "../src/lex_games" as game
 
+import "lex-trail/log" as trail
+
 import "../src/a2a_card" as card
 
 import "lex-web/src/router" as router
@@ -378,10 +380,11 @@ fn ttt_chain(db :: Db, payload :: Str) -> [sql, crypto] Str {
 fn ttt_emit(db :: Db, j :: Str) -> [sql, time] Unit { insert_event(db, j) }
 
 # Apply one move, hash-chain it, broadcast it; returns the new board.
-fn ttt_apply(db :: Db, board :: Str, by :: Str, cl :: Int) -> [sql, time, crypto] Str {
+fn ttt_apply(db :: Db, board :: Str, by :: Str, cl :: Int) -> [sql, time, crypto, fs_write] Str {
   let nb := ttt_set(board, cl, by)
   let payload := str.join(["{\"by\":\"", by, "\",\"cell\":", int.to_str(cl), ",\"board\":\"", nb, "\"}"], "")
   let head := ttt_chain(db, payload)
+  let _ := g_record(db, "ttt", payload)
   let _ := ttt_emit(db, str.join(["{\"kind\":\"move\",\"by\":\"", by, "\",\"cell\":", int.to_str(cl), ",\"board\":\"", nb, "\",\"chain\":\"", head, "\"}"], ""))
   nb
 }
@@ -416,7 +419,7 @@ fn ttt_join(db :: Db, side :: Str) -> [sql, crypto, time] Str {
     } else {
       let _ := set_state(db, key, "1")
       let _ := ttt_emit(db, str.join(["{\"kind\":\"joined\",\"side\":\"", side, "\"}"], ""))
-      str.join(["{\"side\":\"", side, "\",\"token\":\"", game.issue_token(ttt_secret(), side), "\"}"], "")
+      str.join(["{\"side\":\"", side, "\",\"token\":\"", game.issue_match_token(ttt_secret(), side, g_match(db, "ttt"), time.now_ms() + 3600000), "\"}"], "")
     }
   }
 }
@@ -425,11 +428,11 @@ fn ttt_join(db :: Db, side :: Str) -> [sql, crypto, time] Str {
 # it may act as; game.gate refuses a move that claims a side the token doesn't
 # grant, or that is out of turn — before any board change. No in-server bot: each
 # side is played by an independent agent (the human for X, ttt_bot.lex for O).
-fn ttt_move(db :: Db, by :: Str, cl :: Int, token :: Str) -> [sql, time, crypto] Str {
+fn ttt_move(db :: Db, by :: Str, cl :: Int, token :: Str) -> [sql, time, crypto, fs_write] Str {
   let board := ttt_board(db)
   let turn  := ttt_turn(db)
   if get_state(db, "ttt_over") == "1" { "{\"status\":\"over\"}" } else {
-    match game.gate(game.token_side(ttt_pubkey(), token), by, turn) {
+    match game.gate(game.match_token_side(ttt_pubkey(), token, g_match(db, "ttt"), time.now_ms()), by, turn) {
       MoveReject(why) => {
         let _ := ttt_emit(db, str.join(["{\"kind\":\"refused\",\"by\":\"", by, "\",\"cell\":", int.to_str(cl), ",\"reason\":\"", why, "\"}"], ""))
         str.join(["{\"status\":\"refused\",\"reason\":\"", why, "\"}"], "")
@@ -469,6 +472,45 @@ fn ttt_state(db :: Db) -> [sql] Str {
 # Two shoppers (P1 human, P2 bot) alternate drafting from a shared 6-item pool
 # under a budget. A pick is gated by a signed capability (you draft only as
 # yourself, in turn) and hash-chained. Highest total cart value wins.
+# Shared per-game match id (stable for the server session): tokens bind to it, so
+# a token minted for this match can't be replayed against another server/match.
+fn g_match(db :: Db, prefix :: Str) -> [sql, time] Str {
+  let k := str.concat(prefix, "_match")
+  let m := get_state(db, k)
+  if str.is_empty(m) {
+    let nm := int.to_str(time.now_ms())
+    let _ := set_state(db, k, nm)
+    nm
+  } else { m }
+}
+
+# Append an applied move to a per-game hash-chained lex-trail log (so the whole
+# match is a tamper-evident, replayable record); returns the new chain head.
+fn g_trail_path(db :: Db, prefix :: Str) -> [sql, time] Str { str.join(["/tmp/lex-", prefix, "-", g_match(db, prefix), ".db"], "") }
+fn g_record(db :: Db, prefix :: Str, payload :: Str) -> [sql, time, fs_write] Str {
+  match trail.open(g_trail_path(db, prefix)) {
+    Err(_) => "",
+    Ok(log) => {
+      let k := str.concat(prefix, "_parent")
+      let head := game.record(log, get_state(db, k), payload)
+      let _ := set_state(db, k, head)
+      let _ := trail.close(log)
+      head
+    },
+  }
+}
+# Replay a game's recorded log and re-check every content-addressed id.
+fn g_verify(db :: Db, prefix :: Str) -> [sql, time, fs_write] Str {
+  match trail.open(g_trail_path(db, prefix)) {
+    Err(_) => "{\"valid\":false,\"count\":0}",
+    Ok(log) => {
+      let v := game.verify_log(log)
+      let _ := trail.close(log)
+      str.join(["{\"valid\":", (if v.valid { "true" } else { "false" }), ",\"count\":", int.to_str(v.count), "}"], "")
+    },
+  }
+}
+
 fn shop_price(i :: Int) -> Int { if i == 0 { 8 } else { if i == 1 { 12 } else { if i == 2 { 15 } else { if i == 3 { 5 } else { if i == 4 { 22 } else { if i == 5 { 7 } else { 999 } } } } } } }
 fn shop_value(i :: Int) -> Int { if i == 0 { 10 } else { if i == 1 { 14 } else { if i == 2 { 16 } else { if i == 3 { 6 } else { if i == 4 { 25 } else { if i == 5 { 8 } else { 0 } } } } } } }
 fn shop_name(i :: Int)  -> Str { if i == 0 { "Bowl" } else { if i == 1 { "Vase" } else { if i == 2 { "Scarf" } else { if i == 3 { "Saffron" } else { if i == 4 { "Teapot" } else { if i == 5 { "Ribbon" } else { "?" } } } } } } }
@@ -519,7 +561,7 @@ fn shop_join(db :: Db, side :: Str) -> [sql, crypto, time] Str {
     if get_state(db, key) == "1" { str.join(["{\"error\":\"side taken\",\"side\":\"", side, "\"}"], "") } else {
       let _ := set_state(db, key, "1")
       let _ := insert_event(db, str.join(["{\"kind\":\"shop_joined\",\"side\":\"", side, "\"}"], ""))
-      str.join(["{\"side\":\"", side, "\",\"token\":\"", game.issue_token(shop_secret(), side), "\"}"], "")
+      str.join(["{\"side\":\"", side, "\",\"token\":\"", game.issue_match_token(shop_secret(), side, g_match(db, "shop"), time.now_ms() + 3600000), "\"}"], "")
     }
   }
 }
@@ -531,10 +573,10 @@ fn shop_finish(db :: Db) -> [sql, time] Str {
   let _ := insert_event(db, str.join(["{\"kind\":\"shop_win\",\"winner\":\"", w, "\",\"p1\":", int.to_str(v1), ",\"p2\":", int.to_str(v2), "}"], ""))
   str.join(["{\"status\":\"over\",\"winner\":\"", w, "\"}"], "")
 }
-fn shop_move(db :: Db, by :: Str, i :: Int, token :: Str) -> [sql, time, crypto] Str {
+fn shop_move(db :: Db, by :: Str, i :: Int, token :: Str) -> [sql, time, crypto, fs_write] Str {
   if get_state(db, "shop_over") == "1" { "{\"status\":\"over\"}" } else {
     let turn := shop_turn(db)
-    match game.gate(game.token_side(shop_pubkey(), token), by, turn) {
+    match game.gate(game.match_token_side(shop_pubkey(), token, g_match(db, "shop"), time.now_ms()), by, turn) {
       MoveReject(why) => {
         let _ := insert_event(db, str.join(["{\"kind\":\"shop_refused\",\"by\":\"", by, "\",\"item\":", int.to_str(i), ",\"reason\":\"", why, "\"}"], ""))
         str.join(["{\"status\":\"refused\",\"reason\":\"", why, "\"}"], "")
@@ -549,6 +591,7 @@ fn shop_move(db :: Db, by :: Str, i :: Int, token :: Str) -> [sql, time, crypto]
         let prev := get_state(db, "shop_chain")
         let head := str.slice(crypto.base64url_encode(crypto.blake2b(bytes.from_str(str.concat(prev, payload)))), 0, 10)
         let _ := set_state(db, "shop_chain", head)
+        let _ := g_record(db, "shop", payload)
         let _ := insert_event(db, str.join(["{\"kind\":\"shop_pick\",\"by\":\"", by, "\",\"item\":", int.to_str(i), ",\"name\":\"", shop_name(i), "\",\"price\":", int.to_str(shop_price(i)), ",\"value\":", int.to_str(shop_value(i)), ",\"chain\":\"", head, "\"}"], ""))
         let _ := set_state(db, "shop_turn", if by == "P1" { "P2" } else { "P1" })
         if shop_can_move(db, "P1") or shop_can_move(db, "P2") {
@@ -560,7 +603,7 @@ fn shop_move(db :: Db, by :: Str, i :: Int, token :: Str) -> [sql, time, crypto]
     }
   }
 }
-fn shop_dispatch(db :: Db, name :: Str, args :: jv.Json) -> [sql, time, crypto] Str {
+fn shop_dispatch(db :: Db, name :: Str, args :: jv.Json) -> [sql, time, crypto, fs_write] Str {
   if name == "shop_join" { shop_join(db, jv_str_or(args, "side", "")) } else {
   if name == "shop_reset" { shop_reset(db) } else {
   if name == "shop_move" { shop_move(db, jv_str_or(args, "by", ""), jv_int_or(args, "item", -1), jv_str_or(args, "token", "")) } else {
@@ -630,7 +673,7 @@ fn love_join(db :: Db, side :: Str) -> [sql, crypto, time] Str {
     if get_state(db, key) == "1" { str.join(["{\"error\":\"side taken\",\"side\":\"", side, "\"}"], "") } else {
       let _ := set_state(db, key, "1")
       let _ := insert_event(db, str.join(["{\"kind\":\"love_joined\",\"side\":\"", side, "\"}"], ""))
-      str.join(["{\"side\":\"", side, "\",\"token\":\"", game.issue_token(love_secret(), side), "\"}"], "")
+      str.join(["{\"side\":\"", side, "\",\"token\":\"", game.issue_match_token(love_secret(), side, g_match(db, "love"), time.now_ms() + 3600000), "\"}"], "")
     }
   }
 }
@@ -642,10 +685,10 @@ fn love_finish(db :: Db) -> [sql, time] Str {
   let _ := insert_event(db, str.join(["{\"kind\":\"love_win\",\"winner\":\"", w, "\",\"p1\":", int.to_str(s1), ",\"p2\":", int.to_str(s2), "}"], ""))
   str.join(["{\"status\":\"over\",\"winner\":\"", w, "\"}"], "")
 }
-fn love_move(db :: Db, by :: Str, i :: Int, token :: Str) -> [sql, time, crypto] Str {
+fn love_move(db :: Db, by :: Str, i :: Int, token :: Str) -> [sql, time, crypto, fs_write] Str {
   if get_state(db, "love_over") == "1" { "{\"status\":\"over\"}" } else {
     let turn := love_turn(db)
-    match game.gate(game.token_side(love_pubkey(), token), by, turn) {
+    match game.gate(game.match_token_side(love_pubkey(), token, g_match(db, "love"), time.now_ms()), by, turn) {
       MoveReject(why) => {
         let _ := insert_event(db, str.join(["{\"kind\":\"love_refused\",\"by\":\"", by, "\",\"cand\":", int.to_str(i), ",\"reason\":\"", why, "\"}"], ""))
         str.join(["{\"status\":\"refused\",\"reason\":\"", why, "\"}"], "")
@@ -661,6 +704,7 @@ fn love_move(db :: Db, by :: Str, i :: Int, token :: Str) -> [sql, time, crypto]
         let prev := get_state(db, "love_chain")
         let head := str.slice(crypto.base64url_encode(crypto.blake2b(bytes.from_str(str.concat(prev, payload)))), 0, 10)
         let _ := set_state(db, "love_chain", head)
+        let _ := g_record(db, "love", payload)
         let _ := if matched {
           insert_event(db, str.join(["{\"kind\":\"love_match\",\"by\":\"", by, "\",\"cand\":", int.to_str(i), ",\"name\":\"", love_name(i), "\",\"charm\":", int.to_str(love_charm(i)), ",\"contact\":\"", love_contact(i), "\",\"sig\":\"", love_sign(i), "\",\"chain\":\"", head, "\"}"], ""))
         } else {
@@ -672,7 +716,7 @@ fn love_move(db :: Db, by :: Str, i :: Int, token :: Str) -> [sql, time, crypto]
     }
   }
 }
-fn love_dispatch(db :: Db, name :: Str, args :: jv.Json) -> [sql, time, crypto] Str {
+fn love_dispatch(db :: Db, name :: Str, args :: jv.Json) -> [sql, time, crypto, fs_write] Str {
   if name == "love_join" { love_join(db, jv_str_or(args, "side", "")) } else {
   if name == "love_reset" { love_reset(db) } else {
   if name == "love_move" { love_move(db, jv_str_or(args, "by", ""), jv_int_or(args, "cand", -1), jv_str_or(args, "token", "")) } else {
@@ -736,7 +780,7 @@ fn ev_join(db :: Db, side :: Str) -> [sql, crypto, time] Str {
     if get_state(db, key) == "1" { str.join(["{\"error\":\"side taken\",\"side\":\"", side, "\"}"], "") } else {
       let _ := set_state(db, key, "1")
       let _ := insert_event(db, str.join(["{\"kind\":\"ev_joined\",\"side\":\"", side, "\"}"], ""))
-      str.join(["{\"side\":\"", side, "\",\"token\":\"", game.issue_token(ev_secret(), side), "\"}"], "")
+      str.join(["{\"side\":\"", side, "\",\"token\":\"", game.issue_match_token(ev_secret(), side, g_match(db, "ev"), time.now_ms() + 3600000), "\"}"], "")
     }
   }
 }
@@ -748,10 +792,10 @@ fn ev_finish(db :: Db) -> [sql, time] Str {
   let _ := insert_event(db, str.join(["{\"kind\":\"ev_win\",\"winner\":\"", w, "\",\"p1\":", int.to_str(e1), ",\"p2\":", int.to_str(e2), "}"], ""))
   str.join(["{\"status\":\"over\",\"winner\":\"", w, "\"}"], "")
 }
-fn ev_move(db :: Db, by :: Str, i :: Int, token :: Str) -> [sql, time, crypto] Str {
+fn ev_move(db :: Db, by :: Str, i :: Int, token :: Str) -> [sql, time, crypto, fs_write] Str {
   if get_state(db, "ev_over") == "1" { "{\"status\":\"over\"}" } else {
     let turn := ev_turn(db)
-    match game.gate(game.token_side(ev_pubkey(), token), by, turn) {
+    match game.gate(game.match_token_side(ev_pubkey(), token, g_match(db, "ev"), time.now_ms()), by, turn) {
       MoveReject(why) => {
         let _ := insert_event(db, str.join(["{\"kind\":\"ev_refused\",\"by\":\"", by, "\",\"charger\":", int.to_str(i), ",\"reason\":\"", why, "\"}"], ""))
         str.join(["{\"status\":\"refused\",\"reason\":\"", why, "\"}"], "")
@@ -766,6 +810,7 @@ fn ev_move(db :: Db, by :: Str, i :: Int, token :: Str) -> [sql, time, crypto] S
         let prev := get_state(db, "ev_chain")
         let head := str.slice(crypto.base64url_encode(crypto.blake2b(bytes.from_str(str.concat(prev, payload)))), 0, 10)
         let _ := set_state(db, "ev_chain", head)
+        let _ := g_record(db, "ev", payload)
         let _ := insert_event(db, str.join(["{\"kind\":\"ev_claim\",\"by\":\"", by, "\",\"charger\":", int.to_str(i), ",\"name\":\"", ev_name(i), "\",\"min\":", int.to_str(ev_min(i)), ",\"kwh\":", int.to_str(ev_kwh(i)), ",\"chain\":\"", head, "\"}"], ""))
         let _ := set_state(db, "ev_turn", if by == "P1" { "P2" } else { "P1" })
         if ev_can_move(db, "P1") or ev_can_move(db, "P2") { str.join(["{\"status\":\"ok\",\"charger\":", int.to_str(i), "}"], "") } else { ev_finish(db) }
@@ -773,7 +818,7 @@ fn ev_move(db :: Db, by :: Str, i :: Int, token :: Str) -> [sql, time, crypto] S
     }
   }
 }
-fn ev_dispatch(db :: Db, name :: Str, args :: jv.Json) -> [sql, time, crypto] Str {
+fn ev_dispatch(db :: Db, name :: Str, args :: jv.Json) -> [sql, time, crypto, fs_write] Str {
   if name == "ev_join" { ev_join(db, jv_str_or(args, "side", "")) } else {
   if name == "ev_reset" { ev_reset(db) } else {
   if name == "ev_move" { ev_move(db, jv_str_or(args, "by", ""), jv_int_or(args, "charger", -1), jv_str_or(args, "token", "")) } else {
@@ -830,7 +875,7 @@ fn hx_join(db :: Db, side :: Str) -> [sql, crypto, time] Str {
     if get_state(db, key) == "1" { str.join(["{\"error\":\"side taken\",\"side\":\"", side, "\"}"], "") } else {
       let _ := set_state(db, key, "1")
       let _ := insert_event(db, str.join(["{\"kind\":\"hx_joined\",\"side\":\"", side, "\",\"role\":\"", (if side == "P1" { "HACK" } else { "MUSCLE" }), "\"}"], ""))
-      str.join(["{\"side\":\"", side, "\",\"role\":\"", (if side == "P1" { "HACK" } else { "MUSCLE" }), "\",\"token\":\"", game.issue_token(hx_secret(), side), "\"}"], "")
+      str.join(["{\"side\":\"", side, "\",\"role\":\"", (if side == "P1" { "HACK" } else { "MUSCLE" }), "\",\"token\":\"", game.issue_match_token(hx_secret(), side, g_match(db, "hx"), time.now_ms() + 3600000), "\"}"], "")
     }
   }
 }
@@ -844,12 +889,12 @@ fn hx_bust(db :: Db) -> [sql, time] Str {
   let _ := insert_event(db, str.join(["{\"kind\":\"hx_bust\",\"alarm\":", int.to_str(hx_alarm(db)), "}"], ""))
   "{\"status\":\"bust\"}"
 }
-fn hx_move(db :: Db, by :: Str, token :: Str) -> [sql, time, crypto] Str {
+fn hx_move(db :: Db, by :: Str, token :: Str) -> [sql, time, crypto, fs_write] Str {
   if get_state(db, "hx_over") == "1" { "{\"status\":\"over\"}" } else {
     let at := hx_at(db)
     if at >= 6 { "{\"status\":\"over\"}" } else {
       let turn := hx_side(at)
-      match game.gate(game.token_side(hx_pubkey(), token), by, turn) {
+      match game.gate(game.match_token_side(hx_pubkey(), token, g_match(db, "hx"), time.now_ms()), by, turn) {
         MoveReject(why) => {
           # Wrong role for this stage → you lack the capability → trip the alarm.
           let alarm := hx_alarm(db) + 1
@@ -862,6 +907,7 @@ fn hx_move(db :: Db, by :: Str, token :: Str) -> [sql, time, crypto] Str {
           let prev := get_state(db, "hx_chain")
           let head := str.slice(crypto.base64url_encode(crypto.blake2b(bytes.from_str(str.concat(prev, payload)))), 0, 10)
           let _ := set_state(db, "hx_chain", head)
+          let _ := g_record(db, "hx", payload)
           let _ := insert_event(db, str.join(["{\"kind\":\"hx_clear\",\"by\":\"", by, "\",\"stage\":", int.to_str(at), ",\"name\":\"", hx_name(at), "\",\"role\":\"", hx_role(at), "\",\"chain\":\"", head, "\"}"], ""))
           let _ := set_state(db, "hx_at", int.to_str(at + 1))
           if at + 1 >= 6 { hx_win(db) } else { str.join(["{\"status\":\"ok\",\"stage\":", int.to_str(at), ",\"next\":", int.to_str(at + 1), "}"], "") }
@@ -870,11 +916,224 @@ fn hx_move(db :: Db, by :: Str, token :: Str) -> [sql, time, crypto] Str {
     }
   }
 }
-fn hx_dispatch(db :: Db, name :: Str, args :: jv.Json) -> [sql, time, crypto] Str {
+fn hx_dispatch(db :: Db, name :: Str, args :: jv.Json) -> [sql, time, crypto, fs_write] Str {
   if name == "hx_join" { hx_join(db, jv_str_or(args, "side", "")) } else {
   if name == "hx_reset" { hx_reset(db) } else {
   if name == "hx_move" { hx_move(db, jv_str_or(args, "by", ""), jv_str_or(args, "token", "")) } else {
   hx_state(db) }}}
+}
+
+# ── lex-games: Strategy Football — a human strategy, a squad of A2A agents ─────
+# A deterministic, turn-based football match on a 5-zone lane (z0=HOME's own end,
+# z4=the shot zone in front of the AWAY goal). HOME fields two players (H0, H1),
+# each driven by an INDEPENDENT agent over A2A; the two coordinate by passing
+# messages through the hub (fb_signal) — "I'm open at z3" / "shoot now". A HUMAN
+# sets the team STRATEGY at run time (direct / possession), which the agents read
+# and play to. AWAY is a scripted two-defender press. Each action is gated by a
+# hardened, match-bound Ed25519 token (a player can only act as itself, in turn,
+# this match) and recorded into a hash-chained lex-trail log — fb_verify replays
+# it and re-checks every link. HOME scores → HOME wins; the turn budget runs out
+# → the defense holds.
+fn fb_secret() -> Bytes { bytes.from_str("lexgames-fball-secret-seed-00000") }
+fn fb_pubkey() -> [crypto] Str { match crypto.ed25519_public_key(fb_secret()) { Ok(pk) => crypto.base64url_encode(pk), Err(_) => "" } }
+fn fb_trail_path(db :: Db) -> [sql] Str { str.join(["/tmp/lex-fb-", get_state(db, "fb_match"), ".db"], "") }
+
+fn fb_pz(db :: Db, p :: Str) -> [sql] Int { get_state_int(db, str.concat("fb_z_", p)) }
+fn fb_setz(db :: Db, p :: Str, z :: Int) -> [sql] Unit { set_state(db, str.concat("fb_z_", p), int.to_str(z)) }
+fn fb_turn(db :: Db) -> [sql] Str { let t := get_state(db, "fb_turn") if str.is_empty(t) { "H0" } else { t } }
+fn fb_defender_on(db :: Db, z :: Int) -> [sql] Bool { fb_pz(db, "D0") == z or fb_pz(db, "D1") == z }
+fn fb_lane_clear(db :: Db, lo :: Int, hi :: Int) -> [sql] Bool {
+  let d0 := fb_pz(db, "D0")
+  let d1 := fb_pz(db, "D1")
+  not ((d0 >= lo and d0 <= hi) or (d1 >= lo and d1 <= hi))
+}
+
+fn fb_kickoff(db :: Db) -> [sql] Unit {
+  let _ := fb_setz(db, "H0", 1)
+  let _ := fb_setz(db, "H1", 2)
+  let _ := fb_setz(db, "D0", 3)
+  # D1 is a deep sweeper parked behind the play (z0): it never marks forward, so a
+  # lone dribbler still gets caught by D0, but a give-and-go can beat the press —
+  # coordination is the only way through. A 2-attacker-vs-presser drill.
+  let _ := fb_setz(db, "D1", 0)
+  let _ := set_state(db, "fb_ball", "H0")
+  let _ := set_state(db, "fb_turn", "H0")
+  let _ := set_state(db, "fb_dtick", "0")
+  ()
+}
+fn fb_flip_turn(db :: Db) -> [sql] Unit { set_state(db, "fb_turn", if fb_turn(db) == "H0" { "H1" } else { "H0" }) }
+# AWAY presses: D0 chases the ball-carrier but at HALF tempo (every other tick),
+# so a sharp one-two can play through it; D1 stays a parked sweeper at the back.
+fn fb_step_defenders(db :: Db) -> [sql] Unit {
+  let n := get_state_int(db, "fb_dtick")
+  let _ := set_state(db, "fb_dtick", int.to_str(n + 1))
+  let _ := if (n / 2) * 2 == n {
+    let bz := fb_pz(db, get_state(db, "fb_ball"))
+    let d0 := fb_pz(db, "D0")
+    fb_setz(db, "D0", if d0 < bz { d0 + 1 } else { if d0 > bz { d0 - 1 } else { d0 } })
+  } else { () }
+  ()
+}
+fn fb_state(db :: Db) -> [sql] Str {
+  let over := get_state(db, "fb_over") == "1"
+  str.join(["{\"H0\":", int.to_str(fb_pz(db, "H0")), ",\"H1\":", int.to_str(fb_pz(db, "H1")), ",\"D0\":", int.to_str(fb_pz(db, "D0")), ",\"D1\":", int.to_str(fb_pz(db, "D1")),
+    ",\"ball\":\"", get_state(db, "fb_ball"), "\",\"turn\":\"", fb_turn(db), "\",\"over\":", (if over { "true" } else { "false" }), ",\"result\":\"", get_state(db, "fb_result"), "\",\"left\":", int.to_str(get_state_int(db, "fb_left")),
+    ",\"strategy\":\"", get_state(db, "fb_strategy"), "\",\"sig\":{\"H0\":\"", get_state(db, "fb_sig_H0"), "\",\"H1\":\"", get_state(db, "fb_sig_H1"), "\"},\"match\":\"", get_state(db, "fb_match"), "\"}"], "")
+}
+fn fb_reset(db :: Db) -> [sql, time] Str {
+  # match_id is stable for the server session, so already-issued tokens stay valid
+  # across "new match" resets; only created the first time.
+  let _ := if str.is_empty(get_state(db, "fb_match")) { set_state(db, "fb_match", int.to_str(time.now_ms())) } else { () }
+  let _ := fb_kickoff(db)
+  let _ := set_state(db, "fb_over", "0")
+  let _ := set_state(db, "fb_result", "")
+  let _ := set_state(db, "fb_left", "24")
+  let _ := set_state(db, "fb_parent", "")
+  let _ := set_state(db, "fb_sig_H0", "")
+  let _ := set_state(db, "fb_sig_H1", "")
+  let _ := insert_event(db, "{\"kind\":\"fb_start\",\"zones\":5,\"budget\":24}")
+  "{\"status\":\"reset\"}"
+}
+fn fb_set_strategy(db :: Db, s :: Str) -> [sql, time] Str {
+  let _ := set_state(db, "fb_strategy", s)
+  let _ := insert_event(db, str.join(["{\"kind\":\"fb_strategy\",\"strategy\":\"", s, "\"}"], ""))
+  str.join(["{\"status\":\"ok\",\"strategy\":\"", s, "\"}"], "")
+}
+# A teammate message, relayed through the hub (agent-to-agent coordination).
+fn fb_signal(db :: Db, by :: Str, msg :: Str) -> [sql, time] Str {
+  let _ := set_state(db, str.concat("fb_sig_", by), msg)
+  let _ := insert_event(db, str.join(["{\"kind\":\"fb_say\",\"from\":\"", by, "\",\"msg\":\"", msg, "\"}"], ""))
+  "{\"status\":\"ok\"}"
+}
+fn fb_join(db :: Db, side :: Str) -> [sql, crypto, time] Str {
+  if side != "H0" and side != "H1" { "{\"error\":\"bad side\"}" } else {
+    let _ := if str.is_empty(get_state(db, "fb_match")) { set_state(db, "fb_match", int.to_str(time.now_ms())) } else { () }
+    let key := str.concat("fb_taken_", side)
+    if get_state(db, key) == "1" { str.join(["{\"error\":\"side taken\",\"side\":\"", side, "\"}"], "") } else {
+      let _ := set_state(db, key, "1")
+      let exp := time.now_ms() + 3600000
+      let _ := insert_event(db, str.join(["{\"kind\":\"fb_joined\",\"side\":\"", side, "\"}"], ""))
+      str.join(["{\"side\":\"", side, "\",\"match\":\"", get_state(db, "fb_match"), "\",\"token\":\"", game.issue_match_token(fb_secret(), side, get_state(db, "fb_match"), exp), "\"}"], "")
+    }
+  }
+}
+# Append the applied action to the hash-chained lex-trail log; store the new head.
+fn fb_record(db :: Db, payload :: Str) -> [sql, time, fs_write] Str {
+  match trail.open(fb_trail_path(db)) {
+    Err(_) => "",
+    Ok(log) => {
+      let head := game.record(log, get_state(db, "fb_parent"), payload)
+      let _ := set_state(db, "fb_parent", head)
+      let _ := trail.close(log)
+      head
+    },
+  }
+}
+fn fb_verify(db :: Db) -> [sql, fs_write] Str {
+  match trail.open(fb_trail_path(db)) {
+    Err(_) => "{\"valid\":false,\"count\":0}",
+    Ok(log) => {
+      let v := game.verify_log(log)
+      let _ := trail.close(log)
+      str.join(["{\"valid\":", (if v.valid { "true" } else { "false" }), ",\"count\":", int.to_str(v.count), "}"], "")
+    },
+  }
+}
+# Common post-action resolution: record, then either end on a goal, or step the
+# defense, resolve a tackle/interception (turnover), spend a turn, and hand over.
+fn fb_after(db :: Db, payload :: Str, scored :: Bool, forced_turnover :: Bool) -> [sql, time, fs_write] Str {
+  let head := fb_record(db, payload)
+  if scored {
+    let _ := set_state(db, "fb_over", "1")
+    let _ := set_state(db, "fb_result", "home")
+    let _ := insert_event(db, str.join(["{\"kind\":\"fb_goal\",\"chain\":\"", str.slice(head, 0, 10), "\"}"], ""))
+    "{\"status\":\"goal\"}"
+  } else {
+    let _ := fb_step_defenders(db)
+    # Possession is lost only by an intercepted pass or a saved shot (forced),
+    # not merely by a defender catching up — so build-up play isn't punished.
+    let lost := forced_turnover
+    let _ := if lost {
+      let _ := fb_kickoff(db)
+      insert_event(db, "{\"kind\":\"fb_turnover\"}")
+    } else {
+      let _ := fb_flip_turn(db)
+      ()
+    }
+    let left := get_state_int(db, "fb_left") - 1
+    let _ := set_state(db, "fb_left", int.to_str(left))
+    let _ := if left <= 0 and get_state(db, "fb_over") != "1" {
+      let _ := set_state(db, "fb_over", "1")
+      let _ := set_state(db, "fb_result", "defense")
+      insert_event(db, "{\"kind\":\"fb_over\",\"result\":\"defense\"}")
+    } else { () }
+    let _ := insert_event(db, str.join(["{\"kind\":\"fb_tick\",\"chain\":\"", str.slice(head, 0, 10), "\",\"lost\":", (if lost { "true" } else { "false" }), "}"], ""))
+    str.join(["{\"status\":\"ok\",\"lost\":", (if lost { "true" } else { "false" }), "}"], "")
+  }
+}
+fn fb_refuse(db :: Db, by :: Str, why :: Str) -> [sql, time] Str {
+  let _ := insert_event(db, str.join(["{\"kind\":\"fb_refused\",\"by\":\"", by, "\",\"reason\":\"", why, "\"}"], ""))
+  str.join(["{\"status\":\"refused\",\"reason\":\"", why, "\"}"], "")
+}
+# action ∈ {MOVE (arg fwd|back), PASS (arg H0|H1), SHOOT}. Carrier-only for PASS/SHOOT.
+fn fb_move(db :: Db, by :: Str, action :: Str, arg :: Str, token :: Str) -> [sql, time, crypto, fs_write] Str {
+  if get_state(db, "fb_over") == "1" { "{\"status\":\"over\"}" } else {
+    let side := game.match_token_side(fb_pubkey(), token, get_state(db, "fb_match"), time.now_ms())
+    match game.gate(side, by, fb_turn(db)) {
+      MoveReject(why) => fb_refuse(db, by, why),
+      MoveOk => {
+        let cz := fb_pz(db, by)
+        let iscarrier := get_state(db, "fb_ball") == by
+        if action == "HOLD" {
+          fb_after(db, str.join(["{\"by\":\"", by, "\",\"action\":\"hold\"}"], ""), false, false)
+        } else {
+        if action == "MOVE" {
+          let nz := if arg == "back" { cz - 1 } else { cz + 1 }
+          if nz < 0 or nz > 4 { fb_refuse(db, by, "off the pitch") } else {
+            if arg != "back" and fb_defender_on(db, nz) { fb_refuse(db, by, "blocked by a defender") } else {
+              let _ := fb_setz(db, by, nz)
+              fb_after(db, str.join(["{\"by\":\"", by, "\",\"action\":\"move\",\"to\":", int.to_str(nz), "}"], ""), false, false)
+            }
+          }
+        } else {
+        if action == "PASS" {
+          if not iscarrier { fb_refuse(db, by, "you don't have the ball") } else {
+            if (arg != "H0" and arg != "H1") or arg == by { fb_refuse(db, by, "bad pass target") } else {
+              let tz := fb_pz(db, arg)
+              let clear := if tz > cz { fb_lane_clear(db, cz + 1, tz) } else { true }
+              if clear {
+                let _ := set_state(db, "fb_ball", arg)
+                fb_after(db, str.join(["{\"by\":\"", by, "\",\"action\":\"pass\",\"to\":\"", arg, "\",\"tz\":", int.to_str(tz), "}"], ""), false, false)
+              } else {
+                fb_after(db, str.join(["{\"by\":\"", by, "\",\"action\":\"pass_intercepted\",\"to\":\"", arg, "\"}"], ""), false, true)
+              }
+            }
+          }
+        } else {
+        if action == "SHOOT" {
+          if not iscarrier { fb_refuse(db, by, "you don't have the ball") } else {
+            if cz < 3 { fb_refuse(db, by, "too far out to shoot") } else {
+              # A shot beats the press only if the shooter is unmarked (no defender
+              # in its zone). A marked striker is closed down → saved → turnover.
+              let goal := not fb_defender_on(db, cz)
+              fb_after(db, str.join(["{\"by\":\"", by, "\",\"action\":\"shoot\",\"goal\":", (if goal { "true" } else { "false" }), "}"], ""), goal, not goal)
+            }
+          }
+        } else {
+          fb_refuse(db, by, "unknown action")
+        }}}}
+      },
+    }
+  }
+}
+fn fb_dispatch(db :: Db, name :: Str, args :: jv.Json) -> [sql, time, crypto, fs_write] Str {
+  if name == "fb_join" { fb_join(db, jv_str_or(args, "side", "")) } else {
+  if name == "fb_reset" { fb_reset(db) } else {
+  if name == "fb_strategy" { fb_set_strategy(db, jv_str_or(args, "strategy", "direct")) } else {
+  if name == "fb_signal" { fb_signal(db, jv_str_or(args, "by", ""), jv_str_or(args, "msg", "")) } else {
+  if name == "fb_move" { fb_move(db, jv_str_or(args, "by", ""), jv_str_or(args, "action", ""), jv_str_or(args, "arg", ""), jv_str_or(args, "token", "")) } else {
+  if name == "fb_verify" { fb_verify(db) } else {
+  fb_state(db) }}}}}}
 }
 
 # A supplier delivers a new item into the stall's stock (logistics restock).
@@ -1135,7 +1394,7 @@ fn physics_call(physics_url :: Str, skill :: Str, raw_args :: Str) -> [net] Str 
   }
 }
 
-fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :: Str, dash :: Str, physics_url :: Str, seller_on :: Bool, seller_token :: Str, seller_project :: Str, seller_location :: Str) -> [sql, net, time, llm, io, proc, crypto] Str {
+fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :: Str, dash :: Str, physics_url :: Str, seller_on :: Bool, seller_token :: Str, seller_project :: Str, seller_location :: Str) -> [sql, net, time, llm, io, proc, crypto, fs_write] Str {
   # ── Bazaar skills ────────────────────────────────────────────────
   if name == "query_stock" {
     let search := jv_str_or(args, "search", "")
@@ -1210,6 +1469,10 @@ fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :
   } else {
   if name == "hx_join" or name == "hx_reset" or name == "hx_move" or name == "hx_state" {
     hx_dispatch(db, name, args)
+  } else {
+  if name == "game_verify" { g_verify(db, jv_str_or(args, "game", "")) } else {
+  if name == "fb_join" or name == "fb_reset" or name == "fb_strategy" or name == "fb_signal" or name == "fb_move" or name == "fb_verify" or name == "fb_state" {
+    fb_dispatch(db, name, args)
   } else {
   if name == "game_join" {
     ttt_join(db, jv_str_or(args, "side", ""))
@@ -1549,7 +1812,7 @@ fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :
     str.join(["{\"status\":\"dispatched\",\"callsign\":\"RESCUE-7\",\"eta_min\":8,\"capacity\":12}"], "")
   } else {
     str.join(["{\"error\":\"unknown skill: ", sq(name), "\"}"], "")
-  }}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}
+  }}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}
 }
 
 # ── Router ────────────────────────────────────────────────────────────────────
