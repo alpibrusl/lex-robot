@@ -418,7 +418,7 @@ fn ttt_join(db :: Db, side :: Str) -> [sql, crypto, time] Str {
     } else {
       let _ := set_state(db, key, "1")
       let _ := ttt_emit(db, str.join(["{\"kind\":\"joined\",\"side\":\"", side, "\"}"], ""))
-      str.join(["{\"side\":\"", side, "\",\"token\":\"", game.issue_token(ttt_secret(), side), "\"}"], "")
+      str.join(["{\"side\":\"", side, "\",\"token\":\"", game.issue_match_token(ttt_secret(), side, g_match(db, "ttt"), time.now_ms() + 3600000), "\"}"], "")
     }
   }
 }
@@ -431,7 +431,7 @@ fn ttt_move(db :: Db, by :: Str, cl :: Int, token :: Str) -> [sql, time, crypto]
   let board := ttt_board(db)
   let turn  := ttt_turn(db)
   if get_state(db, "ttt_over") == "1" { "{\"status\":\"over\"}" } else {
-    match game.gate(game.token_side(ttt_pubkey(), token), by, turn) {
+    match game.gate(game.match_token_side(ttt_pubkey(), token, g_match(db, "ttt"), time.now_ms()), by, turn) {
       MoveReject(why) => {
         let _ := ttt_emit(db, str.join(["{\"kind\":\"refused\",\"by\":\"", by, "\",\"cell\":", int.to_str(cl), ",\"reason\":\"", why, "\"}"], ""))
         str.join(["{\"status\":\"refused\",\"reason\":\"", why, "\"}"], "")
@@ -471,6 +471,18 @@ fn ttt_state(db :: Db) -> [sql] Str {
 # Two shoppers (P1 human, P2 bot) alternate drafting from a shared 6-item pool
 # under a budget. A pick is gated by a signed capability (you draft only as
 # yourself, in turn) and hash-chained. Highest total cart value wins.
+# Shared per-game match id (stable for the server session): tokens bind to it, so
+# a token minted for this match can't be replayed against another server/match.
+fn g_match(db :: Db, prefix :: Str) -> [sql, time] Str {
+  let k := str.concat(prefix, "_match")
+  let m := get_state(db, k)
+  if str.is_empty(m) {
+    let nm := int.to_str(time.now_ms())
+    let _ := set_state(db, k, nm)
+    nm
+  } else { m }
+}
+
 fn shop_price(i :: Int) -> Int { if i == 0 { 8 } else { if i == 1 { 12 } else { if i == 2 { 15 } else { if i == 3 { 5 } else { if i == 4 { 22 } else { if i == 5 { 7 } else { 999 } } } } } } }
 fn shop_value(i :: Int) -> Int { if i == 0 { 10 } else { if i == 1 { 14 } else { if i == 2 { 16 } else { if i == 3 { 6 } else { if i == 4 { 25 } else { if i == 5 { 8 } else { 0 } } } } } } }
 fn shop_name(i :: Int)  -> Str { if i == 0 { "Bowl" } else { if i == 1 { "Vase" } else { if i == 2 { "Scarf" } else { if i == 3 { "Saffron" } else { if i == 4 { "Teapot" } else { if i == 5 { "Ribbon" } else { "?" } } } } } } }
@@ -521,7 +533,7 @@ fn shop_join(db :: Db, side :: Str) -> [sql, crypto, time] Str {
     if get_state(db, key) == "1" { str.join(["{\"error\":\"side taken\",\"side\":\"", side, "\"}"], "") } else {
       let _ := set_state(db, key, "1")
       let _ := insert_event(db, str.join(["{\"kind\":\"shop_joined\",\"side\":\"", side, "\"}"], ""))
-      str.join(["{\"side\":\"", side, "\",\"token\":\"", game.issue_token(shop_secret(), side), "\"}"], "")
+      str.join(["{\"side\":\"", side, "\",\"token\":\"", game.issue_match_token(shop_secret(), side, g_match(db, "shop"), time.now_ms() + 3600000), "\"}"], "")
     }
   }
 }
@@ -536,7 +548,7 @@ fn shop_finish(db :: Db) -> [sql, time] Str {
 fn shop_move(db :: Db, by :: Str, i :: Int, token :: Str) -> [sql, time, crypto] Str {
   if get_state(db, "shop_over") == "1" { "{\"status\":\"over\"}" } else {
     let turn := shop_turn(db)
-    match game.gate(game.token_side(shop_pubkey(), token), by, turn) {
+    match game.gate(game.match_token_side(shop_pubkey(), token, g_match(db, "shop"), time.now_ms()), by, turn) {
       MoveReject(why) => {
         let _ := insert_event(db, str.join(["{\"kind\":\"shop_refused\",\"by\":\"", by, "\",\"item\":", int.to_str(i), ",\"reason\":\"", why, "\"}"], ""))
         str.join(["{\"status\":\"refused\",\"reason\":\"", why, "\"}"], "")
@@ -632,7 +644,7 @@ fn love_join(db :: Db, side :: Str) -> [sql, crypto, time] Str {
     if get_state(db, key) == "1" { str.join(["{\"error\":\"side taken\",\"side\":\"", side, "\"}"], "") } else {
       let _ := set_state(db, key, "1")
       let _ := insert_event(db, str.join(["{\"kind\":\"love_joined\",\"side\":\"", side, "\"}"], ""))
-      str.join(["{\"side\":\"", side, "\",\"token\":\"", game.issue_token(love_secret(), side), "\"}"], "")
+      str.join(["{\"side\":\"", side, "\",\"token\":\"", game.issue_match_token(love_secret(), side, g_match(db, "love"), time.now_ms() + 3600000), "\"}"], "")
     }
   }
 }
@@ -647,7 +659,7 @@ fn love_finish(db :: Db) -> [sql, time] Str {
 fn love_move(db :: Db, by :: Str, i :: Int, token :: Str) -> [sql, time, crypto] Str {
   if get_state(db, "love_over") == "1" { "{\"status\":\"over\"}" } else {
     let turn := love_turn(db)
-    match game.gate(game.token_side(love_pubkey(), token), by, turn) {
+    match game.gate(game.match_token_side(love_pubkey(), token, g_match(db, "love"), time.now_ms()), by, turn) {
       MoveReject(why) => {
         let _ := insert_event(db, str.join(["{\"kind\":\"love_refused\",\"by\":\"", by, "\",\"cand\":", int.to_str(i), ",\"reason\":\"", why, "\"}"], ""))
         str.join(["{\"status\":\"refused\",\"reason\":\"", why, "\"}"], "")
@@ -738,7 +750,7 @@ fn ev_join(db :: Db, side :: Str) -> [sql, crypto, time] Str {
     if get_state(db, key) == "1" { str.join(["{\"error\":\"side taken\",\"side\":\"", side, "\"}"], "") } else {
       let _ := set_state(db, key, "1")
       let _ := insert_event(db, str.join(["{\"kind\":\"ev_joined\",\"side\":\"", side, "\"}"], ""))
-      str.join(["{\"side\":\"", side, "\",\"token\":\"", game.issue_token(ev_secret(), side), "\"}"], "")
+      str.join(["{\"side\":\"", side, "\",\"token\":\"", game.issue_match_token(ev_secret(), side, g_match(db, "ev"), time.now_ms() + 3600000), "\"}"], "")
     }
   }
 }
@@ -753,7 +765,7 @@ fn ev_finish(db :: Db) -> [sql, time] Str {
 fn ev_move(db :: Db, by :: Str, i :: Int, token :: Str) -> [sql, time, crypto] Str {
   if get_state(db, "ev_over") == "1" { "{\"status\":\"over\"}" } else {
     let turn := ev_turn(db)
-    match game.gate(game.token_side(ev_pubkey(), token), by, turn) {
+    match game.gate(game.match_token_side(ev_pubkey(), token, g_match(db, "ev"), time.now_ms()), by, turn) {
       MoveReject(why) => {
         let _ := insert_event(db, str.join(["{\"kind\":\"ev_refused\",\"by\":\"", by, "\",\"charger\":", int.to_str(i), ",\"reason\":\"", why, "\"}"], ""))
         str.join(["{\"status\":\"refused\",\"reason\":\"", why, "\"}"], "")
@@ -832,7 +844,7 @@ fn hx_join(db :: Db, side :: Str) -> [sql, crypto, time] Str {
     if get_state(db, key) == "1" { str.join(["{\"error\":\"side taken\",\"side\":\"", side, "\"}"], "") } else {
       let _ := set_state(db, key, "1")
       let _ := insert_event(db, str.join(["{\"kind\":\"hx_joined\",\"side\":\"", side, "\",\"role\":\"", (if side == "P1" { "HACK" } else { "MUSCLE" }), "\"}"], ""))
-      str.join(["{\"side\":\"", side, "\",\"role\":\"", (if side == "P1" { "HACK" } else { "MUSCLE" }), "\",\"token\":\"", game.issue_token(hx_secret(), side), "\"}"], "")
+      str.join(["{\"side\":\"", side, "\",\"role\":\"", (if side == "P1" { "HACK" } else { "MUSCLE" }), "\",\"token\":\"", game.issue_match_token(hx_secret(), side, g_match(db, "hx"), time.now_ms() + 3600000), "\"}"], "")
     }
   }
 }
@@ -851,7 +863,7 @@ fn hx_move(db :: Db, by :: Str, token :: Str) -> [sql, time, crypto] Str {
     let at := hx_at(db)
     if at >= 6 { "{\"status\":\"over\"}" } else {
       let turn := hx_side(at)
-      match game.gate(game.token_side(hx_pubkey(), token), by, turn) {
+      match game.gate(game.match_token_side(hx_pubkey(), token, g_match(db, "hx"), time.now_ms()), by, turn) {
         MoveReject(why) => {
           # Wrong role for this stage → you lack the capability → trip the alarm.
           let alarm := hx_alarm(db) + 1
