@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>lex-games · Bazaar Draft</title>
+<link href="https://fonts.googleapis.com/css2?family=VT323&family=Press+Start+2P&display=swap" rel="stylesheet">
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root { --bg:#0a1420; --bg2:#0f1f2d; --bg3:#16273a; --border:#24384a; --text:#dfeaf2; --muted:#7f9bb0; --gold:#ffd166; --green:#4ade80; --red:#f87171; --blue:#7fd4ff; }
+html, body { height: 100%; overflow: hidden; }
+body { background: var(--bg); color: var(--text); font-family: 'VT323','Courier New',monospace; font-size: 16px; display: flex; flex-direction: column; height: 100dvh; }
+header { background: var(--bg2); border-bottom: 1px solid var(--border); padding: 0 16px; display: flex; align-items: center; gap: 14px; flex-shrink: 0; height: 42px; }
+header h1 { font-family: '"Press Start 2P"',monospace; font-size: 11px; color: var(--gold); letter-spacing: .08em; }
+#h-meta { color: var(--muted); font-size: 14px; flex: 1; }
+#h-dot { width: 9px; height: 9px; border-radius: 50%; background: #2a3f50; } #h-dot.live { background: var(--green); box-shadow: 0 0 8px var(--green); }
+#main { flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; padding: 16px; }
+#status { font-size: 20px; min-height: 26px; } #status.deny { color: var(--red); } #status.win { color: var(--green); }
+#scores { display: flex; gap: 28px; font-size: 18px; }
+.score { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.score .who { font-family: '"Press Start 2P"',monospace; font-size: 9px; }
+.score.p1 .who { color: var(--blue); } .score.p2 .who { color: var(--gold); }
+.score.turn { text-shadow: 0 0 10px currentColor; }
+#pool { display: grid; grid-template-columns: repeat(3, 150px); gap: 10px; }
+.item { background: var(--bg3); border: 1px solid var(--border); border-radius: 8px; padding: 10px; display: flex; flex-direction: column; gap: 3px; cursor: pointer; transition: transform .1s, border-color .1s; }
+.item:hover { border-color: var(--gold); transform: translateY(-2px); }
+.item .nm { font-size: 18px; } .item .pv { font-size: 14px; color: var(--muted); }
+.item.P1 { border-color: var(--blue); background: #11233a; cursor: default; }
+.item.P2 { border-color: var(--gold); background: #2a2410; cursor: default; }
+.item .own { font-size: 12px; font-family: '"Press Start 2P"',monospace; }
+.item.P1 .own { color: var(--blue); } .item.P2 .own { color: var(--gold); }
+.btn { background: var(--bg3); border: 1px solid var(--border); color: var(--text); font-family: 'VT323',monospace; font-size: 16px; padding: 6px 14px; border-radius: 5px; cursor: pointer; }
+.btn:hover { border-color: var(--gold); color: var(--gold); }
+.btn.cheat:hover { border-color: var(--red); color: var(--red); }
+</style>
+</head>
+<body>
+<header>
+  <h1>BAZAAR DRAFT</h1>
+  <span id="h-meta">draft for value under budget · you control P1 (signed) · P2 is an A2A agent</span>
+  <div id="h-dot"></div>
+</header>
+<div id="main">
+  <div id="status">Joining…</div>
+  <div id="scores">
+    <div class="score p1"><span class="who">YOU · P1</span><span id="p1v">0 pts</span><span id="p1b" style="color:var(--muted);font-size:14px">budget 30</span></div>
+    <div class="score p2"><span class="who">BOT · P2</span><span id="p2v">0 pts</span><span id="p2b" style="color:var(--muted);font-size:14px">budget 30</span></div>
+  </div>
+  <div id="pool"></div>
+  <div style="display:flex;gap:10px">
+    <button class="btn" onclick="newGame()">New game</button>
+    <button class="btn cheat" onclick="cheat()">Cheat: draft as P2</button>
+  </div>
+</div>
+
+<script>
+'use strict';
+let TOKEN = '', state = null;
+
+async function joinP1() {
+  try { const r = await fetch('/skill/shop_join', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ side:'P1' }) }); const j = await r.json(); if (j.token) TOKEN = j.token; } catch(e){}
+}
+async function fetchState() {
+  try { const r = await fetch('/skill/shop_state', { method:'POST', headers:{'Content-Type':'application/json'}, body:'{}' }); state = await r.json(); render(); } catch(e){}
+}
+async function draft(by, i) {
+  try { await fetch('/skill/shop_move', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ by, item:i, token: TOKEN }) }); } catch(e){}
+}
+function cheat() { // claim P2 with the signed P1 token → refused by capability
+  if (!state) return;
+  const avail = (state.pool||[]).find(it => !it.owner);
+  if (avail) draft('P2', avail.i);
+}
+async function newGame() { try { await fetch('/skill/shop_reset', { method:'POST', headers:{'Content-Type':'application/json'}, body:'{}' }); } catch(e){} if (!TOKEN) await joinP1(); fetchState(); }
+
+function render() {
+  if (!state) return;
+  const pool = document.getElementById('pool');
+  pool.innerHTML = '';
+  (state.pool||[]).forEach(it => {
+    const d = document.createElement('div');
+    d.className = 'item' + (it.owner ? ' ' + it.owner : '');
+    d.innerHTML = `<span class="nm">${it.name}</span><span class="pv">${it.price} cr · ${it.value} pts</span>` + (it.owner ? `<span class="own">${it.owner==='P1'?'YOURS':'BOT'}</span>` : '');
+    if (!it.owner) d.onclick = () => draft('P1', it.i);
+    pool.appendChild(d);
+  });
+  const v = state.val||{P1:0,P2:0}, b = state.bud||{P1:0,P2:0};
+  document.getElementById('p1v').textContent = v.P1 + ' pts'; document.getElementById('p2v').textContent = v.P2 + ' pts';
+  document.getElementById('p1b').textContent = 'budget ' + b.P1; document.getElementById('p2b').textContent = 'budget ' + b.P2;
+  document.querySelector('.score.p1').classList.toggle('turn', state.turn==='P1' && !state.over);
+  document.querySelector('.score.p2').classList.toggle('turn', state.turn==='P2' && !state.over);
+  if (!state.over) setStatus(state.turn==='P1' ? 'Your turn — draft an item' : 'Bot (P2) is choosing…');
+}
+function setStatus(t, cls) { const s = document.getElementById('status'); s.textContent = t; s.className = cls||''; }
+
+function handleEvent(ev) {
+  const k = ev.kind;
+  if (k === 'shop_refused') setStatus('⛔ ' + (ev.reason||'illegal') + ' — refused by the capability layer', 'deny');
+  else if (k === 'shop_win') { fetchState(); setStatus(ev.winner==='draw' ? `Draw — ${ev.p1} vs ${ev.p2}` : `${ev.winner==='P1'?'You win':'Bot wins'}! ${ev.p1} vs ${ev.p2}`, 'win'); }
+  else fetchState(); // shop_start / shop_pick / shop_joined → refresh
+}
+function connect() {
+  const dot = document.getElementById('h-dot');
+  const es = new EventSource('/events');
+  es.onopen = () => { dot.className = 'live'; };
+  es.onmessage = e => { try { handleEvent(JSON.parse(e.data)); } catch(err) { console.warn('bad event', e.data, err); } };
+  es.onerror = () => { dot.className = ''; };
+}
+newGame();
+connect();
+</script>
+</body>
+</html>

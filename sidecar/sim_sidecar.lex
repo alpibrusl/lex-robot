@@ -465,6 +465,108 @@ fn ttt_state(db :: Db) -> [sql] Str {
   str.join(["{\"board\":\"", ttt_board(db), "\",\"turn\":\"", ttt_turn(db), "\",\"over\":", (if get_state(db, "ttt_over") == "1" { "true" } else { "false" }), "}"], "")
 }
 
+# ── Bazaar Draft (lex-games): turn-based competitive shopping ─────────────────
+# Two shoppers (P1 human, P2 bot) alternate drafting from a shared 6-item pool
+# under a budget. A pick is gated by a signed capability (you draft only as
+# yourself, in turn) and hash-chained. Highest total cart value wins.
+fn shop_price(i :: Int) -> Int { if i == 0 { 8 } else { if i == 1 { 12 } else { if i == 2 { 15 } else { if i == 3 { 5 } else { if i == 4 { 22 } else { if i == 5 { 7 } else { 999 } } } } } } }
+fn shop_value(i :: Int) -> Int { if i == 0 { 10 } else { if i == 1 { 14 } else { if i == 2 { 16 } else { if i == 3 { 6 } else { if i == 4 { 25 } else { if i == 5 { 8 } else { 0 } } } } } } }
+fn shop_name(i :: Int)  -> Str { if i == 0 { "Bowl" } else { if i == 1 { "Vase" } else { if i == 2 { "Scarf" } else { if i == 3 { "Saffron" } else { if i == 4 { "Teapot" } else { if i == 5 { "Ribbon" } else { "?" } } } } } } }
+
+fn shop_secret() -> Bytes { bytes.from_str("lexgames-shop-secret-seed-000000") }
+fn shop_pubkey() -> [crypto] Str { match crypto.ed25519_public_key(shop_secret()) { Ok(pk) => crypto.base64url_encode(pk), Err(_) => "" } }
+
+fn shop_owner(db :: Db, i :: Int) -> [sql] Str { get_state(db, str.concat("shop_own_", int.to_str(i))) }
+fn shop_turn(db :: Db) -> [sql] Str {
+  let t := get_state(db, "shop_turn")
+  if str.is_empty(t) { "P1" } else { t }
+}
+fn shop_budget(db :: Db, p :: Str) -> [sql] Int {
+  let v := get_state(db, str.concat("shop_bud_", p))
+  match str.to_int(v) { Some(n) => n, None => 30 }
+}
+fn shop_cartval(db :: Db, p :: Str) -> [sql] Int {
+  list.fold([0,1,2,3,4,5], 0, fn (acc :: Int, i :: Int) -> [sql] Int { if shop_owner(db, i) == p { acc + shop_value(i) } else { acc } })
+}
+# Can player p still afford any available item?
+fn shop_can_move(db :: Db, p :: Str) -> [sql] Bool {
+  let bud := shop_budget(db, p)
+  list.fold([0,1,2,3,4,5], false, fn (acc :: Bool, i :: Int) -> [sql] Bool { if acc { acc } else { shop_owner(db, i) == "" and shop_price(i) <= bud } })
+}
+# Pool as JSON (for the client + the bot).
+fn shop_pool_json(db :: Db) -> [sql] Str {
+  let items := list.map([0,1,2,3,4,5], fn (i :: Int) -> [sql] Str {
+    str.join(["{\"i\":", int.to_str(i), ",\"name\":\"", shop_name(i), "\",\"price\":", int.to_str(shop_price(i)), ",\"value\":", int.to_str(shop_value(i)), ",\"owner\":\"", shop_owner(db, i), "\"}"], "")
+  })
+  str.join(["[", str.join(items, ","), "]"], "")
+}
+fn shop_state(db :: Db) -> [sql] Str {
+  str.join(["{\"pool\":", shop_pool_json(db), ",\"turn\":\"", shop_turn(db), "\",\"over\":", (if get_state(db, "shop_over") == "1" { "true" } else { "false" }), ",\"bud\":{\"P1\":", int.to_str(shop_budget(db, "P1")), ",\"P2\":", int.to_str(shop_budget(db, "P2")), "},\"val\":{\"P1\":", int.to_str(shop_cartval(db, "P1")), ",\"P2\":", int.to_str(shop_cartval(db, "P2")), "}}"], "")
+}
+fn shop_reset(db :: Db) -> [sql, time] Str {
+  let _ := list.fold([0,1,2,3,4,5], (), fn (_ :: Unit, i :: Int) -> [sql] Unit { set_state(db, str.concat("shop_own_", int.to_str(i)), "") })
+  let _ := set_state(db, "shop_bud_P1", "30")
+  let _ := set_state(db, "shop_bud_P2", "30")
+  let _ := set_state(db, "shop_turn", "P1")
+  let _ := set_state(db, "shop_over", "0")
+  let _ := set_state(db, "shop_chain", "")
+  let _ := insert_event(db, "{\"kind\":\"shop_start\",\"budget\":30}")
+  "{\"status\":\"reset\"}"
+}
+fn shop_join(db :: Db, side :: Str) -> [sql, crypto, time] Str {
+  if side != "P1" and side != "P2" { "{\"error\":\"bad side\"}" } else {
+    let key := str.concat("shop_taken_", side)
+    if get_state(db, key) == "1" { str.join(["{\"error\":\"side taken\",\"side\":\"", side, "\"}"], "") } else {
+      let _ := set_state(db, key, "1")
+      let _ := insert_event(db, str.join(["{\"kind\":\"shop_joined\",\"side\":\"", side, "\"}"], ""))
+      str.join(["{\"side\":\"", side, "\",\"token\":\"", game.issue_token(shop_secret(), side), "\"}"], "")
+    }
+  }
+}
+fn shop_finish(db :: Db) -> [sql, time] Str {
+  let v1 := shop_cartval(db, "P1")
+  let v2 := shop_cartval(db, "P2")
+  let w := if v1 > v2 { "P1" } else { if v2 > v1 { "P2" } else { "draw" } }
+  let _ := set_state(db, "shop_over", "1")
+  let _ := insert_event(db, str.join(["{\"kind\":\"shop_win\",\"winner\":\"", w, "\",\"p1\":", int.to_str(v1), ",\"p2\":", int.to_str(v2), "}"], ""))
+  str.join(["{\"status\":\"over\",\"winner\":\"", w, "\"}"], "")
+}
+fn shop_move(db :: Db, by :: Str, i :: Int, token :: Str) -> [sql, time, crypto] Str {
+  if get_state(db, "shop_over") == "1" { "{\"status\":\"over\"}" } else {
+    let turn := shop_turn(db)
+    match game.gate(game.token_side(shop_pubkey(), token), by, turn) {
+      MoveReject(why) => {
+        let _ := insert_event(db, str.join(["{\"kind\":\"shop_refused\",\"by\":\"", by, "\",\"item\":", int.to_str(i), ",\"reason\":\"", why, "\"}"], ""))
+        str.join(["{\"status\":\"refused\",\"reason\":\"", why, "\"}"], "")
+      },
+      MoveOk => if i < 0 or i > 5 or shop_owner(db, i) != "" or shop_price(i) > shop_budget(db, by) {
+        let _ := insert_event(db, str.join(["{\"kind\":\"shop_refused\",\"by\":\"", by, "\",\"item\":", int.to_str(i), ",\"reason\":\"unavailable or unaffordable\"}"], ""))
+        "{\"status\":\"refused\",\"reason\":\"unavailable or unaffordable\"}"
+      } else {
+        let _ := set_state(db, str.concat("shop_own_", int.to_str(i)), by)
+        let _ := set_state(db, str.concat("shop_bud_", by), int.to_str(shop_budget(db, by) - shop_price(i)))
+        let payload := str.join(["{\"by\":\"", by, "\",\"item\":", int.to_str(i), ",\"name\":\"", shop_name(i), "\",\"price\":", int.to_str(shop_price(i)), "}"], "")
+        let prev := get_state(db, "shop_chain")
+        let head := str.slice(crypto.base64url_encode(crypto.blake2b(bytes.from_str(str.concat(prev, payload)))), 0, 10)
+        let _ := set_state(db, "shop_chain", head)
+        let _ := insert_event(db, str.join(["{\"kind\":\"shop_pick\",\"by\":\"", by, "\",\"item\":", int.to_str(i), ",\"name\":\"", shop_name(i), "\",\"price\":", int.to_str(shop_price(i)), ",\"value\":", int.to_str(shop_value(i)), ",\"chain\":\"", head, "\"}"], ""))
+        let _ := set_state(db, "shop_turn", if by == "P1" { "P2" } else { "P1" })
+        if shop_can_move(db, "P1") or shop_can_move(db, "P2") {
+          str.join(["{\"status\":\"ok\",\"item\":", int.to_str(i), "}"], "")
+        } else {
+          shop_finish(db)
+        }
+      },
+    }
+  }
+}
+fn shop_dispatch(db :: Db, name :: Str, args :: jv.Json) -> [sql, time, crypto] Str {
+  if name == "shop_join" { shop_join(db, jv_str_or(args, "side", "")) } else {
+  if name == "shop_reset" { shop_reset(db) } else {
+  if name == "shop_move" { shop_move(db, jv_str_or(args, "by", ""), jv_int_or(args, "item", -1), jv_str_or(args, "token", "")) } else {
+  shop_state(db) }}}
+}
+
 # A supplier delivers a new item into the stall's stock (logistics restock).
 fn stock_add(db :: Db, item_id :: Str, name :: Str, category :: Str, price :: Int) -> [sql] Str {
   let q := str.join(["INSERT OR REPLACE INTO stock (item_id, name, category, price, reserved) VALUES ('", sq(item_id), "','", sq(name), "','", sq(category), "',", int.to_str(price), ",0)"], "")
@@ -787,6 +889,9 @@ fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :
     result
   } else {
   # ── lex-games: tic-tac-toe (capability-gated, verifiable, agent-playable) ──
+  if name == "shop_join" or name == "shop_reset" or name == "shop_move" or name == "shop_state" {
+    shop_dispatch(db, name, args)
+  } else {
   if name == "game_join" {
     ttt_join(db, jv_str_or(args, "side", ""))
   } else {
@@ -1125,7 +1230,7 @@ fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :
     str.join(["{\"status\":\"dispatched\",\"callsign\":\"RESCUE-7\",\"eta_min\":8,\"capacity\":12}"], "")
   } else {
     str.join(["{\"error\":\"unknown skill: ", sq(name), "\"}"], "")
-  }}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}
+  }}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}
 }
 
 # ── Router ────────────────────────────────────────────────────────────────────
