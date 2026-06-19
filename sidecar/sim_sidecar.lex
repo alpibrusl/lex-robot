@@ -567,6 +567,118 @@ fn shop_dispatch(db :: Db, name :: Str, args :: jv.Json) -> [sql, time, crypto] 
   shop_state(db) }}}
 }
 
+# ── lex-games: Consent Match — matchmaking as a capability-gated draft ─────────
+# A shared deck of candidates, each with a PUBLIC profile (name + what vibe they
+# seek) and a PRIVATE card (contact, Ed25519-signed). Both players are creatives
+# (they offer art & music). On your turn you swipe right on one candidate: if the
+# candidate seeks what you offer it is a MATCH (double opt-in) and the signed
+# private card is revealed (selective disclosure); otherwise the swipe is rejected
+# and the private card stays sealed. Candidates seeking hiking/gaming match no one
+# (decoys that burn a turn). Each swipe is capability-gated by a signed token and
+# hash-chained. When the deck is exhausted, the highest matched charm wins.
+fn love_name(i :: Int)  -> Str { if i == 0 { "Robin" } else { if i == 1 { "Sky" } else { if i == 2 { "Wren" } else { if i == 3 { "Sage" } else { if i == 4 { "Nova" } else { if i == 5 { "Pax" } else { "?" } } } } } } }
+fn love_seeks(i :: Int) -> Str { if i == 0 { "art" } else { if i == 1 { "music" } else { if i == 2 { "gaming" } else { if i == 3 { "art" } else { if i == 4 { "music" } else { if i == 5 { "hiking" } else { "?" } } } } } } }
+fn love_charm(i :: Int) -> Int { if i == 0 { 10 } else { if i == 1 { 14 } else { if i == 2 { 0 } else { if i == 3 { 16 } else { if i == 4 { 8 } else { if i == 5 { 0 } else { 0 } } } } } } }
+fn love_contact(i :: Int) -> Str { if i == 0 { "robin@six.net" } else { if i == 1 { "sky@six.net" } else { if i == 2 { "wren@six.net" } else { if i == 3 { "sage@six.net" } else { if i == 4 { "nova@six.net" } else { if i == 5 { "pax@six.net" } else { "?" } } } } } } }
+# Both players offer art & music; a candidate reciprocates iff it seeks one of those.
+fn love_recip(i :: Int) -> Bool { love_seeks(i) == "art" or love_seeks(i) == "music" }
+
+fn love_secret() -> Bytes { bytes.from_str("lexgames-love-secret-seed-000000") }
+fn love_pubkey() -> [crypto] Str { match crypto.ed25519_public_key(love_secret()) { Ok(pk) => crypto.base64url_encode(pk), Err(_) => "" } }
+# Ed25519 signature over a candidate's private contact (revealed only on match).
+fn love_sign(i :: Int) -> [crypto] Str {
+  match crypto.ed25519_sign(love_secret(), bytes.from_str(love_contact(i))) {
+    Ok(sig) => str.slice(crypto.base64url_encode(sig), 0, 12),
+    Err(_)  => "",
+  }
+}
+
+fn love_owner(db :: Db, i :: Int)  -> [sql] Str { get_state(db, str.concat("love_own_", int.to_str(i))) }
+fn love_result(db :: Db, i :: Int) -> [sql] Str { get_state(db, str.concat("love_res_", int.to_str(i))) }
+fn love_turn(db :: Db) -> [sql] Str {
+  let t := get_state(db, "love_turn")
+  if str.is_empty(t) { "P1" } else { t }
+}
+fn love_score(db :: Db, p :: Str) -> [sql] Int {
+  list.fold([0,1,2,3,4,5], 0, fn (acc :: Int, i :: Int) -> [sql] Int { if love_owner(db, i) == p and love_result(db, i) == "match" { acc + love_charm(i) } else { acc } })
+}
+# Game ends when every candidate has been swiped.
+fn love_done(db :: Db) -> [sql] Bool {
+  list.fold([0,1,2,3,4,5], true, fn (acc :: Bool, i :: Int) -> [sql] Bool { if acc { love_owner(db, i) != "" } else { false } })
+}
+fn love_pool_json(db :: Db) -> [sql] Str {
+  let items := list.map([0,1,2,3,4,5], fn (i :: Int) -> [sql] Str {
+    str.join(["{\"i\":", int.to_str(i), ",\"name\":\"", love_name(i), "\",\"seeks\":\"", love_seeks(i), "\",\"charm\":", int.to_str(love_charm(i)), ",\"owner\":\"", love_owner(db, i), "\",\"result\":\"", love_result(db, i), "\"}"], "")
+  })
+  str.join(["[", str.join(items, ","), "]"], "")
+}
+fn love_state(db :: Db) -> [sql] Str {
+  str.join(["{\"pool\":", love_pool_json(db), ",\"turn\":\"", love_turn(db), "\",\"over\":", (if get_state(db, "love_over") == "1" { "true" } else { "false" }), ",\"score\":{\"P1\":", int.to_str(love_score(db, "P1")), ",\"P2\":", int.to_str(love_score(db, "P2")), "}}"], "")
+}
+fn love_reset(db :: Db) -> [sql, time] Str {
+  let _ := list.fold([0,1,2,3,4,5], (), fn (_ :: Unit, i :: Int) -> [sql] Unit { set_state(db, str.concat("love_own_", int.to_str(i)), "") })
+  let _ := list.fold([0,1,2,3,4,5], (), fn (_ :: Unit, i :: Int) -> [sql] Unit { set_state(db, str.concat("love_res_", int.to_str(i)), "") })
+  let _ := set_state(db, "love_turn", "P1")
+  let _ := set_state(db, "love_over", "0")
+  let _ := set_state(db, "love_chain", "")
+  let _ := insert_event(db, "{\"kind\":\"love_start\"}")
+  "{\"status\":\"reset\"}"
+}
+fn love_join(db :: Db, side :: Str) -> [sql, crypto, time] Str {
+  if side != "P1" and side != "P2" { "{\"error\":\"bad side\"}" } else {
+    let key := str.concat("love_taken_", side)
+    if get_state(db, key) == "1" { str.join(["{\"error\":\"side taken\",\"side\":\"", side, "\"}"], "") } else {
+      let _ := set_state(db, key, "1")
+      let _ := insert_event(db, str.join(["{\"kind\":\"love_joined\",\"side\":\"", side, "\"}"], ""))
+      str.join(["{\"side\":\"", side, "\",\"token\":\"", game.issue_token(love_secret(), side), "\"}"], "")
+    }
+  }
+}
+fn love_finish(db :: Db) -> [sql, time] Str {
+  let s1 := love_score(db, "P1")
+  let s2 := love_score(db, "P2")
+  let w := if s1 > s2 { "P1" } else { if s2 > s1 { "P2" } else { "draw" } }
+  let _ := set_state(db, "love_over", "1")
+  let _ := insert_event(db, str.join(["{\"kind\":\"love_win\",\"winner\":\"", w, "\",\"p1\":", int.to_str(s1), ",\"p2\":", int.to_str(s2), "}"], ""))
+  str.join(["{\"status\":\"over\",\"winner\":\"", w, "\"}"], "")
+}
+fn love_move(db :: Db, by :: Str, i :: Int, token :: Str) -> [sql, time, crypto] Str {
+  if get_state(db, "love_over") == "1" { "{\"status\":\"over\"}" } else {
+    let turn := love_turn(db)
+    match game.gate(game.token_side(love_pubkey(), token), by, turn) {
+      MoveReject(why) => {
+        let _ := insert_event(db, str.join(["{\"kind\":\"love_refused\",\"by\":\"", by, "\",\"cand\":", int.to_str(i), ",\"reason\":\"", why, "\"}"], ""))
+        str.join(["{\"status\":\"refused\",\"reason\":\"", why, "\"}"], "")
+      },
+      MoveOk => if i < 0 or i > 5 or love_owner(db, i) != "" {
+        let _ := insert_event(db, str.join(["{\"kind\":\"love_refused\",\"by\":\"", by, "\",\"cand\":", int.to_str(i), ",\"reason\":\"already swiped\"}"], ""))
+        "{\"status\":\"refused\",\"reason\":\"already swiped\"}"
+      } else {
+        let matched := love_recip(i)
+        let _ := set_state(db, str.concat("love_own_", int.to_str(i)), by)
+        let _ := set_state(db, str.concat("love_res_", int.to_str(i)), if matched { "match" } else { "rejected" })
+        let payload := str.join(["{\"by\":\"", by, "\",\"cand\":", int.to_str(i), ",\"match\":", (if matched { "true" } else { "false" }), "}"], "")
+        let prev := get_state(db, "love_chain")
+        let head := str.slice(crypto.base64url_encode(crypto.blake2b(bytes.from_str(str.concat(prev, payload)))), 0, 10)
+        let _ := set_state(db, "love_chain", head)
+        let _ := if matched {
+          insert_event(db, str.join(["{\"kind\":\"love_match\",\"by\":\"", by, "\",\"cand\":", int.to_str(i), ",\"name\":\"", love_name(i), "\",\"charm\":", int.to_str(love_charm(i)), ",\"contact\":\"", love_contact(i), "\",\"sig\":\"", love_sign(i), "\",\"chain\":\"", head, "\"}"], ""))
+        } else {
+          insert_event(db, str.join(["{\"kind\":\"love_reject\",\"by\":\"", by, "\",\"cand\":", int.to_str(i), ",\"name\":\"", love_name(i), "\",\"chain\":\"", head, "\"}"], ""))
+        }
+        let _ := set_state(db, "love_turn", if by == "P1" { "P2" } else { "P1" })
+        if love_done(db) { love_finish(db) } else { str.join(["{\"status\":\"ok\",\"cand\":", int.to_str(i), ",\"match\":", (if matched { "true" } else { "false" }), "}"], "") }
+      },
+    }
+  }
+}
+fn love_dispatch(db :: Db, name :: Str, args :: jv.Json) -> [sql, time, crypto] Str {
+  if name == "love_join" { love_join(db, jv_str_or(args, "side", "")) } else {
+  if name == "love_reset" { love_reset(db) } else {
+  if name == "love_move" { love_move(db, jv_str_or(args, "by", ""), jv_int_or(args, "cand", -1), jv_str_or(args, "token", "")) } else {
+  love_state(db) }}}
+}
+
 # A supplier delivers a new item into the stall's stock (logistics restock).
 fn stock_add(db :: Db, item_id :: Str, name :: Str, category :: Str, price :: Int) -> [sql] Str {
   let q := str.join(["INSERT OR REPLACE INTO stock (item_id, name, category, price, reserved) VALUES ('", sq(item_id), "','", sq(name), "','", sq(category), "',", int.to_str(price), ",0)"], "")
@@ -891,6 +1003,9 @@ fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :
   # ── lex-games: tic-tac-toe (capability-gated, verifiable, agent-playable) ──
   if name == "shop_join" or name == "shop_reset" or name == "shop_move" or name == "shop_state" {
     shop_dispatch(db, name, args)
+  } else {
+  if name == "love_join" or name == "love_reset" or name == "love_move" or name == "love_state" {
+    love_dispatch(db, name, args)
   } else {
   if name == "game_join" {
     ttt_join(db, jv_str_or(args, "side", ""))
@@ -1230,7 +1345,7 @@ fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :
     str.join(["{\"status\":\"dispatched\",\"callsign\":\"RESCUE-7\",\"eta_min\":8,\"capacity\":12}"], "")
   } else {
     str.join(["{\"error\":\"unknown skill: ", sq(name), "\"}"], "")
-  }}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}
+  }}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}
 }
 
 # ── Router ────────────────────────────────────────────────────────────────────

@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>lex-games · Consent Match</title>
+<link href="https://fonts.googleapis.com/css2?family=VT323&family=Press+Start+2P&display=swap" rel="stylesheet">
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root { --bg:#1a0a14; --bg2:#26101f; --bg3:#371629; --border:#4a2438; --text:#f2dfea; --muted:#b07f9b; --gold:#ffd166; --green:#4ade80; --red:#f87171; --pink:#ff7fb4; --blue:#7fd4ff; }
+html, body { height: 100%; overflow: hidden; }
+body { background: var(--bg); color: var(--text); font-family: 'VT323','Courier New',monospace; font-size: 16px; display: flex; flex-direction: column; height: 100dvh; }
+header { background: var(--bg2); border-bottom: 1px solid var(--border); padding: 0 16px; display: flex; align-items: center; gap: 14px; flex-shrink: 0; height: 42px; }
+header h1 { font-family: '"Press Start 2P"',monospace; font-size: 11px; color: var(--pink); letter-spacing: .08em; }
+#h-meta { color: var(--muted); font-size: 14px; flex: 1; }
+#h-dot { width: 9px; height: 9px; border-radius: 50%; background: #4a2438; } #h-dot.live { background: var(--green); box-shadow: 0 0 8px var(--green); }
+#main { flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; padding: 16px; }
+#status { font-size: 20px; min-height: 26px; } #status.deny { color: var(--red); } #status.win { color: var(--green); }
+#scores { display: flex; gap: 28px; font-size: 18px; }
+.score { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.score .who { font-family: '"Press Start 2P"',monospace; font-size: 9px; }
+.score.p1 .who { color: var(--blue); } .score.p2 .who { color: var(--pink); }
+.score.turn { text-shadow: 0 0 10px currentColor; }
+#pool { display: grid; grid-template-columns: repeat(3, 160px); gap: 10px; }
+.cand { background: var(--bg3); border: 1px solid var(--border); border-radius: 10px; padding: 12px 10px; display: flex; flex-direction: column; gap: 4px; align-items: center; cursor: pointer; transition: transform .1s, border-color .1s; }
+.cand:hover { border-color: var(--pink); transform: translateY(-2px); }
+.cand .face { font-size: 30px; }
+.cand .nm { font-size: 19px; } .cand .sk { font-size: 14px; color: var(--muted); } .cand .ch { font-size: 14px; color: var(--gold); }
+.cand.taken { cursor: default; opacity: .92; }
+.cand.match { border-color: var(--green); background: #14331f; }
+.cand.reject { border-color: var(--red); background: #331417; opacity: .6; }
+.cand .res { font-size: 12px; font-family: '"Press Start 2P"',monospace; margin-top: 2px; }
+.cand.match .res { color: var(--green); } .cand.reject .res { color: var(--red); }
+.cand .own { font-size: 11px; color: var(--muted); }
+.reveal { font-size: 13px; color: var(--green); min-height: 18px; }
+.btn { background: var(--bg3); border: 1px solid var(--border); color: var(--text); font-family: 'VT323',monospace; font-size: 16px; padding: 6px 14px; border-radius: 5px; cursor: pointer; }
+.btn:hover { border-color: var(--pink); color: var(--pink); }
+.btn.cheat:hover { border-color: var(--red); color: var(--red); }
+</style>
+</head>
+<body>
+<header>
+  <h1>CONSENT MATCH</h1>
+  <span id="h-meta">swipe right to consent · a match needs double opt-in · private card revealed only on match</span>
+  <div id="h-dot"></div>
+</header>
+<div id="main">
+  <div id="status">Joining…</div>
+  <div id="scores">
+    <div class="score p1"><span class="who">YOU · P1</span><span id="p1v">0 charm</span></div>
+    <div class="score p2"><span class="who">BOT · P2</span><span id="p2v">0 charm</span></div>
+  </div>
+  <div id="pool"></div>
+  <div class="reveal" id="reveal"></div>
+  <div style="display:flex;gap:10px">
+    <button class="btn" onclick="newGame()">New game</button>
+    <button class="btn cheat" onclick="cheat()">Cheat: swipe as P2</button>
+  </div>
+</div>
+
+<script>
+'use strict';
+let TOKEN = '', state = null;
+const FACES = ['🧑‍🎨','🎸','🎮','🖼️','🎹','🥾'];
+
+async function joinP1() {
+  try { const r = await fetch('/skill/love_join', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ side:'P1' }) }); const j = await r.json(); if (j.token) TOKEN = j.token; } catch(e){}
+}
+async function fetchState() {
+  try { const r = await fetch('/skill/love_state', { method:'POST', headers:{'Content-Type':'application/json'}, body:'{}' }); state = await r.json(); render(); } catch(e){}
+}
+async function swipe(by, i) {
+  try { await fetch('/skill/love_move', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ by, cand:i, token: TOKEN }) }); } catch(e){}
+}
+function cheat() { // claim P2 with the signed P1 token → refused by the capability layer
+  if (!state) return;
+  const avail = (state.pool||[]).find(it => !it.owner);
+  if (avail) swipe('P2', avail.i);
+}
+async function newGame() { try { await fetch('/skill/love_reset', { method:'POST', headers:{'Content-Type':'application/json'}, body:'{}' }); } catch(e){} if (!TOKEN) await joinP1(); document.getElementById('reveal').textContent=''; fetchState(); }
+
+function render() {
+  if (!state) return;
+  const pool = document.getElementById('pool');
+  pool.innerHTML = '';
+  (state.pool||[]).forEach(it => {
+    const d = document.createElement('div');
+    const res = it.result; // '', 'match', 'rejected'
+    d.className = 'cand' + (it.owner ? ' taken' : '') + (res === 'match' ? ' match' : res === 'rejected' ? ' reject' : '');
+    d.innerHTML = `<span class="face">${FACES[it.i]||'❤'}</span><span class="nm">${it.name}</span>`
+      + `<span class="sk">seeks ${it.seeks}</span><span class="ch">${it.charm} charm</span>`
+      + (it.owner ? `<span class="own">swiped by ${it.owner==='P1'?'you':'bot'}</span>` : '')
+      + (res === 'match' ? `<span class="res">♥ MATCH</span>` : res === 'rejected' ? `<span class="res">✗ NO MATCH</span>` : '');
+    if (!it.owner) d.onclick = () => swipe('P1', it.i);
+    pool.appendChild(d);
+  });
+  const v = state.score||{P1:0,P2:0};
+  document.getElementById('p1v').textContent = v.P1 + ' charm'; document.getElementById('p2v').textContent = v.P2 + ' charm';
+  document.querySelector('.score.p1').classList.toggle('turn', state.turn==='P1' && !state.over);
+  document.querySelector('.score.p2').classList.toggle('turn', state.turn==='P2' && !state.over);
+  if (!state.over) setStatus(state.turn==='P1' ? 'Your turn — swipe right on someone' : 'Bot (P2) is deciding…');
+}
+function setStatus(t, cls) { const s = document.getElementById('status'); s.textContent = t; s.className = cls||''; }
+
+function handleEvent(ev) {
+  const k = ev.kind;
+  if (k === 'love_refused') setStatus('⛔ ' + (ev.reason||'illegal') + ' — refused by the capability layer', 'deny');
+  else if (k === 'love_match') { document.getElementById('reveal').textContent = `🔓 ${ev.name}'s private card unlocked: ${ev.contact} · sig ${ev.sig}…`; fetchState(); }
+  else if (k === 'love_win') { fetchState(); setStatus(ev.winner==='draw' ? `Draw — ${ev.p1} vs ${ev.p2} charm` : `${ev.winner==='P1'?'You win':'Bot wins'}! ${ev.p1} vs ${ev.p2} charm`, 'win'); }
+  else fetchState(); // love_start / love_reject / love_joined → refresh
+}
+function connect() {
+  const dot = document.getElementById('h-dot');
+  const es = new EventSource('/events');
+  es.onopen = () => { dot.className = 'live'; };
+  es.onmessage = e => { try { handleEvent(JSON.parse(e.data)); } catch(err) { console.warn('bad event', e.data, err); } };
+  es.onerror = () => { dot.className = ''; };
+}
+newGame();
+connect();
+</script>
+</body>
+</html>
