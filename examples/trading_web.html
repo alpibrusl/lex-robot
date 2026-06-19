@@ -75,7 +75,13 @@ header h1 { font-size: 13px; color: var(--green); letter-spacing: .1em; font-wei
 
 #middle {
   flex: 1; min-height: 0; display: grid;
-  grid-template-columns: 260px 1fr; background: var(--border); gap: 1px; overflow: hidden;
+  grid-template-columns: 260px 1fr 320px; background: var(--border); gap: 1px; overflow: hidden;
+}
+
+/* Right column: compact Trading Feed above a tall, scrollable Event Log */
+#right-col {
+  display: flex; flex-direction: column; gap: 1px;
+  background: var(--border); overflow: hidden;
 }
 
 #left-col {
@@ -108,9 +114,9 @@ header h1 { font-size: 13px; color: var(--green); letter-spacing: .1em; font-wei
 .ob-side-sell { color: var(--red); font-weight: bold; }
 .ob-body { color: var(--text); }
 
-/* A2A feed */
+/* A2A feed — compact panel above the event log */
 #a2a-panel {
-  background: var(--bg); padding: 8px 10px;
+  background: var(--bg); padding: 8px 10px; flex: 1; min-height: 0;
   display: flex; flex-direction: column; gap: 5px; overflow: hidden;
 }
 #a2a-feed { overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 4px; }
@@ -123,14 +129,16 @@ header h1 { font-size: 13px; color: var(--green); letter-spacing: .1em; font-wei
 .msg-buy     { background: #001a00; border-color: var(--green); align-self: flex-start; }
 .msg-sell    { background: #1a0000; border-color: var(--red); align-self: flex-start; }
 .msg-think   { background: #050a05; border-color: #1a2a1a; align-self: flex-start; }
+.msg-alert   { background: #1a0000; border-color: var(--red); align-self: flex-start; }
 
+/* Event log — now a tall, readable side panel in the right column */
 #log-section {
-  flex-shrink: 0; height: 110px; background: var(--bg);
-  border-top: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden;
+  flex: 1; min-height: 0; background: var(--bg);
+  display: flex; flex-direction: column; overflow: hidden;
 }
-#log-hdr { font-size: 9px; text-transform: uppercase; letter-spacing: .14em; color: var(--muted); padding: 4px 11px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
-#log     { overflow-y: auto; flex: 1; padding: 3px 11px; }
-.ll      { font-size: 10px; color: var(--muted); white-space: nowrap; line-height: 1.6; }
+#log-hdr { font-size: 9px; text-transform: uppercase; letter-spacing: .14em; color: var(--muted); padding: 6px 11px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+#log     { overflow-y: auto; flex: 1; padding: 4px 11px; }
+.ll      { font-size: 12px; color: var(--muted); white-space: nowrap; line-height: 1.7; }
 .ll .ts  { color: #1a2a1a; margin-right: 7px; }
 .ll .ev  { color: var(--green); margin-right: 5px; }
 .ll .cu  { font-weight: bold; margin-right: 4px; }
@@ -211,20 +219,24 @@ header h1 { font-size: 13px; color: var(--green); letter-spacing: .1em; font-wei
     </div>
   </div>
 
-  <div id="a2a-panel">
-    <div class="panel-title">Trading Feed</div>
-    <div id="a2a-feed">
-      <div style="color:var(--muted);font-size:11px;text-align:center;margin-top:24px">Markets closed — awaiting session start</div>
+  <div id="right-col">
+    <div id="a2a-panel">
+      <div class="panel-title">Trading Feed</div>
+      <div id="a2a-feed">
+        <div style="color:var(--muted);font-size:11px;text-align:center;margin-top:24px">Markets closed — awaiting session start</div>
+      </div>
+    </div>
+
+    <!-- Event log — now a tall, readable side panel -->
+    <div id="log-section">
+      <div id="log-hdr">Event Log</div>
+      <div id="log"></div>
     </div>
   </div>
 </div>
 
-<div id="log-section">
-  <div id="log-hdr">Event Log</div>
-  <div id="log"></div>
-</div>
-
 <script src="https://cdn.jsdelivr.net/npm/phaser@3.70.0/dist/phaser.min.js"></script>
+<script src="/retro_kit.js"></script>
 <script>
 'use strict';
 
@@ -268,43 +280,28 @@ class TradingScene extends Phaser.Scene {
   }
 
   _drawBg(W, H) {
-    const g = this.add.graphics().setDepth(0);
-    g.fillStyle(0x000000, 1); g.fillRect(0, 0, W, H);
-    g.lineStyle(1, 0x030603, 1);
-    for (let x = 0; x < W; x += 50) { g.moveTo(x, 0); g.lineTo(x, H); }
-    for (let y = 0; y < H; y += 50) { g.moveTo(0, y); g.lineTo(W, y); }
-    g.strokePath();
-    // Floor line
-    g.lineStyle(1, 0x1a2a1a, 1);
-    g.moveTo(0, H - 55); g.lineTo(W, H - 55);
-    g.strokePath();
-    this.add.text(W/2, H - 50, 'TRADING FLOOR', { fontSize: '8px', color: '#1a3a1a', fontFamily: 'Courier New', letterSpacing: 6 }).setOrigin(0.5, 0).setDepth(1);
+    RK.drawBg(this, { skyFrac: 0.13 });
   }
 
   _buildBooths(W, H) {
-    const BW = 140, BH = 55;
-    const y = H - 30;
+    const BW = 140, BH = 64;
+    const y = H - 36;
     const positions = { Quantum: W * 0.22, Solar: W * 0.5, Water: W * 0.78 };
-    const colors    = { Quantum: 0x22d3ee, Solar: 0xffd700, Water: 0x4488ff };
+    // Warm market accents from the shared retro palette.
+    const accents   = { Quantum: RK.C.GOLD, Solar: RK.C.WOOD_LT, Water: RK.C.GREEN };
 
     Object.entries(positions).forEach(([name, cx]) => {
-      const col = colors[name];
-      const x0 = cx - BW/2, y0 = y - BH;
-      const g = this.add.graphics().setDepth(3);
-      g.fillStyle(0x000000, 0.3); g.fillRect(x0+3, y0+3, BW, BH);
-      g.fillStyle(0x050505, 1); g.fillRect(x0, y0, BW, BH);
-      g.fillStyle(col, 0.9); g.fillRect(x0, y0, BW, 13);
-      g.lineStyle(1.5, col, 0.6); g.strokeRect(x0, y0, BW, BH);
+      const accent = accents[name];
+      const cy = y - BH / 2;
+      const stall = RK.makeStall(this, cx, cy, name.toUpperCase() + ' MARKET', null, accent, BW, BH);
+      const x0 = cx - BW / 2, y0 = cy - BH / 2;
 
-      this.add.text(cx, y0 + 6.5, name.toUpperCase() + ' MARKET', {
-        fontSize: '8px', color: '#000', fontFamily: 'Courier New', fontStyle: 'bold', align: 'center'
-      }).setOrigin(0.5, 0.5).setDepth(4);
+      // Price readout the scene updates via _updatePrice — kept as before.
+      const priceText = this.add.text(cx, y0 - 8, 'BID — / ASK —', {
+        fontFamily: RK.PX, fontSize: '12px', color: '#8aa0aa', align: 'center'
+      }).setOrigin(0.5, 1).setDepth(6);
 
-      const priceText = this.add.text(cx, y0 + 32, 'BID — / ASK —', {
-        fontSize: '8px', color: '#4a5a4a', fontFamily: 'Courier New', align: 'center'
-      }).setOrigin(0.5, 0.5).setDepth(4);
-
-      this.booths[name] = { cx, cy: y0 + BH/2, y0, x0, BW, BH, priceText, color: col };
+      this.booths[name] = { cx, cy, y0, x0, BW, BH, priceText, color: accent };
     });
   }
 
@@ -318,19 +315,9 @@ class TradingScene extends Phaser.Scene {
     ];
     starts.forEach(s => {
       const cfg = TRADERS[s.name];
-      const con = this._makeTrader(s.x, s.y, s.name[0], cfg.color, cfg.tc);
+      const con = RK.makeRobot(this, s.x, s.y, s.name[0], cfg.color);
       this.traders[s.name] = { container: con, homeX: s.x, homeY: s.y, color: cfg.color, thinkTween: null, thinkRing: null, bubble: null };
     });
-  }
-
-  _makeTrader(x, y, label, color, tc) {
-    const r = this.R;
-    const g = this.add.graphics();
-    g.fillStyle(0x000000, 0.3); g.fillEllipse(1, r+3, r*1.5, r*0.5);
-    g.fillStyle(color, 1); g.fillCircle(0, 0, r);
-    g.fillStyle(0xffffff, 0.18); g.fillCircle(-r*0.28, -r*0.32, r*0.38);
-    const t = this.add.text(0, 0, label, { fontSize: '9px', color: tc, fontFamily: 'Courier New', fontStyle: 'bold' }).setOrigin(0.5, 0.5);
-    return this.add.container(x, y, [g, t]).setDepth(20);
   }
 
   _moveToMarket(name, market) {
@@ -357,33 +344,33 @@ class TradingScene extends Phaser.Scene {
     const trader = this.traders[name]; if (!trader) return;
     this._clearThink(name);
     const ring = this.add.graphics().setDepth(18);
-    ring.lineStyle(2, 0x00ff41, 1); ring.strokeCircle(0, 0, 15);
+    ring.lineStyle(2, RK.C.GOLD, 1); ring.strokeCircle(0, 0, 15);
     ring.setPosition(trader.container.x, trader.container.y);
     trader.thinkRing = ring;
     trader.thinkTween = this.tweens.add({
       targets: ring, scaleX: 2.5, scaleY: 2.5, alpha: 0, duration: 900, repeat: -1, ease: 'Sine.easeOut',
       onRepeat: () => ring.setPosition(trader.container.x, trader.container.y).setAlpha(1).setScale(1)
     });
-    const bub = this.add.text(trader.container.x, trader.container.y - 20, '· · ·', { fontSize: '9px', color: '#00ff41', fontFamily: 'Courier New' }).setOrigin(0.5, 1).setDepth(25);
+    const bub = this.add.text(trader.container.x, trader.container.y - 22, '· · ·', { fontFamily: RK.PX, fontSize: '15px', color: '#ffd166' }).setOrigin(0.5, 1).setDepth(25);
     trader.bubble = bub;
     this.tweens.add({ targets: bub, y: bub.y - 9, duration: 700, repeat: -1, yoyo: true, ease: 'Sine.easeInOut' });
   }
 
   _flashTrade(market, isBuy) {
     const booth = this.booths[market]; if (!booth) return;
-    const col = isBuy ? 0x00ff41 : 0xff3333;
+    const col = isBuy ? RK.C.GREEN : RK.C.RED;
     const flash = this.add.graphics().setDepth(10);
     flash.fillStyle(col, 0.2); flash.fillRect(booth.x0, booth.y0, booth.BW, booth.BH);
     this.tweens.add({ targets: flash, alpha: 0, duration: 600, onComplete: () => flash.destroy() });
     const pop = this.add.text(booth.cx, booth.y0 - 8, isBuy ? '▲ BUY' : '▼ SELL', {
-      fontSize: '10px', color: isBuy ? '#00ff41' : '#ff3333', fontFamily: 'Courier New', fontStyle: 'bold'
+      fontFamily: RK.PXH, fontSize: '9px', color: isBuy ? '#4ade80' : '#f87171'
     }).setOrigin(0.5, 1).setDepth(30);
     this.tweens.add({ targets: pop, y: pop.y - 25, alpha: 0, duration: 1000, onComplete: () => pop.destroy() });
   }
 
   _updatePrice(market, bid, ask) {
     const booth = this.booths[market]; if (!booth) return;
-    booth.priceText.setText(`B ${bid}  /  A ${ask}`).setColor('#c0d0c0');
+    booth.priceText.setText(`B ${bid}  /  A ${ask}`).setColor('#f0e6cf');
   }
 
   _bounce(name) {
@@ -421,29 +408,46 @@ class TradingScene extends Phaser.Scene {
       if (ev.bid !== undefined) this._updatePrice(market, ev.bid, ev.ask);
       if (name) this._bounce(name);
     }
+    else if (k === 'denied') {
+      this._onDenied(name, ev.skill || '', ev.why || '');
+    }
+    else if (k === 'qr_meet') this._onQRMeet(ev.trader || ev.agent || ev.name || '', ev.blob || '');
     else if (k === 'agent_done') {
       if (name) this._returnHome(name);
     }
     else if (k === 'done') {
-      const txt = this.add.text(this.W/2, this.H/2, 'SESSION CLOSED', {
-        fontSize: '15px', color: '#00ff41', fontFamily: 'Courier New', fontStyle: 'bold',
-        backgroundColor: '#000000ee', padding: { x: 18, y: 9 }
-      }).setOrigin(0.5, 0.5).setDepth(50).setAlpha(0);
-      this.tweens.add({ targets: txt, alpha: 1, duration: 500,
-        onComplete: () => this.tweens.add({ targets: txt, alpha: 0, duration: 600, delay: 3500, onComplete: () => txt.destroy() })
-      });
+      RK.capBanner(this, 'MARKET CLOSED', 'grant');
     }
+  }
+
+  // A trader met a market it had no prior key for — render the bootstrap blob it
+  // built as a real scannable QR above that trader, with a scan beam from trader
+  // to QR. The blob IS the meeting handshake: "no prior knowledge, this is how
+  // they meet."
+  _onQRMeet(traderName, blob) {
+    const t = this.traders[traderName]; if (!t || typeof RK === 'undefined') return;
+    const c = t.container || t; const qx = c.x, qy = c.y - 46;
+    RK.makeQR(this, qx, qy, blob, 50, (grp) => {
+      const tag = this.add.text(qx, qy + 30, 'bootstrap blob — no prior key', { fontFamily: RK.PX, fontSize: '11px', color: '#7fd4ff' }).setOrigin(0.5,0).setDepth(27).setAlpha(0);
+      this.tweens.add({ targets: tag, alpha: 1, duration: 200 });
+      RK.scanBeam(this, c.x, c.y - 10, qx, qy);
+      this.time.delayedCall(1100, () => { this.tweens.add({ targets: tag, alpha: 0, duration: 350, onComplete: () => tag.destroy() }); this.tweens.add({ targets: [grp.bg, grp.img], alpha: 0, duration: 400, onComplete: () => grp.destroy() }); });
+    });
+  }
+
+  // Lex grant layer refused a skill — stamp the trader and flash a banner.
+  _onDenied(name, skill, why) {
+    const tr = this.traders[name];
+    if (tr) RK.capStamp(this, tr.container.x, tr.container.y - 26, '⛔ DENIED', 'deny');
+    RK.capBanner(this, '⛔ GRANT DENIED\n' + (skill || 'skill'), 'deny');
   }
 }
 
 window.addEventListener('load', () => {
   const container = document.getElementById('game-container');
   const W = Math.max(container.clientWidth || 900, 400);
-  new Phaser.Game({
-    type: Phaser.AUTO, parent: 'game-container', width: W, height: 212,
-    backgroundColor: 0x000000, scene: TradingScene,
-    scale: { mode: Phaser.Scale.NONE }, render: { antialias: true, pixelArt: false }
-  });
+  const H = Math.max(container.clientHeight || 250, 240);
+  RK.startWhenFontsReady(() => new Phaser.Game(RK.gameConfig('game-container', W, H, TradingScene)));
 });
 
 const prevPrices = {};
@@ -553,6 +557,16 @@ function handleEvent(ev) {
     addLog('trade_executed', name, `${ev.side} ${market} ${qty}×${price}`, isBuy ? 'ok' : 'er');
     return;
   }
+  if (k === 'denied') {
+    addMsg('msg-alert', name, '⛔ grant denied', `<strong>${ev.skill || 'skill'}</strong> — ${ev.why || 'not in session grant'}`);
+    addLog('denied', name, `${ev.skill || ''}: ${ev.why || 'denied'}`, 'er');
+    return;
+  }
+  if (k === 'qr_meet') {
+    addMsg('msg-think', name, '⊞ meet', `${market} — scanned <code>bootstrap blob</code>, no prior key`);
+    addLog('qr_meet', name, `${market}: scanned bootstrap QR`, '');
+    return;
+  }
   if (k === 'agent_done') {
     const total = budgets[name] !== undefined ? (BUDGET_MAX - budgets[name]) : '?';
     addMsg('msg-think', name, 'done', `Session complete — spent ${total} credits`);
@@ -575,7 +589,10 @@ function connect() {
   const es = new EventSource('/events');
   es.onopen = () => { dot.className = 'live'; sts.textContent = 'connected'; };
   es.onmessage = e => { try { handleEvent(JSON.parse(e.data)); } catch(err) { console.warn('bad event', e.data, err); } };
-  es.onerror = () => { dot.className = ''; sts.textContent = 'reconnecting…'; es.close(); setTimeout(connect, 2000); };
+  // The /events long-poll closes after each batch, firing onerror. That is NOT a
+  // real disconnect — let the native EventSource reconnect (it preserves
+  // Last-Event-ID). Manually closing + reopening would replay from id 0.
+  es.onerror = () => { dot.className = ''; sts.textContent = 'reconnecting…'; };
 }
 connect();
 </script>

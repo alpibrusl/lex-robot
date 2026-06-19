@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>lex-games · tic-tac-toe</title>
+<link href="https://fonts.googleapis.com/css2?family=VT323&family=Press+Start+2P&display=swap" rel="stylesheet">
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root { --bg:#0a1420; --bg2:#0f1f2d; --bg3:#16273a; --border:#24384a; --text:#dfeaf2; --muted:#7f9bb0; --gold:#ffd166; --green:#4ade80; --red:#f87171; --blue:#7fd4ff; }
+html, body { height: 100%; overflow: hidden; }
+body { background: var(--bg); color: var(--text); font-family: 'VT323','Courier New',monospace; font-size: 16px; display: flex; flex-direction: column; height: 100dvh; }
+header { background: var(--bg2); border-bottom: 1px solid var(--border); padding: 0 16px; display: flex; align-items: center; gap: 14px; flex-shrink: 0; height: 42px; }
+header h1 { font-family: '"Press Start 2P"',monospace; font-size: 11px; color: var(--gold); letter-spacing: .08em; }
+#h-meta { color: var(--muted); font-size: 14px; flex: 1; }
+#h-dot { width: 9px; height: 9px; border-radius: 50%; background: #2a3f50; }
+#h-dot.live { background: var(--green); box-shadow: 0 0 8px var(--green); }
+#main { flex: 1; min-height: 0; display: flex; flex-direction: row; overflow: hidden; }
+#play { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; }
+#board { display: grid; grid-template-columns: repeat(3, 96px); grid-template-rows: repeat(3, 96px); gap: 6px; background: var(--border); padding: 6px; border-radius: 8px; }
+.cell { background: var(--bg3); border: 1px solid var(--border); border-radius: 5px; display: flex; align-items: center; justify-content: center; font-family: '"Press Start 2P"',monospace; font-size: 30px; cursor: pointer; user-select: none; transition: background .1s; }
+.cell:hover { background: #1d3149; }
+.cell.X { color: var(--blue); } .cell.O { color: var(--gold); }
+.cell.win { background: #14331f; border-color: var(--green); }
+#status { font-size: 20px; color: var(--text); min-height: 26px; }
+#status.deny { color: var(--red); }
+#status.win { color: var(--green); }
+#controls { display: flex; gap: 10px; }
+.btn { background: var(--bg3); border: 1px solid var(--border); color: var(--text); font-family: 'VT323',monospace; font-size: 16px; padding: 6px 14px; border-radius: 5px; cursor: pointer; }
+.btn:hover { border-color: var(--gold); color: var(--gold); }
+.btn.cheat:hover { border-color: var(--red); color: var(--red); }
+#sidebar { width: 300px; flex-shrink: 0; background: var(--border); border-left: 1px solid var(--border); display: flex; flex-direction: column; gap: 1px; overflow: hidden; }
+.panel { background: var(--bg); padding: 9px 11px; display: flex; flex-direction: column; gap: 6px; overflow: hidden; }
+.panel-title { font-family: '"Press Start 2P"',monospace; font-size: 7px; letter-spacing: .12em; color: var(--muted); border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+#chain-panel { flex: 1; min-height: 0; }
+#chain { overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 3px; }
+.cl-row { font-size: 13px; color: var(--text); }
+.cl-row .h { color: var(--blue); } .cl-row.deny { color: var(--red); }
+.cl-row .lk { color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>LEX-GAMES · TTT</h1>
+  <span id="h-meta">server-authoritative · capability-gated · every move hash-chained</span>
+  <div id="h-dot"></div>
+</header>
+<div id="main">
+  <div id="play">
+    <div id="status">You are X — click a square. (O is a bot.)</div>
+    <div id="board"></div>
+    <div id="controls">
+      <button class="btn" onclick="newGame()">New game</button>
+      <button class="btn cheat" onclick="cheat()">Cheat: try to play as O</button>
+    </div>
+  </div>
+  <div id="sidebar">
+    <div class="panel" id="chain-panel">
+      <div class="panel-title">Verifiable move chain (lex)</div>
+      <div id="chain"><span style="color:var(--muted);font-size:13px">no moves yet</span></div>
+    </div>
+  </div>
+</div>
+
+<script>
+'use strict';
+let board = '.........';
+let lastHash = '';
+
+function renderBoard() {
+  const el = document.getElementById('board');
+  el.innerHTML = '';
+  for (let i = 0; i < 9; i++) {
+    const c = document.createElement('div');
+    const mark = board[i] === '.' ? '' : board[i];
+    c.className = 'cell' + (mark ? ' ' + mark : '');
+    c.textContent = mark;
+    c.onclick = () => move('X', i);
+    el.appendChild(c);
+  }
+}
+function setStatus(text, cls) { const s = document.getElementById('status'); s.textContent = text; s.className = cls || ''; }
+function firstEmpty() { for (let i = 0; i < 9; i++) if (board[i] === '.') return i; return 0; }
+
+// The X client joins to receive a SIGNED X capability token. It cannot forge an
+// O token, and O is already taken by the bot — so claiming O is refused.
+let X_TOKEN = '';
+async function joinX() {
+  try {
+    const r = await fetch('/skill/game_join', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ side: 'X' }) });
+    const j = await r.json();
+    if (j.token) X_TOKEN = j.token;
+  } catch (e) {}
+}
+async function move(by, cell) {
+  try { await fetch('/skill/game_move', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ by, cell, token: X_TOKEN }) }); }
+  catch (e) {}
+}
+function cheat() { move('O', firstEmpty()); }   // claim O with the signed X token → server refuses (capability)
+async function newGame() { try { await fetch('/skill/game_reset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }); } catch (e) {} if (!X_TOKEN) await joinX(); }
+
+function addChain(by, cell, hash) {
+  const c = document.getElementById('chain');
+  if (c.firstElementChild && !c.firstElementChild.classList.contains('cl-row')) c.innerHTML = '';
+  const el = document.createElement('div'); el.className = 'cl-row';
+  el.innerHTML = `${by} → cell ${cell} <span class="lk">${lastHash ? lastHash + ' ◂ ' : ''}</span><span class="h">${hash}</span>`;
+  lastHash = hash;
+  c.appendChild(el); c.scrollTop = c.scrollHeight;
+}
+function addDeny(by, reason) {
+  const c = document.getElementById('chain');
+  if (c.firstElementChild && !c.firstElementChild.classList.contains('cl-row')) c.innerHTML = '';
+  const el = document.createElement('div'); el.className = 'cl-row deny';
+  el.innerHTML = `⛔ ${by}: ${reason} <span class="lk">(not chained)</span>`;
+  c.appendChild(el); c.scrollTop = c.scrollHeight;
+}
+function highlightWin() {
+  // light up any winning line
+  const L = [[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]];
+  const cells = document.querySelectorAll('.cell');
+  for (const ln of L) { const [a,b,d]=ln; if (board[a]!=='.' && board[a]===board[b] && board[b]===board[d]) ln.forEach(i => cells[i].classList.add('win')); }
+}
+
+function handleEvent(ev) {
+  const k = ev.kind;
+  if (k === 'game_start') { board = ev.board || '.........'; lastHash = ''; document.getElementById('chain').innerHTML = '<span style="color:var(--muted);font-size:13px">no moves yet</span>'; renderBoard(); setStatus('You are X — click a square. (O is a bot.)'); }
+  else if (k === 'move')   { board = ev.board || board; renderBoard(); addChain(ev.by, ev.cell, ev.chain || ''); if (ev.by === 'O') setStatus('O (bot) moved — your turn'); else setStatus('You played X'); }
+  else if (k === 'refused'){ addDeny(ev.by, ev.reason || 'illegal'); setStatus('⛔ ' + (ev.reason || 'illegal move') + ' — refused by the capability layer', 'deny'); }
+  else if (k === 'win')    { renderBoard(); highlightWin(); setStatus(ev.winner === 'draw' ? 'Draw.' : (ev.winner + ' wins!'), 'win'); }
+}
+
+function connect() {
+  const dot = document.getElementById('h-dot');
+  const es = new EventSource('/events');
+  es.onopen = () => { dot.className = 'live'; };
+  es.onmessage = e => { try { handleEvent(JSON.parse(e.data)); } catch (err) { console.warn('bad event', e.data, err); } };
+  es.onerror = () => { dot.className = ''; };
+}
+renderBoard();
+newGame();   // start a fresh game on load
+connect();
+</script>
+</body>
+</html>

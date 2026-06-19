@@ -11,5 +11,8 @@ description = "Effect-typed, capability-bounded control layer over LeRobot (desi
 lex-trail  = { git = "https://github.com/alpibrusl/lex-trail" }
 lex-llm    = { git = "https://github.com/alpibrusl/lex-llm" }
 lex-schema = { git = "https://github.com/alpibrusl/lex-schema" }
-lex-web    = { path = "../lex-web-fix" }
+# lex-web pinned to git (identical to ../lex-web-fix) so it unifies with the copy
+# lex-agent pulls transitively via lex-guard — a flat layout holds one copy.
+lex-web    = { git = "https://github.com/alpibrusl/lex-web" }
 lex-jobs   = { path = "../lex-jobs-fix" }
+lex-guard  = { path = "../lex-guard" }

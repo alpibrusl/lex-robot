@@ -88,6 +88,14 @@ fn ext_skills() -> List[card.AgentSkill] {
   ]
 }
 
+# Quote-only extended card: even after a trader authenticates to Extended, this
+# market never grants place_bid / place_ask. Used for the Water market so any
+# trade attempt there is refused by the grant layer (a real GRANT DENIED moment),
+# mirroring how heist's vault_ext_skills withholds detonate_device.
+fn quote_only_ext_skills() -> List[card.AgentSkill] {
+  [{ name: "get_quote", description: "Get current market price quote for an asset" }]
+}
+
 # ── Dashboard helper ───────────────────────────────────────────────────────────
 fn post_ui(dash :: Str, json :: Str) -> [net] Str {
   let req0 := { method: "POST", url: str.concat(dash, "/event"), headers: map.new(), body: Some(bytes.from_str(json)), timeout_ms: None }
@@ -102,9 +110,17 @@ fn json_esc(s :: Str) -> Str {
   msg.json_escape(s)
 }
 
+# A trader meets a market it had NO prior key for. The bootstrap blob it builds
+# IS the entire meeting handshake — render it as a scannable QR on the dashboard
+# so the "no prior knowledge, this is how they meet" property is visible on screen.
+fn emit_qr_meet(dash :: Str, trader :: Str, market :: Str, endpoint :: Str, pubkey :: Str, nonce :: Str) -> [net] Str {
+  let blob_json := str.join(["{\"endpoint\":\"", endpoint, "\",\"peer_pubkey\":\"", pubkey, "\",\"nonce\":\"", nonce, "\"}"], "")
+  post_ui(dash, str.join(["{\"kind\":\"qr_meet\",\"trader\":\"", trader, "\",\"market\":\"", market, "\",\"blob\":\"", json_esc(blob_json), "\"}"], ""))
+}
+
 # ── Stall setup helper ─────────────────────────────────────────────────────────
-fn setup_market(url :: Str, name :: Str, secret :: Bytes) -> [net, io] Result[baz.StallInfo, Str] {
-  match baz.setup_seller(url, name, secret, pub_skills(), ext_skills()) {
+fn setup_market(url :: Str, name :: Str, secret :: Bytes, ext :: List[card.AgentSkill]) -> [net, io] Result[baz.StallInfo, Str] {
+  match baz.setup_seller(url, name, secret, pub_skills(), ext) {
     Err(e) => Err(str.join(["setup ", name, ": ", e], "")),
     Ok(pub_b64) => {
       let _p := io.print(str.join(["   ", name, "  pubkey=", str.slice(pub_b64, 0, 16), "..."], ""))
@@ -163,7 +179,11 @@ fn make_bid_tool(session :: sess.PeerSession, now_ms :: Int, dash :: Str, trader
         let _ev1 := post_ui(dash, str.join(["{\"kind\":\"a2a_resp\",\"trader\":\"", trader, "\",\"market\":\"", session.peer_name, "\",\"skill\":\"place_bid\",\"ok\":true,\"body\":", body, "}"], ""))
         Ok(JStr(body))
       },
-      (SkillDenied(why), _) => { let _p2 := io.print(str.concat("  LLM ← denied: ", why)); Err(skill_err(why)) },
+      (SkillDenied(why), _) => {
+        let _p2 := io.print(str.concat("  LLM ← GRANT DENIED: ", why))
+        let _ev2 := post_ui(dash, str.join(["{\"kind\":\"denied\",\"trader\":\"", trader, "\",\"market\":\"", session.peer_name, "\",\"skill\":\"place_bid\",\"why\":\"", json_esc(why), "\"}"], ""))
+        Err(skill_err(why))
+      },
       (SkillFailed(why), _) => { let _p3 := io.print(str.concat("  LLM ← failed: ", why)); Err(skill_err(why)) },
     }
   })
@@ -183,7 +203,11 @@ fn make_ask_tool(session :: sess.PeerSession, now_ms :: Int, dash :: Str, trader
         let _ev1 := post_ui(dash, str.join(["{\"kind\":\"a2a_resp\",\"trader\":\"", trader, "\",\"market\":\"", session.peer_name, "\",\"skill\":\"place_ask\",\"ok\":true,\"body\":", body, "}"], ""))
         Ok(JStr(body))
       },
-      (SkillDenied(why), _) => { let _p2 := io.print(str.concat("  LLM ← denied: ", why)); Err(skill_err(why)) },
+      (SkillDenied(why), _) => {
+        let _p2 := io.print(str.concat("  LLM ← GRANT DENIED: ", why))
+        let _ev2 := post_ui(dash, str.join(["{\"kind\":\"denied\",\"trader\":\"", trader, "\",\"market\":\"", session.peer_name, "\",\"skill\":\"place_ask\",\"why\":\"", json_esc(why), "\"}"], ""))
+        Err(skill_err(why))
+      },
       (SkillFailed(why), _) => { let _p3 := io.print(str.concat("  LLM ← failed: ", why)); Err(skill_err(why)) },
     }
   })
@@ -285,6 +309,7 @@ fn run_trader(trader :: Str, market :: baz.StallInfo, budget :: Int, policy :: c
   let nonce := str.concat("n-", str.concat(trader, market.name))
   let session_name := str.concat(trader, "-session")
   let blob := { endpoint: market.url, ephemeral_token: "trading-token", peer_pubkey: market.pubkey_b64, nonce: nonce, expires_at: now + 300000 }
+  let _qr := emit_qr_meet(dash, trader, market.name, market.url, market.pubkey_b64, blob.nonce)
   let _think := post_ui(dash, str.join(["{\"kind\":\"llm_think\",\"trader\":\"", trader, "\",\"market\":\"", market.name, "\"}"], ""))
   let _pio := io.print(str.join(["  [", trader, " @ LLM] reasoning at ", market.name, " ..."], ""))
   match audit.run_audited(blob, policy, now, log, parent, used) {
@@ -357,13 +382,14 @@ fn run() -> [net, io, sql, fs_write, sense, time, env, llm, proc] Unit {
           let budget := 500
 
           let _ps := io.print("[trading] setting up 3 markets ...")
-          match setup_market("http://localhost:8901", "Quantum Chips Exchange", quantum_secret()) {
+          match setup_market("http://localhost:8901", "Quantum Chips Exchange", quantum_secret(), ext_skills()) {
             Err(e) => io.print(e),
             Ok(quantum) => {
-              match setup_market("http://localhost:8902", "Solar Energy Markets", solar_secret()) {
+              match setup_market("http://localhost:8902", "Solar Energy Markets", solar_secret(), ext_skills()) {
                 Err(e) => io.print(e),
                 Ok(solar) => {
-                  match setup_market("http://localhost:8903", "Water Credits Trading", water_secret()) {
+                  # Water grants only get_quote (quote-only extended card): trades here are DENIED.
+                  match setup_market("http://localhost:8903", "Water Credits Trading", water_secret(), quote_only_ext_skills()) {
                     Err(e) => io.print(e),
                     Ok(water) => {
                       let _sl0 := time.sleep_ms(1000)

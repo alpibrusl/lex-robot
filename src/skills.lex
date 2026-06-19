@@ -198,9 +198,11 @@ fn record_episode(r :: t.Robot, task :: Str) -> [net, sense] Result[Str, Str] {
 fn workpiece_status(r :: t.Robot) -> [net, sense] Result[t.WorkpieceStatus, Str] {
   match client.call(r.sidecar_url, "workpiece_status", "{}") {
     Err(e) => Err(e),
+    # Accept both compact (`"clamped":true`) and spaced (`"clamped": true`) JSON,
+    # so the parse doesn't depend on the sidecar's serializer spacing.
     Ok(s) => Ok({
-      present: str.contains(s, "\"present\": true"),
-      clamped: str.contains(s, "\"clamped\": true"),
+      present: str.contains(s, "\"present\":true") or str.contains(s, "\"present\": true"),
+      clamped: str.contains(s, "\"clamped\":true") or str.contains(s, "\"clamped\": true"),
     }),
   }
 }

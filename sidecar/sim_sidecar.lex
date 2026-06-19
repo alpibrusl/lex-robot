@@ -52,6 +52,12 @@ import "std.iter" as iter
 
 import "lex-schema/json_value" as jv
 
+import "../src/seller_llm" as sllm
+
+import "../src/lex_games" as game
+
+import "../src/a2a_card" as card
+
 import "lex-web/src/router" as router
 
 import "lex-web/src/ctx" as ctx
@@ -146,7 +152,8 @@ fn inventory_for(stall :: Str) -> List[StockItem] {
   match stall {
     "pottery" => [{ id: "pot-001", name: "Red Ceramic Bowl",  category: "pottery", price: 8  },
                   { id: "pot-002", name: "Blue Glazed Vase",  category: "pottery", price: 12 },
-                  { id: "pot-003", name: "Clay Teapot",       category: "pottery", price: 22 }],
+                  { id: "pot-003", name: "Clay Teapot",       category: "pottery", price: 22 },
+                  { id: "pot-004", name: "Earthen Bowl",      category: "pottery", price: 9  }],
     "clay"    => [{ id: "clay-001", name: "Stoneware Bowl",   category: "pottery", price: 10 },
                   { id: "clay-002", name: "Terracotta Jug",   category: "pottery", price: 7  }],
     "textile" => [{ id: "tex-001",  name: "Silk Scarf",       category: "textile", price: 15 },
@@ -275,7 +282,7 @@ fn set_card(db :: Db, tier :: Str, blob :: Str) -> [sql] Unit {
 # ── Stock ─────────────────────────────────────────────────────────────────────
 
 fn stock_query(db :: Db, search :: Str, max_price :: Int, stall :: Str) -> [sql] Str {
-  let q := str.join(["SELECT item_id, name, category, price FROM stock WHERE reserved=0 AND price<=", int.to_str(max_price)], "")
+  let q := str.join(["SELECT item_id, name, category, price FROM stock WHERE reserved=0 AND price<=", int.to_str(max_price), " ORDER BY price ASC"], "")
   let result :: Result[List[{ item_id :: Str, name :: Str, category :: Str, price :: Int }], SqlError] := sql.query(db, q, [])
   match result {
     Err(e) => str.join(["{\"stall\":", json_str(stall), ",\"found\":0,\"error\":", json_str(e.message), "}"], ""),
@@ -288,9 +295,14 @@ fn stock_query(db :: Db, search :: Str, max_price :: Int, stall :: Str) -> [sql]
           str.contains(str.to_lower(r.name), sl)
         })
       }
-      match list.head(candidates) {
-        None => str.join(["{\"stall\":", json_str(stall), ",\"found\":0}"], ""),
-        Some(best) => str.join(["{\"stall\":", json_str(stall), ",\"found\":1,\"id\":", json_str(best.item_id), ",\"name\":", json_str(best.name), ",\"category\":", json_str(best.category), ",\"price\":", int.to_str(best.price), "}"], ""),
+      let n := list.len(candidates)
+      if n == 0 {
+        str.join(["{\"stall\":", json_str(stall), ",\"found\":0}"], "")
+      } else {
+        let items_json := list.fold(candidates, [], fn (acc :: List[Str], r :: { item_id :: Str, name :: Str, category :: Str, price :: Int }) -> List[Str] {
+          list.concat(acc, [str.join(["{\"id\":", json_str(r.item_id), ",\"name\":", json_str(r.name), ",\"category\":", json_str(r.category), ",\"price\":", int.to_str(r.price), "}"], "")])
+        })
+        str.join(["{\"stall\":", json_str(stall), ",\"found\":", int.to_str(n), ",\"items\":[", str.join(items_json, ","), "]}"], "")
       }
     },
   }
@@ -339,6 +351,537 @@ fn stock_complete(db :: Db, item_id :: Str, payment :: Int) -> [sql] Str {
 fn stock_reset(db :: Db, stall :: Str) -> [sql, time] Unit {
   let _ := sql.exec(db, "DELETE FROM stock", [])
   seed_stock(db, stall)
+}
+
+# ── Tic-tac-toe (lex-games) — capability-gated, verifiable, agent-playable ────
+fn ttt_cell(b :: Str, i :: Int) -> Str { str.slice(b, i, i + 1) }
+fn ttt_set(b :: Str, i :: Int, c :: Str) -> Str { str.concat(str.slice(b, 0, i), str.concat(c, str.slice(b, i + 1, 9))) }
+fn ttt_line(b :: Str, a :: Int, c :: Int, d :: Int) -> Str {
+  let x := ttt_cell(b, a)
+  if x != "." and ttt_cell(b, c) == x and ttt_cell(b, d) == x { x } else { "" }
+}
+fn ttt_winner(b :: Str) -> Str {
+  list.fold([ttt_line(b,0,1,2), ttt_line(b,3,4,5), ttt_line(b,6,7,8), ttt_line(b,0,3,6), ttt_line(b,1,4,7), ttt_line(b,2,5,8), ttt_line(b,0,4,8), ttt_line(b,2,4,6)], "", fn (acc :: Str, w :: Str) -> Str { if str.is_empty(acc) { w } else { acc } })
+}
+fn ttt_board(db :: Db) -> [sql] Str { let b := get_state(db, "ttt_board") b2(b) }
+fn b2(b :: Str) -> Str { if str.is_empty(b) { "........." } else { b } }
+fn ttt_turn(db :: Db) -> [sql] Str { let t := get_state(db, "ttt_turn") t2(t) }
+fn t2(t :: Str) -> Str { if str.is_empty(t) { "X" } else { t } }
+# Hash-chained move log: chain_n = base64url(blake2b(prev_chain ++ payload)).
+fn ttt_chain(db :: Db, payload :: Str) -> [sql, crypto] Str {
+  let prev := get_state(db, "ttt_chain")
+  let h := crypto.base64url_encode(crypto.blake2b(bytes.from_str(str.concat(prev, payload))))
+  let head := str.slice(h, 0, 10)
+  let _ := set_state(db, "ttt_chain", head)
+  head
+}
+fn ttt_emit(db :: Db, j :: Str) -> [sql, time] Unit { insert_event(db, j) }
+
+# Apply one move, hash-chain it, broadcast it; returns the new board.
+fn ttt_apply(db :: Db, board :: Str, by :: Str, cl :: Int) -> [sql, time, crypto] Str {
+  let nb := ttt_set(board, cl, by)
+  let payload := str.join(["{\"by\":\"", by, "\",\"cell\":", int.to_str(cl), ",\"board\":\"", nb, "\"}"], "")
+  let head := ttt_chain(db, payload)
+  let _ := ttt_emit(db, str.join(["{\"kind\":\"move\",\"by\":\"", by, "\",\"cell\":", int.to_str(cl), ",\"board\":\"", nb, "\",\"chain\":\"", head, "\"}"], ""))
+  nb
+}
+
+fn ttt_reset(db :: Db) -> [sql, time] Str {
+  let _ := set_state(db, "ttt_board", ".........")
+  let _ := set_state(db, "ttt_turn", "X")
+  let _ := set_state(db, "ttt_over", "0")
+  let _ := set_state(db, "ttt_chain", "")
+  # NOTE: ttt_taken_* are NOT cleared — side assignments persist for the session,
+  # so a player can't grab the opponent's side by resetting. A fresh server (new
+  # /tmp db) is a fresh table assignment.
+  let _ := ttt_emit(db, "{\"kind\":\"game_start\",\"board\":\".........\",\"x\":\"human\",\"o\":\"bot\"}")
+  "{\"status\":\"reset\"}"
+}
+
+# A move's capability is an Ed25519-signed token issued at join (see ttt_join).
+# The server verifies it and recovers the side; a forged/edited token yields no
+# side, so the gate refuses. Sides are assigned at join (first X, then O), so a
+# player cannot self-grant the opponent's side either.
+fn ttt_secret() -> Bytes { bytes.from_str("lexgames-ttt-secret-seed-0000000") }
+fn ttt_pubkey() -> [crypto] Str {
+  match crypto.ed25519_public_key(ttt_secret()) { Ok(pk) => crypto.base64url_encode(pk), Err(_) => "" }
+}
+
+# Join a side: assign it (if free) and return a signed capability token.
+fn ttt_join(db :: Db, side :: Str) -> [sql, crypto, time] Str {
+  if side != "X" and side != "O" { "{\"error\":\"bad side\"}" } else {
+    let key := str.concat("ttt_taken_", side)
+    if get_state(db, key) == "1" {
+      str.join(["{\"error\":\"side taken\",\"side\":\"", side, "\"}"], "")
+    } else {
+      let _ := set_state(db, key, "1")
+      let _ := ttt_emit(db, str.join(["{\"kind\":\"joined\",\"side\":\"", side, "\"}"], ""))
+      str.join(["{\"side\":\"", side, "\",\"token\":\"", game.issue_token(ttt_secret(), side), "\"}"], "")
+    }
+  }
+}
+
+# A single gated move by either side. The submitter's TOKEN determines which side
+# it may act as; game.gate refuses a move that claims a side the token doesn't
+# grant, or that is out of turn — before any board change. No in-server bot: each
+# side is played by an independent agent (the human for X, ttt_bot.lex for O).
+fn ttt_move(db :: Db, by :: Str, cl :: Int, token :: Str) -> [sql, time, crypto] Str {
+  let board := ttt_board(db)
+  let turn  := ttt_turn(db)
+  if get_state(db, "ttt_over") == "1" { "{\"status\":\"over\"}" } else {
+    match game.gate(game.token_side(ttt_pubkey(), token), by, turn) {
+      MoveReject(why) => {
+        let _ := ttt_emit(db, str.join(["{\"kind\":\"refused\",\"by\":\"", by, "\",\"cell\":", int.to_str(cl), ",\"reason\":\"", why, "\"}"], ""))
+        str.join(["{\"status\":\"refused\",\"reason\":\"", why, "\"}"], "")
+      },
+      MoveOk => if cl < 0 or cl > 8 or ttt_cell(board, cl) != "." {
+        let _ := ttt_emit(db, str.join(["{\"kind\":\"refused\",\"by\":\"", by, "\",\"cell\":", int.to_str(cl), ",\"reason\":\"cell not playable\"}"], ""))
+        "{\"status\":\"refused\",\"reason\":\"cell not playable\"}"
+      } else {
+        let nb := ttt_apply(db, board, by, cl)
+        let _ := set_state(db, "ttt_board", nb)
+        let w := ttt_winner(nb)
+        if not str.is_empty(w) {
+          let _ := ttt_emit(db, str.join(["{\"kind\":\"win\",\"winner\":\"", w, "\",\"board\":\"", nb, "\"}"], ""))
+          let _ := set_state(db, "ttt_over", "1")
+          str.join(["{\"status\":\"win\",\"winner\":\"", w, "\"}"], "")
+        } else {
+          if str.contains(nb, ".") {
+            let _ := set_state(db, "ttt_turn", if by == "X" { "O" } else { "X" })
+            str.join(["{\"status\":\"ok\",\"board\":\"", nb, "\"}"], "")
+          } else {
+            let _ := ttt_emit(db, str.join(["{\"kind\":\"win\",\"winner\":\"draw\",\"board\":\"", nb, "\"}"], ""))
+            let _ := set_state(db, "ttt_over", "1")
+            "{\"status\":\"draw\"}"
+          }
+        }
+      },
+    }
+  }
+}
+
+# Read-only game state (for an agent to observe before moving).
+fn ttt_state(db :: Db) -> [sql] Str {
+  str.join(["{\"board\":\"", ttt_board(db), "\",\"turn\":\"", ttt_turn(db), "\",\"over\":", (if get_state(db, "ttt_over") == "1" { "true" } else { "false" }), "}"], "")
+}
+
+# ── Bazaar Draft (lex-games): turn-based competitive shopping ─────────────────
+# Two shoppers (P1 human, P2 bot) alternate drafting from a shared 6-item pool
+# under a budget. A pick is gated by a signed capability (you draft only as
+# yourself, in turn) and hash-chained. Highest total cart value wins.
+fn shop_price(i :: Int) -> Int { if i == 0 { 8 } else { if i == 1 { 12 } else { if i == 2 { 15 } else { if i == 3 { 5 } else { if i == 4 { 22 } else { if i == 5 { 7 } else { 999 } } } } } } }
+fn shop_value(i :: Int) -> Int { if i == 0 { 10 } else { if i == 1 { 14 } else { if i == 2 { 16 } else { if i == 3 { 6 } else { if i == 4 { 25 } else { if i == 5 { 8 } else { 0 } } } } } } }
+fn shop_name(i :: Int)  -> Str { if i == 0 { "Bowl" } else { if i == 1 { "Vase" } else { if i == 2 { "Scarf" } else { if i == 3 { "Saffron" } else { if i == 4 { "Teapot" } else { if i == 5 { "Ribbon" } else { "?" } } } } } } }
+
+fn shop_secret() -> Bytes { bytes.from_str("lexgames-shop-secret-seed-000000") }
+fn shop_pubkey() -> [crypto] Str { match crypto.ed25519_public_key(shop_secret()) { Ok(pk) => crypto.base64url_encode(pk), Err(_) => "" } }
+
+fn shop_owner(db :: Db, i :: Int) -> [sql] Str { get_state(db, str.concat("shop_own_", int.to_str(i))) }
+fn shop_turn(db :: Db) -> [sql] Str {
+  let t := get_state(db, "shop_turn")
+  if str.is_empty(t) { "P1" } else { t }
+}
+fn shop_budget(db :: Db, p :: Str) -> [sql] Int {
+  let v := get_state(db, str.concat("shop_bud_", p))
+  match str.to_int(v) { Some(n) => n, None => 30 }
+}
+fn shop_cartval(db :: Db, p :: Str) -> [sql] Int {
+  list.fold([0,1,2,3,4,5], 0, fn (acc :: Int, i :: Int) -> [sql] Int { if shop_owner(db, i) == p { acc + shop_value(i) } else { acc } })
+}
+# Can player p still afford any available item?
+fn shop_can_move(db :: Db, p :: Str) -> [sql] Bool {
+  let bud := shop_budget(db, p)
+  list.fold([0,1,2,3,4,5], false, fn (acc :: Bool, i :: Int) -> [sql] Bool { if acc { acc } else { shop_owner(db, i) == "" and shop_price(i) <= bud } })
+}
+# Pool as JSON (for the client + the bot).
+fn shop_pool_json(db :: Db) -> [sql] Str {
+  let items := list.map([0,1,2,3,4,5], fn (i :: Int) -> [sql] Str {
+    str.join(["{\"i\":", int.to_str(i), ",\"name\":\"", shop_name(i), "\",\"price\":", int.to_str(shop_price(i)), ",\"value\":", int.to_str(shop_value(i)), ",\"owner\":\"", shop_owner(db, i), "\"}"], "")
+  })
+  str.join(["[", str.join(items, ","), "]"], "")
+}
+fn shop_state(db :: Db) -> [sql] Str {
+  str.join(["{\"pool\":", shop_pool_json(db), ",\"turn\":\"", shop_turn(db), "\",\"over\":", (if get_state(db, "shop_over") == "1" { "true" } else { "false" }), ",\"bud\":{\"P1\":", int.to_str(shop_budget(db, "P1")), ",\"P2\":", int.to_str(shop_budget(db, "P2")), "},\"val\":{\"P1\":", int.to_str(shop_cartval(db, "P1")), ",\"P2\":", int.to_str(shop_cartval(db, "P2")), "}}"], "")
+}
+fn shop_reset(db :: Db) -> [sql, time] Str {
+  let _ := list.fold([0,1,2,3,4,5], (), fn (_ :: Unit, i :: Int) -> [sql] Unit { set_state(db, str.concat("shop_own_", int.to_str(i)), "") })
+  let _ := set_state(db, "shop_bud_P1", "30")
+  let _ := set_state(db, "shop_bud_P2", "30")
+  let _ := set_state(db, "shop_turn", "P1")
+  let _ := set_state(db, "shop_over", "0")
+  let _ := set_state(db, "shop_chain", "")
+  let _ := insert_event(db, "{\"kind\":\"shop_start\",\"budget\":30}")
+  "{\"status\":\"reset\"}"
+}
+fn shop_join(db :: Db, side :: Str) -> [sql, crypto, time] Str {
+  if side != "P1" and side != "P2" { "{\"error\":\"bad side\"}" } else {
+    let key := str.concat("shop_taken_", side)
+    if get_state(db, key) == "1" { str.join(["{\"error\":\"side taken\",\"side\":\"", side, "\"}"], "") } else {
+      let _ := set_state(db, key, "1")
+      let _ := insert_event(db, str.join(["{\"kind\":\"shop_joined\",\"side\":\"", side, "\"}"], ""))
+      str.join(["{\"side\":\"", side, "\",\"token\":\"", game.issue_token(shop_secret(), side), "\"}"], "")
+    }
+  }
+}
+fn shop_finish(db :: Db) -> [sql, time] Str {
+  let v1 := shop_cartval(db, "P1")
+  let v2 := shop_cartval(db, "P2")
+  let w := if v1 > v2 { "P1" } else { if v2 > v1 { "P2" } else { "draw" } }
+  let _ := set_state(db, "shop_over", "1")
+  let _ := insert_event(db, str.join(["{\"kind\":\"shop_win\",\"winner\":\"", w, "\",\"p1\":", int.to_str(v1), ",\"p2\":", int.to_str(v2), "}"], ""))
+  str.join(["{\"status\":\"over\",\"winner\":\"", w, "\"}"], "")
+}
+fn shop_move(db :: Db, by :: Str, i :: Int, token :: Str) -> [sql, time, crypto] Str {
+  if get_state(db, "shop_over") == "1" { "{\"status\":\"over\"}" } else {
+    let turn := shop_turn(db)
+    match game.gate(game.token_side(shop_pubkey(), token), by, turn) {
+      MoveReject(why) => {
+        let _ := insert_event(db, str.join(["{\"kind\":\"shop_refused\",\"by\":\"", by, "\",\"item\":", int.to_str(i), ",\"reason\":\"", why, "\"}"], ""))
+        str.join(["{\"status\":\"refused\",\"reason\":\"", why, "\"}"], "")
+      },
+      MoveOk => if i < 0 or i > 5 or shop_owner(db, i) != "" or shop_price(i) > shop_budget(db, by) {
+        let _ := insert_event(db, str.join(["{\"kind\":\"shop_refused\",\"by\":\"", by, "\",\"item\":", int.to_str(i), ",\"reason\":\"unavailable or unaffordable\"}"], ""))
+        "{\"status\":\"refused\",\"reason\":\"unavailable or unaffordable\"}"
+      } else {
+        let _ := set_state(db, str.concat("shop_own_", int.to_str(i)), by)
+        let _ := set_state(db, str.concat("shop_bud_", by), int.to_str(shop_budget(db, by) - shop_price(i)))
+        let payload := str.join(["{\"by\":\"", by, "\",\"item\":", int.to_str(i), ",\"name\":\"", shop_name(i), "\",\"price\":", int.to_str(shop_price(i)), "}"], "")
+        let prev := get_state(db, "shop_chain")
+        let head := str.slice(crypto.base64url_encode(crypto.blake2b(bytes.from_str(str.concat(prev, payload)))), 0, 10)
+        let _ := set_state(db, "shop_chain", head)
+        let _ := insert_event(db, str.join(["{\"kind\":\"shop_pick\",\"by\":\"", by, "\",\"item\":", int.to_str(i), ",\"name\":\"", shop_name(i), "\",\"price\":", int.to_str(shop_price(i)), ",\"value\":", int.to_str(shop_value(i)), ",\"chain\":\"", head, "\"}"], ""))
+        let _ := set_state(db, "shop_turn", if by == "P1" { "P2" } else { "P1" })
+        if shop_can_move(db, "P1") or shop_can_move(db, "P2") {
+          str.join(["{\"status\":\"ok\",\"item\":", int.to_str(i), "}"], "")
+        } else {
+          shop_finish(db)
+        }
+      },
+    }
+  }
+}
+fn shop_dispatch(db :: Db, name :: Str, args :: jv.Json) -> [sql, time, crypto] Str {
+  if name == "shop_join" { shop_join(db, jv_str_or(args, "side", "")) } else {
+  if name == "shop_reset" { shop_reset(db) } else {
+  if name == "shop_move" { shop_move(db, jv_str_or(args, "by", ""), jv_int_or(args, "item", -1), jv_str_or(args, "token", "")) } else {
+  shop_state(db) }}}
+}
+
+# ── lex-games: Consent Match — matchmaking as a capability-gated draft ─────────
+# A shared deck of candidates, each with a PUBLIC profile (name + what vibe they
+# seek) and a PRIVATE card (contact, Ed25519-signed). Both players are creatives
+# (they offer art & music). On your turn you swipe right on one candidate: if the
+# candidate seeks what you offer it is a MATCH (double opt-in) and the signed
+# private card is revealed (selective disclosure); otherwise the swipe is rejected
+# and the private card stays sealed. Candidates seeking hiking/gaming match no one
+# (decoys that burn a turn). Each swipe is capability-gated by a signed token and
+# hash-chained. When the deck is exhausted, the highest matched charm wins.
+fn love_name(i :: Int)  -> Str { if i == 0 { "Robin" } else { if i == 1 { "Sky" } else { if i == 2 { "Wren" } else { if i == 3 { "Sage" } else { if i == 4 { "Nova" } else { if i == 5 { "Pax" } else { "?" } } } } } } }
+fn love_seeks(i :: Int) -> Str { if i == 0 { "art" } else { if i == 1 { "music" } else { if i == 2 { "gaming" } else { if i == 3 { "art" } else { if i == 4 { "music" } else { if i == 5 { "hiking" } else { "?" } } } } } } }
+fn love_charm(i :: Int) -> Int { if i == 0 { 10 } else { if i == 1 { 14 } else { if i == 2 { 0 } else { if i == 3 { 16 } else { if i == 4 { 8 } else { if i == 5 { 0 } else { 0 } } } } } } }
+fn love_contact(i :: Int) -> Str { if i == 0 { "robin@six.net" } else { if i == 1 { "sky@six.net" } else { if i == 2 { "wren@six.net" } else { if i == 3 { "sage@six.net" } else { if i == 4 { "nova@six.net" } else { if i == 5 { "pax@six.net" } else { "?" } } } } } } }
+# Both players offer art & music; a candidate reciprocates iff it seeks one of those.
+fn love_recip(i :: Int) -> Bool { love_seeks(i) == "art" or love_seeks(i) == "music" }
+
+fn love_secret() -> Bytes { bytes.from_str("lexgames-love-secret-seed-000000") }
+fn love_pubkey() -> [crypto] Str { match crypto.ed25519_public_key(love_secret()) { Ok(pk) => crypto.base64url_encode(pk), Err(_) => "" } }
+# Ed25519 signature over a candidate's private contact (revealed only on match).
+fn love_sign(i :: Int) -> [crypto] Str {
+  match crypto.ed25519_sign(love_secret(), bytes.from_str(love_contact(i))) {
+    Ok(sig) => str.slice(crypto.base64url_encode(sig), 0, 12),
+    Err(_)  => "",
+  }
+}
+
+fn love_owner(db :: Db, i :: Int)  -> [sql] Str { get_state(db, str.concat("love_own_", int.to_str(i))) }
+fn love_result(db :: Db, i :: Int) -> [sql] Str { get_state(db, str.concat("love_res_", int.to_str(i))) }
+fn love_turn(db :: Db) -> [sql] Str {
+  let t := get_state(db, "love_turn")
+  if str.is_empty(t) { "P1" } else { t }
+}
+fn love_score(db :: Db, p :: Str) -> [sql] Int {
+  list.fold([0,1,2,3,4,5], 0, fn (acc :: Int, i :: Int) -> [sql] Int { if love_owner(db, i) == p and love_result(db, i) == "match" { acc + love_charm(i) } else { acc } })
+}
+# Game ends when every candidate has been swiped.
+fn love_done(db :: Db) -> [sql] Bool {
+  list.fold([0,1,2,3,4,5], true, fn (acc :: Bool, i :: Int) -> [sql] Bool { if acc { love_owner(db, i) != "" } else { false } })
+}
+fn love_pool_json(db :: Db) -> [sql] Str {
+  let items := list.map([0,1,2,3,4,5], fn (i :: Int) -> [sql] Str {
+    str.join(["{\"i\":", int.to_str(i), ",\"name\":\"", love_name(i), "\",\"seeks\":\"", love_seeks(i), "\",\"charm\":", int.to_str(love_charm(i)), ",\"owner\":\"", love_owner(db, i), "\",\"result\":\"", love_result(db, i), "\"}"], "")
+  })
+  str.join(["[", str.join(items, ","), "]"], "")
+}
+fn love_state(db :: Db) -> [sql] Str {
+  str.join(["{\"pool\":", love_pool_json(db), ",\"turn\":\"", love_turn(db), "\",\"over\":", (if get_state(db, "love_over") == "1" { "true" } else { "false" }), ",\"score\":{\"P1\":", int.to_str(love_score(db, "P1")), ",\"P2\":", int.to_str(love_score(db, "P2")), "}}"], "")
+}
+fn love_reset(db :: Db) -> [sql, time] Str {
+  let _ := list.fold([0,1,2,3,4,5], (), fn (_ :: Unit, i :: Int) -> [sql] Unit { set_state(db, str.concat("love_own_", int.to_str(i)), "") })
+  let _ := list.fold([0,1,2,3,4,5], (), fn (_ :: Unit, i :: Int) -> [sql] Unit { set_state(db, str.concat("love_res_", int.to_str(i)), "") })
+  let _ := set_state(db, "love_turn", "P1")
+  let _ := set_state(db, "love_over", "0")
+  let _ := set_state(db, "love_chain", "")
+  let _ := insert_event(db, "{\"kind\":\"love_start\"}")
+  "{\"status\":\"reset\"}"
+}
+fn love_join(db :: Db, side :: Str) -> [sql, crypto, time] Str {
+  if side != "P1" and side != "P2" { "{\"error\":\"bad side\"}" } else {
+    let key := str.concat("love_taken_", side)
+    if get_state(db, key) == "1" { str.join(["{\"error\":\"side taken\",\"side\":\"", side, "\"}"], "") } else {
+      let _ := set_state(db, key, "1")
+      let _ := insert_event(db, str.join(["{\"kind\":\"love_joined\",\"side\":\"", side, "\"}"], ""))
+      str.join(["{\"side\":\"", side, "\",\"token\":\"", game.issue_token(love_secret(), side), "\"}"], "")
+    }
+  }
+}
+fn love_finish(db :: Db) -> [sql, time] Str {
+  let s1 := love_score(db, "P1")
+  let s2 := love_score(db, "P2")
+  let w := if s1 > s2 { "P1" } else { if s2 > s1 { "P2" } else { "draw" } }
+  let _ := set_state(db, "love_over", "1")
+  let _ := insert_event(db, str.join(["{\"kind\":\"love_win\",\"winner\":\"", w, "\",\"p1\":", int.to_str(s1), ",\"p2\":", int.to_str(s2), "}"], ""))
+  str.join(["{\"status\":\"over\",\"winner\":\"", w, "\"}"], "")
+}
+fn love_move(db :: Db, by :: Str, i :: Int, token :: Str) -> [sql, time, crypto] Str {
+  if get_state(db, "love_over") == "1" { "{\"status\":\"over\"}" } else {
+    let turn := love_turn(db)
+    match game.gate(game.token_side(love_pubkey(), token), by, turn) {
+      MoveReject(why) => {
+        let _ := insert_event(db, str.join(["{\"kind\":\"love_refused\",\"by\":\"", by, "\",\"cand\":", int.to_str(i), ",\"reason\":\"", why, "\"}"], ""))
+        str.join(["{\"status\":\"refused\",\"reason\":\"", why, "\"}"], "")
+      },
+      MoveOk => if i < 0 or i > 5 or love_owner(db, i) != "" {
+        let _ := insert_event(db, str.join(["{\"kind\":\"love_refused\",\"by\":\"", by, "\",\"cand\":", int.to_str(i), ",\"reason\":\"already swiped\"}"], ""))
+        "{\"status\":\"refused\",\"reason\":\"already swiped\"}"
+      } else {
+        let matched := love_recip(i)
+        let _ := set_state(db, str.concat("love_own_", int.to_str(i)), by)
+        let _ := set_state(db, str.concat("love_res_", int.to_str(i)), if matched { "match" } else { "rejected" })
+        let payload := str.join(["{\"by\":\"", by, "\",\"cand\":", int.to_str(i), ",\"match\":", (if matched { "true" } else { "false" }), "}"], "")
+        let prev := get_state(db, "love_chain")
+        let head := str.slice(crypto.base64url_encode(crypto.blake2b(bytes.from_str(str.concat(prev, payload)))), 0, 10)
+        let _ := set_state(db, "love_chain", head)
+        let _ := if matched {
+          insert_event(db, str.join(["{\"kind\":\"love_match\",\"by\":\"", by, "\",\"cand\":", int.to_str(i), ",\"name\":\"", love_name(i), "\",\"charm\":", int.to_str(love_charm(i)), ",\"contact\":\"", love_contact(i), "\",\"sig\":\"", love_sign(i), "\",\"chain\":\"", head, "\"}"], ""))
+        } else {
+          insert_event(db, str.join(["{\"kind\":\"love_reject\",\"by\":\"", by, "\",\"cand\":", int.to_str(i), ",\"name\":\"", love_name(i), "\",\"chain\":\"", head, "\"}"], ""))
+        }
+        let _ := set_state(db, "love_turn", if by == "P1" { "P2" } else { "P1" })
+        if love_done(db) { love_finish(db) } else { str.join(["{\"status\":\"ok\",\"cand\":", int.to_str(i), ",\"match\":", (if matched { "true" } else { "false" }), "}"], "") }
+      },
+    }
+  }
+}
+fn love_dispatch(db :: Db, name :: Str, args :: jv.Json) -> [sql, time, crypto] Str {
+  if name == "love_join" { love_join(db, jv_str_or(args, "side", "")) } else {
+  if name == "love_reset" { love_reset(db) } else {
+  if name == "love_move" { love_move(db, jv_str_or(args, "by", ""), jv_int_or(args, "cand", -1), jv_str_or(args, "token", "")) } else {
+  love_state(db) }}}
+}
+
+# ── lex-games: Charger Duel — EV fleet charging as a capability-gated race ─────
+# Two fleet operators (P1 human, P2 an A2A agent) compete for a shared bank of
+# chargers before a departure deadline. Each charger occupies a stall for some
+# MINUTES and delivers some kWh of energy. Each operator has a fixed time budget
+# (60 min); on your turn you claim one free charger you can still fit. It is a
+# knapsack race: grab the efficient (high-kWh, low-minute) chargers before your
+# rival does. Each claim is capability-gated by a signed token and hash-chained.
+# When neither operator can fit another charger, the most energy secured wins.
+fn ev_name(i :: Int) -> Str { if i == 0 { "Slow-7" } else { if i == 1 { "AC-22" } else { if i == 2 { "DC-50" } else { if i == 3 { "DC-100" } else { if i == 4 { "Hyper-150" } else { if i == 5 { "Pad-3" } else { "?" } } } } } } }
+fn ev_min(i :: Int)  -> Int { if i == 0 { 30 } else { if i == 1 { 20 } else { if i == 2 { 12 } else { if i == 3 { 10 } else { if i == 4 { 8 } else { if i == 5 { 25 } else { 999 } } } } } } }
+fn ev_kwh(i :: Int)  -> Int { if i == 0 { 8 } else { if i == 1 { 12 } else { if i == 2 { 18 } else { if i == 3 { 22 } else { if i == 4 { 26 } else { if i == 5 { 5 } else { 0 } } } } } } }
+
+fn ev_secret() -> Bytes { bytes.from_str("lexgames-evcd-secret-seed-000000") }
+fn ev_pubkey() -> [crypto] Str { match crypto.ed25519_public_key(ev_secret()) { Ok(pk) => crypto.base64url_encode(pk), Err(_) => "" } }
+
+fn ev_owner(db :: Db, i :: Int) -> [sql] Str { get_state(db, str.concat("ev_own_", int.to_str(i))) }
+fn ev_turn(db :: Db) -> [sql] Str {
+  let t := get_state(db, "ev_turn")
+  if str.is_empty(t) { "P1" } else { t }
+}
+fn ev_budget(db :: Db, p :: Str) -> [sql] Int {
+  let v := get_state(db, str.concat("ev_bud_", p))
+  match str.to_int(v) { Some(n) => n, None => 60 }
+}
+fn ev_energy(db :: Db, p :: Str) -> [sql] Int {
+  list.fold([0,1,2,3,4,5], 0, fn (acc :: Int, i :: Int) -> [sql] Int { if ev_owner(db, i) == p { acc + ev_kwh(i) } else { acc } })
+}
+# Can operator p still fit any free charger within its remaining minutes?
+fn ev_can_move(db :: Db, p :: Str) -> [sql] Bool {
+  let bud := ev_budget(db, p)
+  list.fold([0,1,2,3,4,5], false, fn (acc :: Bool, i :: Int) -> [sql] Bool { if acc { acc } else { ev_owner(db, i) == "" and ev_min(i) <= bud } })
+}
+fn ev_pool_json(db :: Db) -> [sql] Str {
+  let items := list.map([0,1,2,3,4,5], fn (i :: Int) -> [sql] Str {
+    str.join(["{\"i\":", int.to_str(i), ",\"name\":\"", ev_name(i), "\",\"min\":", int.to_str(ev_min(i)), ",\"kwh\":", int.to_str(ev_kwh(i)), ",\"owner\":\"", ev_owner(db, i), "\"}"], "")
+  })
+  str.join(["[", str.join(items, ","), "]"], "")
+}
+fn ev_state(db :: Db) -> [sql] Str {
+  str.join(["{\"pool\":", ev_pool_json(db), ",\"turn\":\"", ev_turn(db), "\",\"over\":", (if get_state(db, "ev_over") == "1" { "true" } else { "false" }), ",\"bud\":{\"P1\":", int.to_str(ev_budget(db, "P1")), ",\"P2\":", int.to_str(ev_budget(db, "P2")), "},\"nrg\":{\"P1\":", int.to_str(ev_energy(db, "P1")), ",\"P2\":", int.to_str(ev_energy(db, "P2")), "}}"], "")
+}
+fn ev_reset(db :: Db) -> [sql, time] Str {
+  let _ := list.fold([0,1,2,3,4,5], (), fn (_ :: Unit, i :: Int) -> [sql] Unit { set_state(db, str.concat("ev_own_", int.to_str(i)), "") })
+  let _ := set_state(db, "ev_bud_P1", "60")
+  let _ := set_state(db, "ev_bud_P2", "60")
+  let _ := set_state(db, "ev_turn", "P1")
+  let _ := set_state(db, "ev_over", "0")
+  let _ := set_state(db, "ev_chain", "")
+  let _ := insert_event(db, "{\"kind\":\"ev_start\",\"deadline\":60}")
+  "{\"status\":\"reset\"}"
+}
+fn ev_join(db :: Db, side :: Str) -> [sql, crypto, time] Str {
+  if side != "P1" and side != "P2" { "{\"error\":\"bad side\"}" } else {
+    let key := str.concat("ev_taken_", side)
+    if get_state(db, key) == "1" { str.join(["{\"error\":\"side taken\",\"side\":\"", side, "\"}"], "") } else {
+      let _ := set_state(db, key, "1")
+      let _ := insert_event(db, str.join(["{\"kind\":\"ev_joined\",\"side\":\"", side, "\"}"], ""))
+      str.join(["{\"side\":\"", side, "\",\"token\":\"", game.issue_token(ev_secret(), side), "\"}"], "")
+    }
+  }
+}
+fn ev_finish(db :: Db) -> [sql, time] Str {
+  let e1 := ev_energy(db, "P1")
+  let e2 := ev_energy(db, "P2")
+  let w := if e1 > e2 { "P1" } else { if e2 > e1 { "P2" } else { "draw" } }
+  let _ := set_state(db, "ev_over", "1")
+  let _ := insert_event(db, str.join(["{\"kind\":\"ev_win\",\"winner\":\"", w, "\",\"p1\":", int.to_str(e1), ",\"p2\":", int.to_str(e2), "}"], ""))
+  str.join(["{\"status\":\"over\",\"winner\":\"", w, "\"}"], "")
+}
+fn ev_move(db :: Db, by :: Str, i :: Int, token :: Str) -> [sql, time, crypto] Str {
+  if get_state(db, "ev_over") == "1" { "{\"status\":\"over\"}" } else {
+    let turn := ev_turn(db)
+    match game.gate(game.token_side(ev_pubkey(), token), by, turn) {
+      MoveReject(why) => {
+        let _ := insert_event(db, str.join(["{\"kind\":\"ev_refused\",\"by\":\"", by, "\",\"charger\":", int.to_str(i), ",\"reason\":\"", why, "\"}"], ""))
+        str.join(["{\"status\":\"refused\",\"reason\":\"", why, "\"}"], "")
+      },
+      MoveOk => if i < 0 or i > 5 or ev_owner(db, i) != "" or ev_min(i) > ev_budget(db, by) {
+        let _ := insert_event(db, str.join(["{\"kind\":\"ev_refused\",\"by\":\"", by, "\",\"charger\":", int.to_str(i), ",\"reason\":\"taken or no time left\"}"], ""))
+        "{\"status\":\"refused\",\"reason\":\"taken or no time left\"}"
+      } else {
+        let _ := set_state(db, str.concat("ev_own_", int.to_str(i)), by)
+        let _ := set_state(db, str.concat("ev_bud_", by), int.to_str(ev_budget(db, by) - ev_min(i)))
+        let payload := str.join(["{\"by\":\"", by, "\",\"charger\":", int.to_str(i), ",\"min\":", int.to_str(ev_min(i)), "}"], "")
+        let prev := get_state(db, "ev_chain")
+        let head := str.slice(crypto.base64url_encode(crypto.blake2b(bytes.from_str(str.concat(prev, payload)))), 0, 10)
+        let _ := set_state(db, "ev_chain", head)
+        let _ := insert_event(db, str.join(["{\"kind\":\"ev_claim\",\"by\":\"", by, "\",\"charger\":", int.to_str(i), ",\"name\":\"", ev_name(i), "\",\"min\":", int.to_str(ev_min(i)), ",\"kwh\":", int.to_str(ev_kwh(i)), ",\"chain\":\"", head, "\"}"], ""))
+        let _ := set_state(db, "ev_turn", if by == "P1" { "P2" } else { "P1" })
+        if ev_can_move(db, "P1") or ev_can_move(db, "P2") { str.join(["{\"status\":\"ok\",\"charger\":", int.to_str(i), "}"], "") } else { ev_finish(db) }
+      },
+    }
+  }
+}
+fn ev_dispatch(db :: Db, name :: Str, args :: jv.Json) -> [sql, time, crypto] Str {
+  if name == "ev_join" { ev_join(db, jv_str_or(args, "side", "")) } else {
+  if name == "ev_reset" { ev_reset(db) } else {
+  if name == "ev_move" { ev_move(db, jv_str_or(args, "by", ""), jv_int_or(args, "charger", -1), jv_str_or(args, "token", "")) } else {
+  ev_state(db) }}}
+}
+
+# ── lex-games: Co-op Infiltration — a capability-gated heist (cooperation) ─────
+# Two specialists must clear a 6-stage path to the vault IN ORDER, but they hold
+# DIFFERENT capabilities: the Hacker (P1) can defeat electronic stages, the
+# Muscle (P2, an A2A agent) the physical ones. The current stage decides whose
+# turn it is; the capability layer enforces that only the matching role can clear
+# it — you cannot brute-force a stage you lack the capability for. A wrong-role
+# attempt trips a shared ALARM; three trips and the team is busted. Clear all six
+# and the loot is secured — a cooperative win. Every clear is hash-chained, so the
+# operation log is tamper-evident.
+fn hx_name(i :: Int) -> Str { if i == 0 { "Perimeter Fence" } else { if i == 1 { "Door Keypad" } else { if i == 2 { "CCTV Loop" } else { if i == 3 { "Guard Patrol" } else { if i == 4 { "Vault Firewall" } else { if i == 5 { "Vault Door" } else { "?" } } } } } } }
+fn hx_role(i :: Int) -> Str { if i == 0 { "MUSCLE" } else { if i == 1 { "HACK" } else { if i == 2 { "HACK" } else { if i == 3 { "MUSCLE" } else { if i == 4 { "HACK" } else { if i == 5 { "MUSCLE" } else { "?" } } } } } } }
+# The side that holds the capability for stage i (HACK → P1, MUSCLE → P2).
+fn hx_side(i :: Int) -> Str { if hx_role(i) == "HACK" { "P1" } else { "P2" } }
+
+fn hx_secret() -> Bytes { bytes.from_str("lexgames-heist-secret-seed-00000") }
+fn hx_pubkey() -> [crypto] Str { match crypto.ed25519_public_key(hx_secret()) { Ok(pk) => crypto.base64url_encode(pk), Err(_) => "" } }
+
+fn hx_at(db :: Db) -> [sql] Int { match str.to_int(get_state(db, "hx_at")) { Some(n) => n, None => 0 } }
+fn hx_alarm(db :: Db) -> [sql] Int { match str.to_int(get_state(db, "hx_alarm")) { Some(n) => n, None => 0 } }
+fn hx_turn(db :: Db) -> [sql] Str {
+  let at := hx_at(db)
+  if at >= 6 { "" } else { hx_side(at) }
+}
+fn hx_stages_json(db :: Db) -> [sql] Str {
+  let at := hx_at(db)
+  let items := list.map([0,1,2,3,4,5], fn (i :: Int) -> Str {
+    str.join(["{\"i\":", int.to_str(i), ",\"name\":\"", hx_name(i), "\",\"role\":\"", hx_role(i), "\",\"cleared\":", (if i < at { "true" } else { "false" }), ",\"current\":", (if i == at { "true" } else { "false" }), "}"], "")
+  })
+  str.join(["[", str.join(items, ","), "]"], "")
+}
+fn hx_state(db :: Db) -> [sql] Str {
+  let at := hx_at(db)
+  let over := get_state(db, "hx_over") == "1"
+  let result := if over { if at >= 6 { "win" } else { "bust" } } else { "" }
+  str.join(["{\"stages\":", hx_stages_json(db), ",\"at\":", int.to_str(at), ",\"turn\":\"", hx_turn(db), "\",\"alarm\":", int.to_str(hx_alarm(db)), ",\"over\":", (if over { "true" } else { "false" }), ",\"result\":\"", result, "\"}"], "")
+}
+fn hx_reset(db :: Db) -> [sql, time] Str {
+  let _ := set_state(db, "hx_at", "0")
+  let _ := set_state(db, "hx_alarm", "0")
+  let _ := set_state(db, "hx_over", "0")
+  let _ := set_state(db, "hx_chain", "")
+  let _ := insert_event(db, "{\"kind\":\"hx_start\",\"stages\":6}")
+  "{\"status\":\"reset\"}"
+}
+fn hx_join(db :: Db, side :: Str) -> [sql, crypto, time] Str {
+  if side != "P1" and side != "P2" { "{\"error\":\"bad side\"}" } else {
+    let key := str.concat("hx_taken_", side)
+    if get_state(db, key) == "1" { str.join(["{\"error\":\"side taken\",\"side\":\"", side, "\"}"], "") } else {
+      let _ := set_state(db, key, "1")
+      let _ := insert_event(db, str.join(["{\"kind\":\"hx_joined\",\"side\":\"", side, "\",\"role\":\"", (if side == "P1" { "HACK" } else { "MUSCLE" }), "\"}"], ""))
+      str.join(["{\"side\":\"", side, "\",\"role\":\"", (if side == "P1" { "HACK" } else { "MUSCLE" }), "\",\"token\":\"", game.issue_token(hx_secret(), side), "\"}"], "")
+    }
+  }
+}
+fn hx_win(db :: Db) -> [sql, time] Str {
+  let _ := set_state(db, "hx_over", "1")
+  let _ := insert_event(db, "{\"kind\":\"hx_win\",\"stages\":6}")
+  "{\"status\":\"win\"}"
+}
+fn hx_bust(db :: Db) -> [sql, time] Str {
+  let _ := set_state(db, "hx_over", "1")
+  let _ := insert_event(db, str.join(["{\"kind\":\"hx_bust\",\"alarm\":", int.to_str(hx_alarm(db)), "}"], ""))
+  "{\"status\":\"bust\"}"
+}
+fn hx_move(db :: Db, by :: Str, token :: Str) -> [sql, time, crypto] Str {
+  if get_state(db, "hx_over") == "1" { "{\"status\":\"over\"}" } else {
+    let at := hx_at(db)
+    if at >= 6 { "{\"status\":\"over\"}" } else {
+      let turn := hx_side(at)
+      match game.gate(game.token_side(hx_pubkey(), token), by, turn) {
+        MoveReject(why) => {
+          # Wrong role for this stage → you lack the capability → trip the alarm.
+          let alarm := hx_alarm(db) + 1
+          let _ := set_state(db, "hx_alarm", int.to_str(alarm))
+          let _ := insert_event(db, str.join(["{\"kind\":\"hx_trip\",\"by\":\"", by, "\",\"stage\":", int.to_str(at), ",\"name\":\"", hx_name(at), "\",\"reason\":\"", why, "\",\"alarm\":", int.to_str(alarm), "}"], ""))
+          if alarm >= 3 { hx_bust(db) } else { str.join(["{\"status\":\"trip\",\"alarm\":", int.to_str(alarm), ",\"reason\":\"", why, "\"}"], "") }
+        },
+        MoveOk => {
+          let payload := str.join(["{\"by\":\"", by, "\",\"stage\":", int.to_str(at), ",\"role\":\"", hx_role(at), "\"}"], "")
+          let prev := get_state(db, "hx_chain")
+          let head := str.slice(crypto.base64url_encode(crypto.blake2b(bytes.from_str(str.concat(prev, payload)))), 0, 10)
+          let _ := set_state(db, "hx_chain", head)
+          let _ := insert_event(db, str.join(["{\"kind\":\"hx_clear\",\"by\":\"", by, "\",\"stage\":", int.to_str(at), ",\"name\":\"", hx_name(at), "\",\"role\":\"", hx_role(at), "\",\"chain\":\"", head, "\"}"], ""))
+          let _ := set_state(db, "hx_at", int.to_str(at + 1))
+          if at + 1 >= 6 { hx_win(db) } else { str.join(["{\"status\":\"ok\",\"stage\":", int.to_str(at), ",\"next\":", int.to_str(at + 1), "}"], "") }
+        },
+      }
+    }
+  }
+}
+fn hx_dispatch(db :: Db, name :: Str, args :: jv.Json) -> [sql, time, crypto] Str {
+  if name == "hx_join" { hx_join(db, jv_str_or(args, "side", "")) } else {
+  if name == "hx_reset" { hx_reset(db) } else {
+  if name == "hx_move" { hx_move(db, jv_str_or(args, "by", ""), jv_str_or(args, "token", "")) } else {
+  hx_state(db) }}}
+}
+
+# A supplier delivers a new item into the stall's stock (logistics restock).
+fn stock_add(db :: Db, item_id :: Str, name :: Str, category :: Str, price :: Int) -> [sql] Str {
+  let q := str.join(["INSERT OR REPLACE INTO stock (item_id, name, category, price, reserved) VALUES ('", sq(item_id), "','", sq(name), "','", sq(category), "',", int.to_str(price), ",0)"], "")
+  let _ := sql.exec(db, q, [])
+  str.join(["{\"status\":\"restocked\",\"item_id\":\"", sq(item_id), "\",\"name\":\"", sq(name), "\",\"price\":", int.to_str(price), "}"], "")
 }
 
 fn stock_list_json(db :: Db, stall :: Str) -> [sql] Str {
@@ -442,6 +985,142 @@ fn http_err_msg(e :: HttpError) -> Str {
   }
 }
 
+fn stall_to_port(stall_name :: Str) -> Int {
+  if stall_name == "pottery" or stall_name == "clay" { 8901 } else {
+  if stall_name == "textile" or stall_name == "fabric" { 8902 } else {
+  if stall_name == "spices" or stall_name == "herb" { 8903 } else {
+  0 }}}
+}
+
+fn proxy_to_stall(stall_name :: Str, skill :: Str, args_json :: Str) -> [net] Str {
+  let port := stall_to_port(stall_name)
+  if port == 0 {
+    str.join(["{\"error\":\"unknown stall: ", stall_name, "\"}"], "")
+  } else {
+    let url := str.join(["http://localhost:", int.to_str(port), "/skill/", skill], "")
+    let req0 := { method: "POST", url: url, headers: map.new(), body: Some(bytes.from_str(args_json)), timeout_ms: None }
+    let req := http.with_header(http.with_timeout_ms(req0, 5000), "Content-Type", "application/json")
+    match http.send(req) {
+      Err(e) => str.join(["{\"error\":", json_str(http_err_msg(e)), "}"], ""),
+      Ok(r) => match bytes.to_str(r.body) {
+        Err(_) => "{\"error\":\"bad utf8\"}",
+        Ok(s) => s,
+      },
+    }
+  }
+}
+
+# ── Stall A2A self-registration ───────────────────────────────────────────────
+
+fn stall_secret(stall :: Str) -> Bytes {
+  if stall == "pottery" or stall == "clay" {
+    bytes.from_str("00000000000000000000000000000001")
+  } else {
+  if stall == "textile" or stall == "fabric" {
+    bytes.from_str("00000000000000000000000000000002")
+  } else {
+  if stall == "spices" or stall == "herb" {
+    bytes.from_str("00000000000000000000000000000003")
+  } else {
+  if stall == "robot-b" {
+    bytes.from_str("0000000000000000000000000000000b")
+  } else {
+    bytes.from_str("00000000000000000000000000000000")
+  }}}}
+}
+
+fn stall_display_name(stall :: Str) -> Str {
+  if stall == "pottery" or stall == "clay" { "Pottery Palace" } else {
+  if stall == "textile" or stall == "fabric" { "Textile Traders" } else {
+  if stall == "spices" or stall == "herb" { "Spice Garden" } else {
+  if stall == "robot-b" { "Robot B" } else {
+  stall }}}}
+}
+
+# A2A skills advertised by each peer. robot-b is a service peer offering
+# charge_battery; bazaar stalls offer the stock/reserve/sale skills.
+fn stall_pub_skills(stall :: Str) -> List[card.AgentSkill] {
+  if stall == "robot-b" {
+    [{ name: "charge_battery", description: "Sell battery charge units to a peer robot" }]
+  } else {
+    [{ name: "query_stock", description: "Search available stock" }]
+  }
+}
+
+fn stall_ext_skills(stall :: Str) -> List[card.AgentSkill] {
+  if stall == "robot-b" {
+    [{ name: "charge_battery", description: "Sell battery charge units to a peer robot" }]
+  } else {
+    [
+      { name: "query_stock",   description: "Search available stock" },
+      { name: "reserve_item",  description: "Reserve an item for purchase" },
+      { name: "complete_sale", description: "Finalise sale and transfer item" },
+      { name: "restock",       description: "Accept a restock delivery from an authorised supplier" }
+    ]
+  }
+}
+
+fn call_dashboard(dash :: Str, skill :: Str, body :: Str) -> [net] Str {
+  if str.is_empty(dash) { "{\"error\":\"no dashboard\"}" } else {
+    let url := str.join([dash, "/skill/", skill], "")
+    let req0 := { method: "POST", url: url, headers: map.new(), body: Some(bytes.from_str(body)), timeout_ms: None }
+    let req := http.with_header(http.with_timeout_ms(req0, 5000), "Content-Type", "application/json")
+    match http.send(req) {
+      Err(e) => str.join(["{\"error\":", json_str(http_err_msg(e)), "}"], ""),
+      Ok(r) => match bytes.to_str(r.body) {
+        Err(_) => "{\"error\":\"bad utf8\"}",
+        Ok(s) => s,
+      },
+    }
+  }
+}
+
+fn init_stall_a2a(db :: Db, stall :: Str, port :: Int, dash :: Str, now_ms :: Int) -> [sql, crypto, net, io] Unit {
+  let secret  := stall_secret(stall)
+  let display := stall_display_name(stall)
+  let self_url := str.join(["http://localhost:", int.to_str(port)], "")
+  match crypto.ed25519_public_key(secret) {
+    Err(e) => io.print(str.join(["[sidecar] A2A key error: ", e], "")),
+    Ok(pk) => {
+      let pub_b64 := crypto.base64url_encode(pk)
+      let pub_card := { name: display, endpoint: self_url, pubkey_b64: pub_b64, tier: card.Public,
+                        skills: stall_pub_skills(stall),
+                        supports_extended: true }
+      let ext_card := { name: display, endpoint: self_url, pubkey_b64: pub_b64, tier: card.Extended,
+                        skills: stall_ext_skills(stall),
+                        supports_extended: true }
+      let pub_json := card.card_to_json(pub_card)
+      let ext_json := card.card_to_json(ext_card)
+      match card.sign_card(pub_json, secret) {
+        Err(e) => io.print(str.join(["[sidecar] A2A sign-pub error: ", e], "")),
+        Ok(pub_sig) => {
+          let _ := set_card(db, "public", str.join([pub_json, "\n", pub_sig], ""))
+          match card.sign_card(ext_json, secret) {
+            Err(e) => io.print(str.join(["[sidecar] A2A sign-ext error: ", e], "")),
+            Ok(ext_sig) => {
+              let _ := set_card(db, "extended", str.join([ext_json, "\n", ext_sig], ""))
+              let blob_json := str.join([
+                "{\"endpoint\":", json_str(self_url),
+                ",\"ephemeral_token\":\"bazaar-token\"",
+                ",\"peer_pubkey\":", json_str(pub_b64),
+                ",\"nonce\":", json_str(str.concat("n-a2a-", stall)),
+                ",\"expires_at\":", int.to_str(now_ms + 86400000), "}"
+              ], "")
+              let blob_b64 := crypto.base64url_encode(bytes.from_str(blob_json))
+              # Store locally so GET /a2a/bootstrap-blob can serve it (no dashboard race).
+              let _ := set_state(db, "bootstrap_blob", blob_b64)
+              # Best-effort push to dashboard (may silently fail if not up yet).
+              let reg_body := str.join(["{\"stall\":", json_str(stall), ",\"blob\":", json_str(blob_b64), "}"], "")
+              let _ := call_dashboard(dash, "register_bootstrap", reg_body)
+              io.print(str.join(["[sidecar] A2A ready: stall=", stall, "  pubkey=", str.slice(pub_b64, 0, 16), "..."], ""))
+            },
+          }
+        },
+      }
+    },
+  }
+}
+
 fn physics_call(physics_url :: Str, skill :: Str, raw_args :: Str) -> [net] Str {
   let body_str := str.join(["{\"skill\":", json_str(skill), ",\"args\":", raw_args, "}"], "")
   let url := str.concat(physics_url, "/skill")
@@ -456,12 +1135,42 @@ fn physics_call(physics_url :: Str, skill :: Str, raw_args :: Str) -> [net] Str 
   }
 }
 
-fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :: Str, dash :: Str, physics_url :: Str) -> [sql, net, time] Str {
+fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :: Str, dash :: Str, physics_url :: Str, seller_on :: Bool, seller_token :: Str, seller_project :: Str, seller_location :: Str) -> [sql, net, time, llm, io, proc, crypto] Str {
   # ── Bazaar skills ────────────────────────────────────────────────
   if name == "query_stock" {
     let search := jv_str_or(args, "search", "")
     let max_p := jv_int_or(args, "max_price", 9999)
-    let result := stock_query(db, search, max_p, stall)
+    let std_result := stock_query(db, search, max_p, stall)
+    let result := if seller_on and not str.is_empty(stall) {
+      match jv.parse(std_result) {
+        Err(_) => std_result,
+        Ok(j) => {
+          let found := jv_int_or(j, "found", 0)
+          if found > 0 {
+            match jv.get_field(j, "items") {
+              Some(JList(raw_items)) => {
+                let priced := list.map(raw_items, fn (item_j :: jv.Json) -> [sql, net, llm, io, proc] jv.Json {
+                  let item_id   := jv_str_or(item_j, "id", "")
+                  let item_name := jv_str_or(item_j, "name", "")
+                  let base_p    := jv_int_or(item_j, "price", 0)
+                  let category  := jv_str_or(item_j, "category", "")
+                  let quoted    := sllm.quote_price(stall, item_id, item_name, base_p, max_p, seller_token, seller_project, seller_location)
+                  let upd := str.join(["UPDATE stock SET price=", int.to_str(quoted), " WHERE item_id='", sq(item_id), "'"], "")
+                  let _ := sql.exec(db, upd, [])
+                  JObj([("id", JStr(item_id)), ("name", JStr(item_name)), ("category", JStr(category)), ("price", JInt(quoted))])
+                })
+                str.join(["{\"stall\":", json_str(stall), ",\"found\":", int.to_str(found), ",\"items\":", jv.stringify(JList(priced)), "}"], "")
+              },
+              _ => std_result,
+            }
+          } else {
+            std_result
+          }
+        },
+      }
+    } else {
+      std_result
+    }
     let _ := notify_dash(dash, str.join(["{\"kind\":\"skill_recv\",\"stall\":", json_str(stall), ",\"skill\":\"query_stock\",\"search\":", json_str(search), "}"], ""))
     result
   } else {
@@ -478,6 +1187,81 @@ fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :
     let _ := notify_dash(dash, str.join(["{\"kind\":\"skill_recv\",\"stall\":", json_str(stall), ",\"skill\":\"complete_sale\",\"item_id\":", json_str(item_id), "}"], ""))
     result
   } else {
+  # ── Logistics: accept a restock delivery from a supplier ──────────────────
+  if name == "restock" {
+    let supplier := jv_str_or(args, "supplier", "?")
+    let item_id  := jv_str_or(args, "item_id", "")
+    let it_name  := jv_str_or(args, "name", "item")
+    let category := jv_str_or(args, "category", "general")
+    let price    := jv_int_or(args, "price", 0)
+    let result   := stock_add(db, item_id, it_name, category, price)
+    let _ := notify_dash(dash, str.join(["{\"kind\":\"restock\",\"stall\":", json_str(stall), ",\"supplier\":", json_str(supplier), ",\"item_id\":", json_str(item_id), ",\"name\":", json_str(it_name), ",\"price\":", int.to_str(price), "}"], ""))
+    result
+  } else {
+  # ── lex-games: tic-tac-toe (capability-gated, verifiable, agent-playable) ──
+  if name == "shop_join" or name == "shop_reset" or name == "shop_move" or name == "shop_state" {
+    shop_dispatch(db, name, args)
+  } else {
+  if name == "love_join" or name == "love_reset" or name == "love_move" or name == "love_state" {
+    love_dispatch(db, name, args)
+  } else {
+  if name == "ev_join" or name == "ev_reset" or name == "ev_move" or name == "ev_state" {
+    ev_dispatch(db, name, args)
+  } else {
+  if name == "hx_join" or name == "hx_reset" or name == "hx_move" or name == "hx_state" {
+    hx_dispatch(db, name, args)
+  } else {
+  if name == "game_join" {
+    ttt_join(db, jv_str_or(args, "side", ""))
+  } else {
+  if name == "game_reset" {
+    ttt_reset(db)
+  } else {
+  if name == "game_move" {
+    ttt_move(db, jv_str_or(args, "by", "X"), jv_int_or(args, "cell", -1), jv_str_or(args, "token", ""))
+  } else {
+  if name == "game_state" {
+    ttt_state(db)
+  } else {
+  # ── Peer service: charge_battery (robot-b) ────────────────────────────────
+  # A peer robot sells battery charge units. Stateless: returns a priced receipt.
+  # The grant layer already gated whether the caller may invoke this skill; the
+  # caller's own lex-guard gated whether it could afford the payment.
+  if name == "charge_battery" {
+    let units := jv_int_or(args, "units", 0)
+    let rate  := 4
+    let price := units * rate
+    let _ := notify_dash(dash, str.join(["{\"kind\":\"skill_recv\",\"stall\":", json_str(stall), ",\"skill\":\"charge_battery\",\"units\":", int.to_str(units), "}"], ""))
+    str.join(["{\"status\":\"charged\",\"units\":", int.to_str(units), ",\"unit_price\":", int.to_str(rate), ",\"price\":", int.to_str(price), ",\"receipt\":\"chg-", int.to_str(units), "u\"}"], "")
+  } else {
+  # ── Routed queries (dashboard → stall sidecar) ────────────────────────────
+  if name == "query_stock_at" {
+    let stall_name := jv_str_or(args, "stall", "")
+    let search := jv_str_or(args, "search", "")
+    let max_p := jv_int_or(args, "max_price", 9999)
+    let args_json := str.join(["{\"search\":", json_str(search), ",\"max_price\":", int.to_str(max_p), "}"], "")
+    proxy_to_stall(stall_name, "query_stock", args_json)
+  } else {
+  if name == "purchase_at" {
+    let stall_name := jv_str_or(args, "stall", "")
+    let item_id := jv_str_or(args, "item_id", "")
+    let payment := jv_int_or(args, "payment", 0)
+    let reserve_args := str.join(["{\"item_id\":", json_str(item_id), "}"], "")
+    let rsv := proxy_to_stall(stall_name, "reserve_item", reserve_args)
+    match jv.parse(rsv) {
+      Err(_) => str.join(["{\"outcome\":\"error\",\"detail\":", json_str(rsv), "}"], ""),
+      Ok(rj) => {
+        let status := jv_str_or(rj, "status", "")
+        if status == "reserved" {
+          let complete_args := str.join(["{\"item_id\":", json_str(item_id), ",\"payment\":", int.to_str(payment), "}"], "")
+          let sale := proxy_to_stall(stall_name, "complete_sale", complete_args)
+          str.join(["{\"outcome\":\"purchased\",\"stall\":", json_str(stall_name), ",\"item_id\":", json_str(item_id), ",\"sale\":", sale, "}"], "")
+        } else {
+          str.join(["{\"outcome\":\"reserve_failed\",\"stall\":", json_str(stall_name), ",\"item_id\":", json_str(item_id), ",\"detail\":", json_str(rsv), "}"], "")
+        }
+      },
+    }
+  } else {
   # ── QR bootstrap ─────────────────────────────────────────────────
   if name == "render_qr" {
     let payload := jv_str_or(args, "payload", "")
@@ -487,6 +1271,18 @@ fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :
   if name == "scan_qr" {
     let payload := get_state(db, "qr_payload")
     str.join(["{\"payload\":", json_str(payload), "}"], "")
+  } else {
+  # ── A2A bootstrap registry (dashboard only) ───────────────────────
+  if name == "register_bootstrap" {
+    let stall_name := jv_str_or(args, "stall", "")
+    let blob_b64   := jv_str_or(args, "blob", "")
+    let _ := set_state(db, str.concat("bootstrap_", stall_name), blob_b64)
+    str.join(["{\"ok\":true,\"stall\":", json_str(stall_name), "}"], "")
+  } else {
+  if name == "get_bootstrap" {
+    let stall_name := jv_str_or(args, "stall", "")
+    let blob_b64   := get_state(db, str.concat("bootstrap_", stall_name))
+    str.join(["{\"blob\":", json_str(blob_b64), "}"], "")
   } else {
   # ── Robot primitives ─────────────────────────────────────────────
   if name == "move_to" {
@@ -753,7 +1549,7 @@ fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :
     str.join(["{\"status\":\"dispatched\",\"callsign\":\"RESCUE-7\",\"eta_min\":8,\"capacity\":12}"], "")
   } else {
     str.join(["{\"error\":\"unknown skill: ", sq(name), "\"}"], "")
-  }}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}
+  }}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}
 }
 
 # ── Router ────────────────────────────────────────────────────────────────────
@@ -766,7 +1562,7 @@ fn json_resp_cors(body :: Str) -> resp.Response {
   cors_resp(resp.json(body))
 }
 
-fn build_router(db :: Db, stall :: Str, dash :: Str, html_path :: Str, examples_dir :: Str, physics_url :: Str) -> router.Router {
+fn build_router(db :: Db, stall :: Str, dash :: Str, html_path :: Str, examples_dir :: Str, physics_url :: Str, seller_on :: Bool, seller_token :: Str, seller_project :: Str, seller_location :: Str) -> router.Router {
   # Shared wide-effect handler type required by route_effectful / route_stream.
   # Each closure captures db / stall / dash from the outer scope.
   let r0 := router.new()
@@ -788,11 +1584,19 @@ fn build_router(db :: Db, stall :: Str, dash :: Str, html_path :: Str, examples_
     }
   })
 
+  # GET /retro_kit.js — shared pixel-art kit for all dashboards
+  let r3b := router.route_effectful(r3, "GET", "/retro_kit.js", fn (_ :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+    match io.read(str.join([examples_dir, "/retro_kit.js"], "")) {
+      Err(_) => resp.not_found(),
+      Ok(body) => { body: body, status: 200, headers: map.from_list([("content-type", "application/javascript; charset=utf-8"), ("cache-control", "no-cache")]) },
+    }
+  })
+
   # GET /events — SSE long-poll (dashboard only)
   let r4 := if str.is_empty(stall) {
-    router.route_stream(r3, "GET", "/events", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] stream.StreamResponse {
+    router.route_stream(r3b, "GET", "/events", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] stream.StreamResponse {
       let last_id := parse_int_or(ctx.header_or(c, "last-event-id", "0"), 0)
-      let events := poll_events(db, last_id, 10000)
+      let events := list.cons("retry: 2000\n\n", poll_events(db, last_id, 10000))
       let hdrs := map.from_list([("content-type", "text/event-stream; charset=utf-8"), ("cache-control", "no-cache"), ("connection", "keep-alive"), ("access-control-allow-origin", "*")])
       { body: iter.from_list(events), status: 200, headers: hdrs }
     })
@@ -850,7 +1654,7 @@ fn build_router(db :: Db, stall :: Str, dash :: Str, html_path :: Str, examples_
       None => cors_resp(resp.bad_request("missing skill name")),
       Some(name) => {
         let args := match jv.parse(c.body) { Ok(j) => j, Err(_) => JObj([]) }
-        json_resp_cors(handle_skill(db, name, args, c.body, stall, dash, physics_url))
+        json_resp_cors(handle_skill(db, name, args, c.body, stall, dash, physics_url, seller_on, seller_token, seller_project, seller_location))
       },
     }
   })
@@ -868,7 +1672,7 @@ fn build_router(db :: Db, stall :: Str, dash :: Str, html_path :: Str, examples_
         let skill := jv_str_or(task_j, "skill", "")
         let args_j := match jv.get_field(task_j, "args") { Some(v) => v, None => JObj([]) }
         let args_raw := match jv.get_field(task_j, "args") { Some(_) => c.body, None => "{}" }
-        let result := handle_skill(db, skill, args_j, args_raw, stall, dash, physics_url)
+        let result := handle_skill(db, skill, args_j, args_raw, stall, dash, physics_url, seller_on, seller_token, seller_project, seller_location)
         json_resp_cors(str.join(["{\"jsonrpc\":\"2.0\",\"id\":", json_str(rpc_id), ",\"result\":{\"kind\":\"artifact\",\"output\":", result, "}}"], ""))
       },
     }
@@ -886,8 +1690,20 @@ fn build_router(db :: Db, stall :: Str, dash :: Str, html_path :: Str, examples_
     json_resp_cors("{\"ok\":true}")
   })
 
+  # GET /a2a/bootstrap-blob (stall only) — served directly; avoids dashboard race condition
+  let r13b := if not str.is_empty(stall) {
+    router.route_effectful(r13, "GET", "/a2a/bootstrap-blob", fn (_ :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+      let blob_b64 := get_state(db, "bootstrap_blob")
+      if str.is_empty(blob_b64) {
+        cors_resp(resp.not_found())
+      } else {
+        json_resp_cors(str.join(["{\"blob\":", json_str(blob_b64), "}"], ""))
+      }
+    })
+  } else { r13 }
+
   # POST /reset-stock
-  let r14 := router.route_effectful(r13, "POST", "/reset-stock", fn (_ :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let r14 := router.route_effectful(r13b, "POST", "/reset-stock", fn (_ :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
     let _ := stock_reset(db, stall)
     if str.is_empty(stall) {
       let _ := insert_event(db, "{\"kind\":\"market_reset\"}")
@@ -982,17 +1798,26 @@ fn run() -> [env, io, sql, net, time, proc, concurrent, crypto, random, fs_read,
   let ex_dir  := str.concat(root, "/examples")
   let db_file := db_path(port)
 
-  let physics_url := match env.get("PHYSICS_URL") { None => "", Some(v) => v }
-  let stall_tag := if str.is_empty(stall) { "" } else { str.concat("  stall=", stall) }
-  let phys_tag  := if str.is_empty(physics_url) { "" } else { str.concat("  physics=", physics_url) }
-  let _ := io.print(str.join(["lex-robot sim sidecar on http://127.0.0.1:", int.to_str(port), stall_tag, phys_tag, "  db=", db_file, "  (Ctrl-C to stop)"], ""))
+  let physics_url    := match env.get("PHYSICS_URL") { None => "", Some(v) => v }
+  let seller_on      := match env.get("SELLER_LLM") { None => false, Some(v) => v == "1" }
+  let seller_token   := match env.get("VERTEX_ACCESS_TOKEN") { None => "", Some(v) => v }
+  let seller_project := match env.get("VERTEX_PROJECT") { None => "", Some(v) => v }
+  let seller_location := match env.get("VERTEX_LOCATION") { None => "eu", Some(v) => if str.is_empty(v) { "eu" } else { v } }
+  let stall_tag   := if str.is_empty(stall) { "" } else { str.concat("  stall=", stall) }
+  let phys_tag    := if str.is_empty(physics_url) { "" } else { str.concat("  physics=", physics_url) }
+  let seller_tag  := if seller_on { "  seller=llm" } else { "" }
+  let _ := io.print(str.join(["lex-robot sim sidecar on http://127.0.0.1:", int.to_str(port), stall_tag, phys_tag, seller_tag, "  db=", db_file, "  (Ctrl-C to stop)"], ""))
 
   match sql.open(db_file) {
     Err(e) => io.print(str.concat("[sidecar] db error: ", e.message)),
     Ok(db) => {
       let _ := init_wal(db)
       let _ := init_schema(db, stall)
-      let r := build_router(db, stall, dash, html, ex_dir, physics_url)
+      let _ := if not str.is_empty(stall) {
+        let a2a_now := time.now_ms()
+        init_stall_a2a(db, stall, port, dash, a2a_now)
+      } else { () }
+      let r := build_router(db, stall, dash, html, ex_dir, physics_url, seller_on, seller_token, seller_project, seller_location)
       let handler := fn (req :: Request) -> [env, io, sql, net, time, proc, concurrent, crypto, random, fs_read, fs_write, llm] Response {
         let raw := { body: req.body, method: req.method, path: req.path, query: req.query, headers: req.headers }
         match router.dispatch_outcome(r, raw) {
