@@ -82,14 +82,22 @@ function renderBoard() {
 function setStatus(text, cls) { const s = document.getElementById('status'); s.textContent = text; s.className = cls || ''; }
 function firstEmpty() { for (let i = 0; i < 9; i++) if (board[i] === '.') return i; return 0; }
 
-// The X client holds only the X capability token. Claiming O with it is refused.
-const X_TOKEN = 'tok-X';
+// The X client joins to receive a SIGNED X capability token. It cannot forge an
+// O token, and O is already taken by the bot — so claiming O is refused.
+let X_TOKEN = '';
+async function joinX() {
+  try {
+    const r = await fetch('/skill/game_join', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ side: 'X' }) });
+    const j = await r.json();
+    if (j.token) X_TOKEN = j.token;
+  } catch (e) {}
+}
 async function move(by, cell) {
   try { await fetch('/skill/game_move', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ by, cell, token: X_TOKEN }) }); }
   catch (e) {}
 }
-function cheat() { move('O', firstEmpty()); }   // claim O while holding tok-X → server refuses (capability)
-async function newGame() { try { await fetch('/skill/game_reset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }); } catch (e) {} }
+function cheat() { move('O', firstEmpty()); }   // claim O with the signed X token → server refuses (capability)
+async function newGame() { try { await fetch('/skill/game_reset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }); } catch (e) {} if (!X_TOKEN) await joinX(); }
 
 function addChain(by, cell, hash) {
   const c = document.getElementById('chain');

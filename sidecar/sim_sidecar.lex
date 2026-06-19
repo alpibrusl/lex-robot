@@ -391,15 +391,34 @@ fn ttt_reset(db :: Db) -> [sql, time] Str {
   let _ := set_state(db, "ttt_turn", "X")
   let _ := set_state(db, "ttt_over", "0")
   let _ := set_state(db, "ttt_chain", "")
+  # NOTE: ttt_taken_* are NOT cleared — side assignments persist for the session,
+  # so a player can't grab the opponent's side by resetting. A fresh server (new
+  # /tmp db) is a fresh table assignment.
   let _ := ttt_emit(db, "{\"kind\":\"game_start\",\"board\":\".........\",\"x\":\"human\",\"o\":\"bot\"}")
   "{\"status\":\"reset\"}"
 }
 
-# A move's capability is its token: tok-X grants side X, tok-O grants side O.
-# (In production these would be signed; here a shared per-side token suffices to
-# show that a connection can only act as the side it holds.)
-fn side_of(token :: Str) -> Str {
-  if token == "tok-X" { "X" } else { if token == "tok-O" { "O" } else { "none" } }
+# A move's capability is an Ed25519-signed token issued at join (see ttt_join).
+# The server verifies it and recovers the side; a forged/edited token yields no
+# side, so the gate refuses. Sides are assigned at join (first X, then O), so a
+# player cannot self-grant the opponent's side either.
+fn ttt_secret() -> Bytes { bytes.from_str("lexgames-ttt-secret-seed-0000000") }
+fn ttt_pubkey() -> [crypto] Str {
+  match crypto.ed25519_public_key(ttt_secret()) { Ok(pk) => crypto.base64url_encode(pk), Err(_) => "" }
+}
+
+# Join a side: assign it (if free) and return a signed capability token.
+fn ttt_join(db :: Db, side :: Str) -> [sql, crypto, time] Str {
+  if side != "X" and side != "O" { "{\"error\":\"bad side\"}" } else {
+    let key := str.concat("ttt_taken_", side)
+    if get_state(db, key) == "1" {
+      str.join(["{\"error\":\"side taken\",\"side\":\"", side, "\"}"], "")
+    } else {
+      let _ := set_state(db, key, "1")
+      let _ := ttt_emit(db, str.join(["{\"kind\":\"joined\",\"side\":\"", side, "\"}"], ""))
+      str.join(["{\"side\":\"", side, "\",\"token\":\"", game.issue_token(ttt_secret(), side), "\"}"], "")
+    }
+  }
 }
 
 # A single gated move by either side. The submitter's TOKEN determines which side
@@ -410,7 +429,7 @@ fn ttt_move(db :: Db, by :: Str, cl :: Int, token :: Str) -> [sql, time, crypto]
   let board := ttt_board(db)
   let turn  := ttt_turn(db)
   if get_state(db, "ttt_over") == "1" { "{\"status\":\"over\"}" } else {
-    match game.gate(side_of(token), by, turn) {
+    match game.gate(game.token_side(ttt_pubkey(), token), by, turn) {
       MoveReject(why) => {
         let _ := ttt_emit(db, str.join(["{\"kind\":\"refused\",\"by\":\"", by, "\",\"cell\":", int.to_str(cl), ",\"reason\":\"", why, "\"}"], ""))
         str.join(["{\"status\":\"refused\",\"reason\":\"", why, "\"}"], "")
@@ -768,6 +787,9 @@ fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :
     result
   } else {
   # ── lex-games: tic-tac-toe (capability-gated, verifiable, agent-playable) ──
+  if name == "game_join" {
+    ttt_join(db, jv_str_or(args, "side", ""))
+  } else {
   if name == "game_reset" {
     ttt_reset(db)
   } else {
@@ -1103,7 +1125,7 @@ fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :
     str.join(["{\"status\":\"dispatched\",\"callsign\":\"RESCUE-7\",\"eta_min\":8,\"capacity\":12}"], "")
   } else {
     str.join(["{\"error\":\"unknown skill: ", sq(name), "\"}"], "")
-  }}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}
+  }}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}
 }
 
 # ── Router ────────────────────────────────────────────────────────────────────

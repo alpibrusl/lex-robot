@@ -100,11 +100,18 @@ fn loop(server :: Str, token :: Str, n :: Int) -> [net, io, time] Unit {
 }
 
 fn run() -> [env, net, io, time] Unit {
-  let server := match env.get("TTT_SERVER")  { None => "http://localhost:8900", Some(u) => u }
-  let token  := match env.get("TTT_O_TOKEN") { None => "tok-O", Some(t) => t }
+  let server := match env.get("TTT_SERVER") { None => "http://localhost:8900", Some(u) => u }
   let _ := io.print("══════════════════════════════════════════════════════")
-  let _ := io.print("   TTT O-BOT  ·  independent agent, plays O over A2A (holds tok-O)")
+  let _ := io.print("   TTT O-BOT  ·  independent agent, joins as O and plays over A2A")
   let _ := io.print("══════════════════════════════════════════════════════")
-  loop(server, token, 120)
-  io.print("[O-bot] done")
+  # Join as O to receive a signed capability token (cannot act without it).
+  let joined := a2a(server, "game_join", "{\"side\":\"O\"}")
+  let token := jstr(joined, "token")
+  if str.is_empty(token) {
+    io.print("[O-bot] could not join as O (side taken?) — exiting")
+  } else {
+    let _ := io.print(str.concat("[O-bot] joined as O, got signed token ", str.slice(token, 0, 14)))
+    loop(server, token, 120)
+    io.print("[O-bot] done")
+  }
 }

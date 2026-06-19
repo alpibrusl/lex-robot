@@ -15,6 +15,12 @@
 
 import "std.str" as str
 
+import "std.list" as list
+
+import "std.bytes" as bytes
+
+import "std.crypto" as crypto
+
 import "lex-trail/log" as trail
 
 # Result of the capability + turn check.
@@ -50,5 +56,48 @@ fn record(log :: trail.Log, parent :: Str, payload :: Str) -> [sql, time] Str {
   match trail.append(log, "move", par, payload) {
     Ok(ev) => ev.id,
     Err(_) => parent,
+  }
+}
+
+# ── Capability tokens (the side grant is a real Ed25519-signed artifact) ──────
+# issue_token signs a grant for a side; token_side verifies it and recovers the
+# side. A forged or edited token fails verification → no side → the gate refuses.
+# Format: base64url("game:<side>") "." base64url(signature).
+fn issue_token(secret :: Bytes, side :: Str) -> Str {
+  let payload := str.concat("game:", side)
+  match crypto.ed25519_sign(secret, bytes.from_str(payload)) {
+    Ok(sig) => str.join([crypto.base64url_encode(bytes.from_str(payload)), ".", crypto.base64url_encode(sig)], ""),
+    Err(_)  => "",
+  }
+}
+
+fn token_side(pubkey_b64 :: Str, token :: Str) -> Str {
+  let parts := str.split(token, ".")
+  match list.head(parts) {
+    None => "",
+    Some(pb) => match list.head(list.tail(parts)) {
+      None => "",
+      Some(sb) => verify_side(pubkey_b64, pb, sb),
+    },
+  }
+}
+
+fn verify_side(pubkey_b64 :: Str, pb :: Str, sb :: Str) -> Str {
+  match crypto.base64url_decode(pb) {
+    Err(_) => "",
+    Ok(payb) => match bytes.to_str(payb) {
+      Err(_) => "",
+      Ok(payload) => match crypto.base64url_decode(pubkey_b64) {
+        Err(_) => "",
+        Ok(pk) => match crypto.base64url_decode(sb) {
+          Err(_) => "",
+          Ok(sig) => if crypto.ed25519_verify(pk, bytes.from_str(payload), sig) {
+            match str.strip_prefix(payload, "game:") { Some(s) => s, None => "" }
+          } else {
+            ""
+          },
+        },
+      },
+    },
   }
 }
