@@ -56,6 +56,8 @@ import "../src/seller_llm" as sllm
 
 import "../src/lex_games" as game
 
+import "lex-trail/log" as trail
+
 import "../src/a2a_card" as card
 
 import "lex-web/src/router" as router
@@ -877,6 +879,219 @@ fn hx_dispatch(db :: Db, name :: Str, args :: jv.Json) -> [sql, time, crypto] St
   hx_state(db) }}}
 }
 
+# ── lex-games: Strategy Football — a human strategy, a squad of A2A agents ─────
+# A deterministic, turn-based football match on a 5-zone lane (z0=HOME's own end,
+# z4=the shot zone in front of the AWAY goal). HOME fields two players (H0, H1),
+# each driven by an INDEPENDENT agent over A2A; the two coordinate by passing
+# messages through the hub (fb_signal) — "I'm open at z3" / "shoot now". A HUMAN
+# sets the team STRATEGY at run time (direct / possession), which the agents read
+# and play to. AWAY is a scripted two-defender press. Each action is gated by a
+# hardened, match-bound Ed25519 token (a player can only act as itself, in turn,
+# this match) and recorded into a hash-chained lex-trail log — fb_verify replays
+# it and re-checks every link. HOME scores → HOME wins; the turn budget runs out
+# → the defense holds.
+fn fb_secret() -> Bytes { bytes.from_str("lexgames-fball-secret-seed-00000") }
+fn fb_pubkey() -> [crypto] Str { match crypto.ed25519_public_key(fb_secret()) { Ok(pk) => crypto.base64url_encode(pk), Err(_) => "" } }
+fn fb_trail_path(db :: Db) -> [sql] Str { str.join(["/tmp/lex-fb-", get_state(db, "fb_match"), ".db"], "") }
+
+fn fb_pz(db :: Db, p :: Str) -> [sql] Int { get_state_int(db, str.concat("fb_z_", p)) }
+fn fb_setz(db :: Db, p :: Str, z :: Int) -> [sql] Unit { set_state(db, str.concat("fb_z_", p), int.to_str(z)) }
+fn fb_turn(db :: Db) -> [sql] Str { let t := get_state(db, "fb_turn") if str.is_empty(t) { "H0" } else { t } }
+fn fb_defender_on(db :: Db, z :: Int) -> [sql] Bool { fb_pz(db, "D0") == z or fb_pz(db, "D1") == z }
+fn fb_lane_clear(db :: Db, lo :: Int, hi :: Int) -> [sql] Bool {
+  let d0 := fb_pz(db, "D0")
+  let d1 := fb_pz(db, "D1")
+  not ((d0 >= lo and d0 <= hi) or (d1 >= lo and d1 <= hi))
+}
+
+fn fb_kickoff(db :: Db) -> [sql] Unit {
+  let _ := fb_setz(db, "H0", 1)
+  let _ := fb_setz(db, "H1", 2)
+  let _ := fb_setz(db, "D0", 3)
+  # D1 is a deep sweeper parked behind the play (z0): it never marks forward, so a
+  # lone dribbler still gets caught by D0, but a give-and-go can beat the press —
+  # coordination is the only way through. A 2-attacker-vs-presser drill.
+  let _ := fb_setz(db, "D1", 0)
+  let _ := set_state(db, "fb_ball", "H0")
+  let _ := set_state(db, "fb_turn", "H0")
+  let _ := set_state(db, "fb_dtick", "0")
+  ()
+}
+fn fb_flip_turn(db :: Db) -> [sql] Unit { set_state(db, "fb_turn", if fb_turn(db) == "H0" { "H1" } else { "H0" }) }
+# AWAY presses: D0 chases the ball-carrier but at HALF tempo (every other tick),
+# so a sharp one-two can play through it; D1 stays a parked sweeper at the back.
+fn fb_step_defenders(db :: Db) -> [sql] Unit {
+  let n := get_state_int(db, "fb_dtick")
+  let _ := set_state(db, "fb_dtick", int.to_str(n + 1))
+  let _ := if (n / 2) * 2 == n {
+    let bz := fb_pz(db, get_state(db, "fb_ball"))
+    let d0 := fb_pz(db, "D0")
+    fb_setz(db, "D0", if d0 < bz { d0 + 1 } else { if d0 > bz { d0 - 1 } else { d0 } })
+  } else { () }
+  ()
+}
+fn fb_state(db :: Db) -> [sql] Str {
+  let over := get_state(db, "fb_over") == "1"
+  str.join(["{\"H0\":", int.to_str(fb_pz(db, "H0")), ",\"H1\":", int.to_str(fb_pz(db, "H1")), ",\"D0\":", int.to_str(fb_pz(db, "D0")), ",\"D1\":", int.to_str(fb_pz(db, "D1")),
+    ",\"ball\":\"", get_state(db, "fb_ball"), "\",\"turn\":\"", fb_turn(db), "\",\"over\":", (if over { "true" } else { "false" }), ",\"result\":\"", get_state(db, "fb_result"), "\",\"left\":", int.to_str(get_state_int(db, "fb_left")),
+    ",\"strategy\":\"", get_state(db, "fb_strategy"), "\",\"sig\":{\"H0\":\"", get_state(db, "fb_sig_H0"), "\",\"H1\":\"", get_state(db, "fb_sig_H1"), "\"},\"match\":\"", get_state(db, "fb_match"), "\"}"], "")
+}
+fn fb_reset(db :: Db) -> [sql, time] Str {
+  # match_id is stable for the server session, so already-issued tokens stay valid
+  # across "new match" resets; only created the first time.
+  let _ := if str.is_empty(get_state(db, "fb_match")) { set_state(db, "fb_match", int.to_str(time.now_ms())) } else { () }
+  let _ := fb_kickoff(db)
+  let _ := set_state(db, "fb_over", "0")
+  let _ := set_state(db, "fb_result", "")
+  let _ := set_state(db, "fb_left", "24")
+  let _ := set_state(db, "fb_parent", "")
+  let _ := set_state(db, "fb_sig_H0", "")
+  let _ := set_state(db, "fb_sig_H1", "")
+  let _ := insert_event(db, "{\"kind\":\"fb_start\",\"zones\":5,\"budget\":24}")
+  "{\"status\":\"reset\"}"
+}
+fn fb_set_strategy(db :: Db, s :: Str) -> [sql, time] Str {
+  let _ := set_state(db, "fb_strategy", s)
+  let _ := insert_event(db, str.join(["{\"kind\":\"fb_strategy\",\"strategy\":\"", s, "\"}"], ""))
+  str.join(["{\"status\":\"ok\",\"strategy\":\"", s, "\"}"], "")
+}
+# A teammate message, relayed through the hub (agent-to-agent coordination).
+fn fb_signal(db :: Db, by :: Str, msg :: Str) -> [sql, time] Str {
+  let _ := set_state(db, str.concat("fb_sig_", by), msg)
+  let _ := insert_event(db, str.join(["{\"kind\":\"fb_say\",\"from\":\"", by, "\",\"msg\":\"", msg, "\"}"], ""))
+  "{\"status\":\"ok\"}"
+}
+fn fb_join(db :: Db, side :: Str) -> [sql, crypto, time] Str {
+  if side != "H0" and side != "H1" { "{\"error\":\"bad side\"}" } else {
+    let _ := if str.is_empty(get_state(db, "fb_match")) { set_state(db, "fb_match", int.to_str(time.now_ms())) } else { () }
+    let key := str.concat("fb_taken_", side)
+    if get_state(db, key) == "1" { str.join(["{\"error\":\"side taken\",\"side\":\"", side, "\"}"], "") } else {
+      let _ := set_state(db, key, "1")
+      let exp := time.now_ms() + 3600000
+      let _ := insert_event(db, str.join(["{\"kind\":\"fb_joined\",\"side\":\"", side, "\"}"], ""))
+      str.join(["{\"side\":\"", side, "\",\"match\":\"", get_state(db, "fb_match"), "\",\"token\":\"", game.issue_match_token(fb_secret(), side, get_state(db, "fb_match"), exp), "\"}"], "")
+    }
+  }
+}
+# Append the applied action to the hash-chained lex-trail log; store the new head.
+fn fb_record(db :: Db, payload :: Str) -> [sql, time, fs_write] Str {
+  match trail.open(fb_trail_path(db)) {
+    Err(_) => "",
+    Ok(log) => {
+      let head := game.record(log, get_state(db, "fb_parent"), payload)
+      let _ := set_state(db, "fb_parent", head)
+      let _ := trail.close(log)
+      head
+    },
+  }
+}
+fn fb_verify(db :: Db) -> [sql, fs_write] Str {
+  match trail.open(fb_trail_path(db)) {
+    Err(_) => "{\"valid\":false,\"count\":0}",
+    Ok(log) => {
+      let v := game.verify_log(log)
+      let _ := trail.close(log)
+      str.join(["{\"valid\":", (if v.valid { "true" } else { "false" }), ",\"count\":", int.to_str(v.count), "}"], "")
+    },
+  }
+}
+# Common post-action resolution: record, then either end on a goal, or step the
+# defense, resolve a tackle/interception (turnover), spend a turn, and hand over.
+fn fb_after(db :: Db, payload :: Str, scored :: Bool, forced_turnover :: Bool) -> [sql, time, fs_write] Str {
+  let head := fb_record(db, payload)
+  if scored {
+    let _ := set_state(db, "fb_over", "1")
+    let _ := set_state(db, "fb_result", "home")
+    let _ := insert_event(db, str.join(["{\"kind\":\"fb_goal\",\"chain\":\"", str.slice(head, 0, 10), "\"}"], ""))
+    "{\"status\":\"goal\"}"
+  } else {
+    let _ := fb_step_defenders(db)
+    # Possession is lost only by an intercepted pass or a saved shot (forced),
+    # not merely by a defender catching up — so build-up play isn't punished.
+    let lost := forced_turnover
+    let _ := if lost {
+      let _ := fb_kickoff(db)
+      insert_event(db, "{\"kind\":\"fb_turnover\"}")
+    } else {
+      let _ := fb_flip_turn(db)
+      ()
+    }
+    let left := get_state_int(db, "fb_left") - 1
+    let _ := set_state(db, "fb_left", int.to_str(left))
+    let _ := if left <= 0 and get_state(db, "fb_over") != "1" {
+      let _ := set_state(db, "fb_over", "1")
+      let _ := set_state(db, "fb_result", "defense")
+      insert_event(db, "{\"kind\":\"fb_over\",\"result\":\"defense\"}")
+    } else { () }
+    let _ := insert_event(db, str.join(["{\"kind\":\"fb_tick\",\"chain\":\"", str.slice(head, 0, 10), "\",\"lost\":", (if lost { "true" } else { "false" }), "}"], ""))
+    str.join(["{\"status\":\"ok\",\"lost\":", (if lost { "true" } else { "false" }), "}"], "")
+  }
+}
+fn fb_refuse(db :: Db, by :: Str, why :: Str) -> [sql, time] Str {
+  let _ := insert_event(db, str.join(["{\"kind\":\"fb_refused\",\"by\":\"", by, "\",\"reason\":\"", why, "\"}"], ""))
+  str.join(["{\"status\":\"refused\",\"reason\":\"", why, "\"}"], "")
+}
+# action ∈ {MOVE (arg fwd|back), PASS (arg H0|H1), SHOOT}. Carrier-only for PASS/SHOOT.
+fn fb_move(db :: Db, by :: Str, action :: Str, arg :: Str, token :: Str) -> [sql, time, crypto, fs_write] Str {
+  if get_state(db, "fb_over") == "1" { "{\"status\":\"over\"}" } else {
+    let side := game.match_token_side(fb_pubkey(), token, get_state(db, "fb_match"), time.now_ms())
+    match game.gate(side, by, fb_turn(db)) {
+      MoveReject(why) => fb_refuse(db, by, why),
+      MoveOk => {
+        let cz := fb_pz(db, by)
+        let iscarrier := get_state(db, "fb_ball") == by
+        if action == "HOLD" {
+          fb_after(db, str.join(["{\"by\":\"", by, "\",\"action\":\"hold\"}"], ""), false, false)
+        } else {
+        if action == "MOVE" {
+          let nz := if arg == "back" { cz - 1 } else { cz + 1 }
+          if nz < 0 or nz > 4 { fb_refuse(db, by, "off the pitch") } else {
+            if arg != "back" and fb_defender_on(db, nz) { fb_refuse(db, by, "blocked by a defender") } else {
+              let _ := fb_setz(db, by, nz)
+              fb_after(db, str.join(["{\"by\":\"", by, "\",\"action\":\"move\",\"to\":", int.to_str(nz), "}"], ""), false, false)
+            }
+          }
+        } else {
+        if action == "PASS" {
+          if not iscarrier { fb_refuse(db, by, "you don't have the ball") } else {
+            if (arg != "H0" and arg != "H1") or arg == by { fb_refuse(db, by, "bad pass target") } else {
+              let tz := fb_pz(db, arg)
+              let clear := if tz > cz { fb_lane_clear(db, cz + 1, tz) } else { true }
+              if clear {
+                let _ := set_state(db, "fb_ball", arg)
+                fb_after(db, str.join(["{\"by\":\"", by, "\",\"action\":\"pass\",\"to\":\"", arg, "\",\"tz\":", int.to_str(tz), "}"], ""), false, false)
+              } else {
+                fb_after(db, str.join(["{\"by\":\"", by, "\",\"action\":\"pass_intercepted\",\"to\":\"", arg, "\"}"], ""), false, true)
+              }
+            }
+          }
+        } else {
+        if action == "SHOOT" {
+          if not iscarrier { fb_refuse(db, by, "you don't have the ball") } else {
+            if cz < 3 { fb_refuse(db, by, "too far out to shoot") } else {
+              # A shot beats the press only if the shooter is unmarked (no defender
+              # in its zone). A marked striker is closed down → saved → turnover.
+              let goal := not fb_defender_on(db, cz)
+              fb_after(db, str.join(["{\"by\":\"", by, "\",\"action\":\"shoot\",\"goal\":", (if goal { "true" } else { "false" }), "}"], ""), goal, not goal)
+            }
+          }
+        } else {
+          fb_refuse(db, by, "unknown action")
+        }}}}
+      },
+    }
+  }
+}
+fn fb_dispatch(db :: Db, name :: Str, args :: jv.Json) -> [sql, time, crypto, fs_write] Str {
+  if name == "fb_join" { fb_join(db, jv_str_or(args, "side", "")) } else {
+  if name == "fb_reset" { fb_reset(db) } else {
+  if name == "fb_strategy" { fb_set_strategy(db, jv_str_or(args, "strategy", "direct")) } else {
+  if name == "fb_signal" { fb_signal(db, jv_str_or(args, "by", ""), jv_str_or(args, "msg", "")) } else {
+  if name == "fb_move" { fb_move(db, jv_str_or(args, "by", ""), jv_str_or(args, "action", ""), jv_str_or(args, "arg", ""), jv_str_or(args, "token", "")) } else {
+  if name == "fb_verify" { fb_verify(db) } else {
+  fb_state(db) }}}}}}
+}
+
 # A supplier delivers a new item into the stall's stock (logistics restock).
 fn stock_add(db :: Db, item_id :: Str, name :: Str, category :: Str, price :: Int) -> [sql] Str {
   let q := str.join(["INSERT OR REPLACE INTO stock (item_id, name, category, price, reserved) VALUES ('", sq(item_id), "','", sq(name), "','", sq(category), "',", int.to_str(price), ",0)"], "")
@@ -1135,7 +1350,7 @@ fn physics_call(physics_url :: Str, skill :: Str, raw_args :: Str) -> [net] Str 
   }
 }
 
-fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :: Str, dash :: Str, physics_url :: Str, seller_on :: Bool, seller_token :: Str, seller_project :: Str, seller_location :: Str) -> [sql, net, time, llm, io, proc, crypto] Str {
+fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :: Str, dash :: Str, physics_url :: Str, seller_on :: Bool, seller_token :: Str, seller_project :: Str, seller_location :: Str) -> [sql, net, time, llm, io, proc, crypto, fs_write] Str {
   # ── Bazaar skills ────────────────────────────────────────────────
   if name == "query_stock" {
     let search := jv_str_or(args, "search", "")
@@ -1210,6 +1425,9 @@ fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :
   } else {
   if name == "hx_join" or name == "hx_reset" or name == "hx_move" or name == "hx_state" {
     hx_dispatch(db, name, args)
+  } else {
+  if name == "fb_join" or name == "fb_reset" or name == "fb_strategy" or name == "fb_signal" or name == "fb_move" or name == "fb_verify" or name == "fb_state" {
+    fb_dispatch(db, name, args)
   } else {
   if name == "game_join" {
     ttt_join(db, jv_str_or(args, "side", ""))
@@ -1549,7 +1767,7 @@ fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :
     str.join(["{\"status\":\"dispatched\",\"callsign\":\"RESCUE-7\",\"eta_min\":8,\"capacity\":12}"], "")
   } else {
     str.join(["{\"error\":\"unknown skill: ", sq(name), "\"}"], "")
-  }}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}
+  }}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}
 }
 
 # ── Router ────────────────────────────────────────────────────────────────────
