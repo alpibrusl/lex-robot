@@ -91,7 +91,8 @@ examples/
   demo / task / budget / depot / safe_rollout / llm_planner   the robot governance demos
   bazaar / peer_meet / ev_fleet / logistics / tinder /
   trading / station / triage / heist                          agentic interaction demos (+ *_web.html, *_run.sh)
-  ttt / bazaar_game / tinder_game / ev_duel / heist_coop      lex-games (+ *_bot.lex A2A opponents)
+  ttt / bazaar_game / tinder_game / ev_duel / heist_coop /
+  football / arena_demo                                       lex-games (+ *_bot.lex A2A opponents; arena = games→robots)
 sidecar/
   sim_sidecar.lex   pure-Lex dashboard + A2A peer + skill host (agentic demos & games)
   sim_sidecar.py    stdlib stub for the robot governance demos
@@ -510,8 +511,14 @@ construction** and **verifiable** — the same way the robot grant does for actu
 - `gate()` — a connection holds a signed Ed25519 token for exactly one side; it
   **cannot** submit a move as another side, nor out of turn. The illegal call is
   refused before any game logic runs (anti-cheat by construction).
-- `record()` — every applied move is appended to a hash-chained lex-trail log, so
-  the whole match is a tamper-evident, replayable record.
+- `issue_match_token` / `match_token_side` — tokens are **match-bound and expiring**
+  (signed `game:<side>:<match>:<expiry>`), so a token from one match (or after it
+  ended) can't be replayed against another — the not_before/expires_at discipline
+  of [lex-guard](#how-it-fits-the-ecosystem), applied to a game side.
+- `record()` / `verify_log` — every applied move is appended to a hash-chained
+  lex-trail log; verify replays the match and re-checks every content-addressed id,
+  so editing any recorded move flips the verdict to invalid. Each game's web client
+  has a **Verify chain** button that surfaces this; it is demonstrated, not asserted.
 
 Each game runs on the Lex sidecar, ships a clickable retro web client (you are
 P1), and a `*_bot.lex` opponent that plays the other side **independently over
@@ -524,10 +531,34 @@ real A2A** — proving the gate holds against an outside agent, not just the UI.
 | Consent Match | `examples/tinder_game_run.sh` | double opt-in swipes; signed private card revealed only on a match |
 | Charger Duel | `examples/ev_duel_run.sh` | a knapsack race for chargers before a deadline; most kWh wins |
 | Co-op Infiltration | `examples/heist_coop_run.sh` | **cooperative**: two roles, only the right capability clears each stage; 3 wrong-role trips = busted |
+| Strategy Football | `examples/football_run.sh` | **you set the strategy**, a 2-agent squad coordinates over A2A (give-and-go) to score; match-bound tokens + Verify-chain |
 
 In every game a "play as the other side" cheat is refused at the capability layer
-and each move is hash-chained — the same two properties, across five very
-different games.
+and each move is hash-chained — the same properties, across six very different
+games.
+
+### …and back to robots: the Robot Arena
+
+The same two primitives map straight onto robot governance: `gate()` is
+**control-authority arbitration** (which controller may drive the arm right now —
+teleop handoff / lockout), and `record()` is a **replayable, tamper-evident
+episode**. `examples/arena_demo.lex` shows it: one arm shared by a human
+TELEoperator and an LLM PLANner, each with a signed match-bound control token.
+
+```sh
+lex run --allow-effects crypto,fs_write,io,sql,time examples/arena_demo.lex run
+#   PLAN  move to approach pose        ✓ control ok → EXECUTED move (0.5,0.1,0.2)
+#   PLAN  rogue: act as PLAN ...        ⛔ REFUSED (control): controls TELE, cannot act as PLAN
+#   PLAN  reach behind the wall         ✓ control ok → BLOCKED by grant — outside workspace
+#   TELE  grip it hard                  ✓ control ok → CLAMPED grasp 99N → 15N
+#   episode: 4 accepted commands, chain VALID — tamper-evident
+```
+
+The control gate refuses a rogue controller *before* the robot grant is ever
+consulted; commands that pass are then bounded by the existing grant (workspace
+block + force clamp, `src/grant.lex`); and the whole episode is a verifiable
+lex-trail chain. `gate` = who may act · `grant` = physical envelope · `record` =
+auditable episode.
 
 ## How it fits the ecosystem
 - **lex-os** — runs `lex-robot` as a supervised box; the grant = physical safety
