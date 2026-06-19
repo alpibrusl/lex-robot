@@ -51,7 +51,9 @@ header h1 { font-family: '"Press Start 2P"',monospace; font-size: 11px; color: v
   <div style="display:flex;gap:10px">
     <button class="btn" onclick="newGame()">New game</button>
     <button class="btn cheat" onclick="cheat()">Cheat: claim as P2</button>
+    <button class="btn" onclick="verifyChain()">Verify chain</button>
   </div>
+  <div id="verdict" style="font-size:14px;color:var(--muted);min-height:18px"></div>
 </div>
 
 <script>
@@ -95,6 +97,7 @@ function render() {
   if (!state.over) setStatus(state.turn==='P1' ? 'Your turn — claim a charger' : 'Bot (P2) is claiming…');
 }
 function setStatus(t, cls) { const s = document.getElementById('status'); s.textContent = t; s.className = cls||''; }
+async function verifyChain() { try { const r = await fetch('/skill/game_verify', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ game:'ev' }) }); const v = await r.json(); const el = document.getElementById('verdict'); el.textContent = v.valid ? `✓ chain verified — ${v.count} moves, every link intact (tamper-evident)` : '✗ chain BROKEN — a recorded move was altered'; el.style.color = v.valid ? 'var(--green)' : 'var(--red)'; } catch(e){} }
 
 function handleEvent(ev) {
   const k = ev.kind;

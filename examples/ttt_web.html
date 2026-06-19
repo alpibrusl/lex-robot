@@ -52,7 +52,9 @@ header h1 { font-family: '"Press Start 2P"',monospace; font-size: 11px; color: v
     <div id="controls">
       <button class="btn" onclick="newGame()">New game</button>
       <button class="btn cheat" onclick="cheat()">Cheat: try to play as O</button>
+      <button class="btn" onclick="verifyChain()">Verify chain</button>
     </div>
+    <div id="verdict" style="font-size:14px;color:var(--muted);min-height:18px"></div>
   </div>
   <div id="sidebar">
     <div class="panel" id="chain-panel">
@@ -80,6 +82,7 @@ function renderBoard() {
   }
 }
 function setStatus(text, cls) { const s = document.getElementById('status'); s.textContent = text; s.className = cls || ''; }
+async function verifyChain() { try { const r = await fetch('/skill/game_verify', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ game:'ttt' }) }); const v = await r.json(); const el = document.getElementById('verdict'); el.textContent = v.valid ? `✓ chain verified — ${v.count} moves, every link intact (tamper-evident)` : '✗ chain BROKEN — a recorded move was altered'; el.style.color = v.valid ? 'var(--green)' : 'var(--red)'; } catch(e){} }
 function firstEmpty() { for (let i = 0; i < 9; i++) if (board[i] === '.') return i; return 0; }
 
 // The X client joins to receive a SIGNED X capability token. It cannot forge an

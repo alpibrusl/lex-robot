@@ -380,10 +380,11 @@ fn ttt_chain(db :: Db, payload :: Str) -> [sql, crypto] Str {
 fn ttt_emit(db :: Db, j :: Str) -> [sql, time] Unit { insert_event(db, j) }
 
 # Apply one move, hash-chain it, broadcast it; returns the new board.
-fn ttt_apply(db :: Db, board :: Str, by :: Str, cl :: Int) -> [sql, time, crypto] Str {
+fn ttt_apply(db :: Db, board :: Str, by :: Str, cl :: Int) -> [sql, time, crypto, fs_write] Str {
   let nb := ttt_set(board, cl, by)
   let payload := str.join(["{\"by\":\"", by, "\",\"cell\":", int.to_str(cl), ",\"board\":\"", nb, "\"}"], "")
   let head := ttt_chain(db, payload)
+  let _ := g_record(db, "ttt", payload)
   let _ := ttt_emit(db, str.join(["{\"kind\":\"move\",\"by\":\"", by, "\",\"cell\":", int.to_str(cl), ",\"board\":\"", nb, "\",\"chain\":\"", head, "\"}"], ""))
   nb
 }
@@ -427,7 +428,7 @@ fn ttt_join(db :: Db, side :: Str) -> [sql, crypto, time] Str {
 # it may act as; game.gate refuses a move that claims a side the token doesn't
 # grant, or that is out of turn — before any board change. No in-server bot: each
 # side is played by an independent agent (the human for X, ttt_bot.lex for O).
-fn ttt_move(db :: Db, by :: Str, cl :: Int, token :: Str) -> [sql, time, crypto] Str {
+fn ttt_move(db :: Db, by :: Str, cl :: Int, token :: Str) -> [sql, time, crypto, fs_write] Str {
   let board := ttt_board(db)
   let turn  := ttt_turn(db)
   if get_state(db, "ttt_over") == "1" { "{\"status\":\"over\"}" } else {
@@ -481,6 +482,33 @@ fn g_match(db :: Db, prefix :: Str) -> [sql, time] Str {
     let _ := set_state(db, k, nm)
     nm
   } else { m }
+}
+
+# Append an applied move to a per-game hash-chained lex-trail log (so the whole
+# match is a tamper-evident, replayable record); returns the new chain head.
+fn g_trail_path(db :: Db, prefix :: Str) -> [sql, time] Str { str.join(["/tmp/lex-", prefix, "-", g_match(db, prefix), ".db"], "") }
+fn g_record(db :: Db, prefix :: Str, payload :: Str) -> [sql, time, fs_write] Str {
+  match trail.open(g_trail_path(db, prefix)) {
+    Err(_) => "",
+    Ok(log) => {
+      let k := str.concat(prefix, "_parent")
+      let head := game.record(log, get_state(db, k), payload)
+      let _ := set_state(db, k, head)
+      let _ := trail.close(log)
+      head
+    },
+  }
+}
+# Replay a game's recorded log and re-check every content-addressed id.
+fn g_verify(db :: Db, prefix :: Str) -> [sql, time, fs_write] Str {
+  match trail.open(g_trail_path(db, prefix)) {
+    Err(_) => "{\"valid\":false,\"count\":0}",
+    Ok(log) => {
+      let v := game.verify_log(log)
+      let _ := trail.close(log)
+      str.join(["{\"valid\":", (if v.valid { "true" } else { "false" }), ",\"count\":", int.to_str(v.count), "}"], "")
+    },
+  }
 }
 
 fn shop_price(i :: Int) -> Int { if i == 0 { 8 } else { if i == 1 { 12 } else { if i == 2 { 15 } else { if i == 3 { 5 } else { if i == 4 { 22 } else { if i == 5 { 7 } else { 999 } } } } } } }
@@ -545,7 +573,7 @@ fn shop_finish(db :: Db) -> [sql, time] Str {
   let _ := insert_event(db, str.join(["{\"kind\":\"shop_win\",\"winner\":\"", w, "\",\"p1\":", int.to_str(v1), ",\"p2\":", int.to_str(v2), "}"], ""))
   str.join(["{\"status\":\"over\",\"winner\":\"", w, "\"}"], "")
 }
-fn shop_move(db :: Db, by :: Str, i :: Int, token :: Str) -> [sql, time, crypto] Str {
+fn shop_move(db :: Db, by :: Str, i :: Int, token :: Str) -> [sql, time, crypto, fs_write] Str {
   if get_state(db, "shop_over") == "1" { "{\"status\":\"over\"}" } else {
     let turn := shop_turn(db)
     match game.gate(game.match_token_side(shop_pubkey(), token, g_match(db, "shop"), time.now_ms()), by, turn) {
@@ -563,6 +591,7 @@ fn shop_move(db :: Db, by :: Str, i :: Int, token :: Str) -> [sql, time, crypto]
         let prev := get_state(db, "shop_chain")
         let head := str.slice(crypto.base64url_encode(crypto.blake2b(bytes.from_str(str.concat(prev, payload)))), 0, 10)
         let _ := set_state(db, "shop_chain", head)
+        let _ := g_record(db, "shop", payload)
         let _ := insert_event(db, str.join(["{\"kind\":\"shop_pick\",\"by\":\"", by, "\",\"item\":", int.to_str(i), ",\"name\":\"", shop_name(i), "\",\"price\":", int.to_str(shop_price(i)), ",\"value\":", int.to_str(shop_value(i)), ",\"chain\":\"", head, "\"}"], ""))
         let _ := set_state(db, "shop_turn", if by == "P1" { "P2" } else { "P1" })
         if shop_can_move(db, "P1") or shop_can_move(db, "P2") {
@@ -574,7 +603,7 @@ fn shop_move(db :: Db, by :: Str, i :: Int, token :: Str) -> [sql, time, crypto]
     }
   }
 }
-fn shop_dispatch(db :: Db, name :: Str, args :: jv.Json) -> [sql, time, crypto] Str {
+fn shop_dispatch(db :: Db, name :: Str, args :: jv.Json) -> [sql, time, crypto, fs_write] Str {
   if name == "shop_join" { shop_join(db, jv_str_or(args, "side", "")) } else {
   if name == "shop_reset" { shop_reset(db) } else {
   if name == "shop_move" { shop_move(db, jv_str_or(args, "by", ""), jv_int_or(args, "item", -1), jv_str_or(args, "token", "")) } else {
@@ -656,7 +685,7 @@ fn love_finish(db :: Db) -> [sql, time] Str {
   let _ := insert_event(db, str.join(["{\"kind\":\"love_win\",\"winner\":\"", w, "\",\"p1\":", int.to_str(s1), ",\"p2\":", int.to_str(s2), "}"], ""))
   str.join(["{\"status\":\"over\",\"winner\":\"", w, "\"}"], "")
 }
-fn love_move(db :: Db, by :: Str, i :: Int, token :: Str) -> [sql, time, crypto] Str {
+fn love_move(db :: Db, by :: Str, i :: Int, token :: Str) -> [sql, time, crypto, fs_write] Str {
   if get_state(db, "love_over") == "1" { "{\"status\":\"over\"}" } else {
     let turn := love_turn(db)
     match game.gate(game.match_token_side(love_pubkey(), token, g_match(db, "love"), time.now_ms()), by, turn) {
@@ -675,6 +704,7 @@ fn love_move(db :: Db, by :: Str, i :: Int, token :: Str) -> [sql, time, crypto]
         let prev := get_state(db, "love_chain")
         let head := str.slice(crypto.base64url_encode(crypto.blake2b(bytes.from_str(str.concat(prev, payload)))), 0, 10)
         let _ := set_state(db, "love_chain", head)
+        let _ := g_record(db, "love", payload)
         let _ := if matched {
           insert_event(db, str.join(["{\"kind\":\"love_match\",\"by\":\"", by, "\",\"cand\":", int.to_str(i), ",\"name\":\"", love_name(i), "\",\"charm\":", int.to_str(love_charm(i)), ",\"contact\":\"", love_contact(i), "\",\"sig\":\"", love_sign(i), "\",\"chain\":\"", head, "\"}"], ""))
         } else {
@@ -686,7 +716,7 @@ fn love_move(db :: Db, by :: Str, i :: Int, token :: Str) -> [sql, time, crypto]
     }
   }
 }
-fn love_dispatch(db :: Db, name :: Str, args :: jv.Json) -> [sql, time, crypto] Str {
+fn love_dispatch(db :: Db, name :: Str, args :: jv.Json) -> [sql, time, crypto, fs_write] Str {
   if name == "love_join" { love_join(db, jv_str_or(args, "side", "")) } else {
   if name == "love_reset" { love_reset(db) } else {
   if name == "love_move" { love_move(db, jv_str_or(args, "by", ""), jv_int_or(args, "cand", -1), jv_str_or(args, "token", "")) } else {
@@ -762,7 +792,7 @@ fn ev_finish(db :: Db) -> [sql, time] Str {
   let _ := insert_event(db, str.join(["{\"kind\":\"ev_win\",\"winner\":\"", w, "\",\"p1\":", int.to_str(e1), ",\"p2\":", int.to_str(e2), "}"], ""))
   str.join(["{\"status\":\"over\",\"winner\":\"", w, "\"}"], "")
 }
-fn ev_move(db :: Db, by :: Str, i :: Int, token :: Str) -> [sql, time, crypto] Str {
+fn ev_move(db :: Db, by :: Str, i :: Int, token :: Str) -> [sql, time, crypto, fs_write] Str {
   if get_state(db, "ev_over") == "1" { "{\"status\":\"over\"}" } else {
     let turn := ev_turn(db)
     match game.gate(game.match_token_side(ev_pubkey(), token, g_match(db, "ev"), time.now_ms()), by, turn) {
@@ -780,6 +810,7 @@ fn ev_move(db :: Db, by :: Str, i :: Int, token :: Str) -> [sql, time, crypto] S
         let prev := get_state(db, "ev_chain")
         let head := str.slice(crypto.base64url_encode(crypto.blake2b(bytes.from_str(str.concat(prev, payload)))), 0, 10)
         let _ := set_state(db, "ev_chain", head)
+        let _ := g_record(db, "ev", payload)
         let _ := insert_event(db, str.join(["{\"kind\":\"ev_claim\",\"by\":\"", by, "\",\"charger\":", int.to_str(i), ",\"name\":\"", ev_name(i), "\",\"min\":", int.to_str(ev_min(i)), ",\"kwh\":", int.to_str(ev_kwh(i)), ",\"chain\":\"", head, "\"}"], ""))
         let _ := set_state(db, "ev_turn", if by == "P1" { "P2" } else { "P1" })
         if ev_can_move(db, "P1") or ev_can_move(db, "P2") { str.join(["{\"status\":\"ok\",\"charger\":", int.to_str(i), "}"], "") } else { ev_finish(db) }
@@ -787,7 +818,7 @@ fn ev_move(db :: Db, by :: Str, i :: Int, token :: Str) -> [sql, time, crypto] S
     }
   }
 }
-fn ev_dispatch(db :: Db, name :: Str, args :: jv.Json) -> [sql, time, crypto] Str {
+fn ev_dispatch(db :: Db, name :: Str, args :: jv.Json) -> [sql, time, crypto, fs_write] Str {
   if name == "ev_join" { ev_join(db, jv_str_or(args, "side", "")) } else {
   if name == "ev_reset" { ev_reset(db) } else {
   if name == "ev_move" { ev_move(db, jv_str_or(args, "by", ""), jv_int_or(args, "charger", -1), jv_str_or(args, "token", "")) } else {
@@ -858,7 +889,7 @@ fn hx_bust(db :: Db) -> [sql, time] Str {
   let _ := insert_event(db, str.join(["{\"kind\":\"hx_bust\",\"alarm\":", int.to_str(hx_alarm(db)), "}"], ""))
   "{\"status\":\"bust\"}"
 }
-fn hx_move(db :: Db, by :: Str, token :: Str) -> [sql, time, crypto] Str {
+fn hx_move(db :: Db, by :: Str, token :: Str) -> [sql, time, crypto, fs_write] Str {
   if get_state(db, "hx_over") == "1" { "{\"status\":\"over\"}" } else {
     let at := hx_at(db)
     if at >= 6 { "{\"status\":\"over\"}" } else {
@@ -876,6 +907,7 @@ fn hx_move(db :: Db, by :: Str, token :: Str) -> [sql, time, crypto] Str {
           let prev := get_state(db, "hx_chain")
           let head := str.slice(crypto.base64url_encode(crypto.blake2b(bytes.from_str(str.concat(prev, payload)))), 0, 10)
           let _ := set_state(db, "hx_chain", head)
+          let _ := g_record(db, "hx", payload)
           let _ := insert_event(db, str.join(["{\"kind\":\"hx_clear\",\"by\":\"", by, "\",\"stage\":", int.to_str(at), ",\"name\":\"", hx_name(at), "\",\"role\":\"", hx_role(at), "\",\"chain\":\"", head, "\"}"], ""))
           let _ := set_state(db, "hx_at", int.to_str(at + 1))
           if at + 1 >= 6 { hx_win(db) } else { str.join(["{\"status\":\"ok\",\"stage\":", int.to_str(at), ",\"next\":", int.to_str(at + 1), "}"], "") }
@@ -884,7 +916,7 @@ fn hx_move(db :: Db, by :: Str, token :: Str) -> [sql, time, crypto] Str {
     }
   }
 }
-fn hx_dispatch(db :: Db, name :: Str, args :: jv.Json) -> [sql, time, crypto] Str {
+fn hx_dispatch(db :: Db, name :: Str, args :: jv.Json) -> [sql, time, crypto, fs_write] Str {
   if name == "hx_join" { hx_join(db, jv_str_or(args, "side", "")) } else {
   if name == "hx_reset" { hx_reset(db) } else {
   if name == "hx_move" { hx_move(db, jv_str_or(args, "by", ""), jv_str_or(args, "token", "")) } else {
@@ -1438,6 +1470,7 @@ fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :
   if name == "hx_join" or name == "hx_reset" or name == "hx_move" or name == "hx_state" {
     hx_dispatch(db, name, args)
   } else {
+  if name == "game_verify" { g_verify(db, jv_str_or(args, "game", "")) } else {
   if name == "fb_join" or name == "fb_reset" or name == "fb_strategy" or name == "fb_signal" or name == "fb_move" or name == "fb_verify" or name == "fb_state" {
     fb_dispatch(db, name, args)
   } else {
@@ -1779,7 +1812,7 @@ fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :
     str.join(["{\"status\":\"dispatched\",\"callsign\":\"RESCUE-7\",\"eta_min\":8,\"capacity\":12}"], "")
   } else {
     str.join(["{\"error\":\"unknown skill: ", sq(name), "\"}"], "")
-  }}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}
+  }}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}
 }
 
 # ── Router ────────────────────────────────────────────────────────────────────
