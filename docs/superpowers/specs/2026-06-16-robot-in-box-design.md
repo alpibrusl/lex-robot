@@ -198,7 +198,8 @@ The lex-os hash-chained `AuditLog` (already exists, already verified by
 observed `SkillOutcome`s. **`lex-trail` has been cloned into the workspace**
 (`alpibrusl/lex-trail`, a Lex library) — its event format is
 `Event = { id, kind, parent, payload_json, ts_ms }` with
-`id = sha256(join([kind, parent, payload_json, ts_ms], " "))`, chained via
+`id = sha256(join([kind, parent, payload_json, ts_ms], "\x00"))` (the field
+delimiter is a NUL byte, which cannot appear in any field value), chained via
 `parent`. The standard kinds `cap.invoked` / `cap.completed` map directly onto
 robot skills. The sidecar emits a genuine lex-trail chain (a small Python mirror
 of `lex-trail/src/event.lex`, so no Lex runtime is needed in-line), and a
