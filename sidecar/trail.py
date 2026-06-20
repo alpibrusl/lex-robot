@@ -10,8 +10,13 @@ from typing import Optional
 
 
 def compute_id(kind: str, parent: Optional[str], payload_json: str, ts_ms: int) -> str:
+    # Field delimiter is NUL (\x00), matching lex-trail/src/event.lex's
+    # `str.join([kind, p, payload_json, to_str(ts_ms)], "\x00")`. (A NUL can't
+    # appear in any field value, so it can't be spoofed — that's why lex-trail
+    # uses it.) Producing the same canonical string here means the ids validate
+    # under lex-trail's own `is_valid`/replay.
     p = parent if parent is not None else ""
-    canonical = " ".join([kind, p, payload_json, str(ts_ms)])
+    canonical = "\x00".join([kind, p, payload_json, str(ts_ms)])
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 

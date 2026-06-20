@@ -2,8 +2,11 @@ import hashlib
 from trail import Trail, compute_id
 
 def test_compute_id_matches_lex_trail_formula():
-    # Mirror lex-trail/src/event.lex: sha256 of join([kind, parent, payload, ts], " ").
-    expected = hashlib.sha256(b"cap.invoked  {} 0").hexdigest()
+    # Mirror lex-trail/src/event.lex exactly: sha256 of the fields joined by NUL
+    # (\x00), with a None parent contributing the empty string. For
+    # ("cap.invoked", None, "{}", 0): ["cap.invoked", "", "{}", "0"] joined by
+    # \x00 == b"cap.invoked\x00\x00{}\x000".
+    expected = hashlib.sha256(b"cap.invoked\x00\x00{}\x000").hexdigest()
     assert compute_id("cap.invoked", None, "{}", 0) == expected
 
 def test_chain_links_parent_to_prev_id():
