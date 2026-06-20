@@ -185,6 +185,7 @@ fn init_schema(db :: Db, stall :: Str) -> [sql, time] Unit {
   let _ := sql.exec(db, "CREATE TABLE IF NOT EXISTS a2a_cards (tier TEXT PRIMARY KEY, blob TEXT NOT NULL)", [])
   let _ := sql.exec(db, "CREATE TABLE IF NOT EXISTS human_questions (qid TEXT PRIMARY KEY, customer TEXT NOT NULL, question TEXT NOT NULL, answer TEXT, created_at INTEGER NOT NULL)", [])
   let _ := sql.exec(db, "CREATE TABLE IF NOT EXISTS demo_state (key TEXT PRIMARY KEY, value TEXT NOT NULL)", [])
+  let _ := sql.exec(db, "CREATE TABLE IF NOT EXISTS leaderboard (id INTEGER PRIMARY KEY AUTOINCREMENT, game TEXT NOT NULL, player TEXT NOT NULL, score INTEGER NOT NULL, model TEXT NOT NULL, chain TEXT NOT NULL, ts INTEGER NOT NULL)", [])
   let _ := sql.exec(db, "DELETE FROM sse_events", [])
   let _ := sql.exec(db, "DELETE FROM human_questions", [])
   let _ := seed_stock(db, stall)
@@ -543,7 +544,7 @@ fn shop_pool_json(db :: Db) -> [sql] Str {
   str.join(["[", str.join(items, ","), "]"], "")
 }
 fn shop_state(db :: Db) -> [sql] Str {
-  str.join(["{\"pool\":", shop_pool_json(db), ",\"turn\":\"", shop_turn(db), "\",\"over\":", (if get_state(db, "shop_over") == "1" { "true" } else { "false" }), ",\"bud\":{\"P1\":", int.to_str(shop_budget(db, "P1")), ",\"P2\":", int.to_str(shop_budget(db, "P2")), "},\"val\":{\"P1\":", int.to_str(shop_cartval(db, "P1")), ",\"P2\":", int.to_str(shop_cartval(db, "P2")), "}}"], "")
+  str.join(["{\"pool\":", shop_pool_json(db), ",\"turn\":\"", shop_turn(db), "\",\"over\":", (if get_state(db, "shop_over") == "1" { "true" } else { "false" }), ",\"bud\":{\"P1\":", int.to_str(shop_budget(db, "P1")), ",\"P2\":", int.to_str(shop_budget(db, "P2")), "},\"val\":{\"P1\":", int.to_str(shop_cartval(db, "P1")), ",\"P2\":", int.to_str(shop_cartval(db, "P2")), "},\"chain\":\"", get_state(db, "shop_chain"), "\",\"match\":\"", get_state(db, "shop_match"), "\"}"], "")
 }
 fn shop_reset(db :: Db) -> [sql, time] Str {
   let _ := list.fold([0,1,2,3,4,5], (), fn (_ :: Unit, i :: Int) -> [sql] Unit { set_state(db, str.concat("shop_own_", int.to_str(i)), "") })
@@ -608,6 +609,91 @@ fn shop_dispatch(db :: Db, name :: Str, args :: jv.Json) -> [sql, time, crypto, 
   if name == "shop_reset" { shop_reset(db) } else {
   if name == "shop_move" { shop_move(db, jv_str_or(args, "by", ""), jv_int_or(args, "item", -1), jv_str_or(args, "token", "")) } else {
   shop_state(db) }}}
+}
+
+# ── lex-arena: Bazaar Draft as a verifiable, BYO-key AI-agent arena ────────────
+# The contestant (P1) is an LLM agent driven from the browser with the player's
+# own prompt + model + API key (BYO-key: the key never touches this server). The
+# opponent (P2) is the "house" — a server-internal greedy bot, so a match needs no
+# extra process. The contestant's every move still goes through the gated, signed,
+# hash-chained path (shop_move), so the resulting score is provably fair and the
+# match replays/verifies. arena_new mints a fresh match id + token + trail so each
+# match is independently verifiable; the final score posts to a global leaderboard.
+
+# Greedy best-value affordable item for the house (P2); -1 if none.
+fn shop_house_pick(db :: Db) -> [sql] Int {
+  let bud := shop_budget(db, "P2")
+  list.fold([0,1,2,3,4,5], -1, fn (acc :: Int, i :: Int) -> [sql] Int {
+    if shop_owner(db, i) == "" and shop_price(i) <= bud and (acc < 0 or shop_value(i) > shop_value(acc)) { i } else { acc }
+  })
+}
+# Apply one item to P2 (house, no token — server-authoritative) with full chaining.
+fn shop_apply_house(db :: Db, i :: Int) -> [sql, time, crypto, fs_write] Unit {
+  let _ := set_state(db, str.concat("shop_own_", int.to_str(i)), "P2")
+  let _ := set_state(db, "shop_bud_P2", int.to_str(shop_budget(db, "P2") - shop_price(i)))
+  let payload := str.join(["{\"by\":\"P2\",\"item\":", int.to_str(i), ",\"name\":\"", shop_name(i), "\",\"price\":", int.to_str(shop_price(i)), "}"], "")
+  let prev := get_state(db, "shop_chain")
+  let head := str.slice(crypto.base64url_encode(crypto.blake2b(bytes.from_str(str.concat(prev, payload)))), 0, 10)
+  let _ := set_state(db, "shop_chain", head)
+  let _ := g_record(db, "shop", payload)
+  let _ := insert_event(db, str.join(["{\"kind\":\"shop_pick\",\"by\":\"P2\",\"item\":", int.to_str(i), ",\"name\":\"", shop_name(i), "\",\"price\":", int.to_str(shop_price(i)), ",\"value\":", int.to_str(shop_value(i)), ",\"chain\":\"", head, "\"}"], ""))
+  ()
+}
+# House plays its turn (or passes); ends the game when neither side can move.
+fn shop_house_move(db :: Db) -> [sql, time, crypto, fs_write] Str {
+  if get_state(db, "shop_over") == "1" { "{\"status\":\"over\"}" } else {
+  if shop_turn(db) != "P2" { "{\"status\":\"not_house_turn\"}" } else {
+    let i := shop_house_pick(db)
+    let _ := if i >= 0 { shop_apply_house(db, i) } else { () }
+    let _ := set_state(db, "shop_turn", "P1")
+    if shop_can_move(db, "P1") or shop_can_move(db, "P2") { str.join(["{\"status\":\"ok\",\"item\":", int.to_str(i), "}"], "") } else { shop_finish(db) }
+  }}
+}
+# Let a side that has no legal move pass (keeps the arena from stalling).
+fn shop_pass(db :: Db, by :: Str) -> [sql, time] Str {
+  if get_state(db, "shop_over") == "1" { "{\"status\":\"over\"}" } else {
+    let _ := set_state(db, "shop_turn", if by == "P1" { "P2" } else { "P1" })
+    if shop_can_move(db, "P1") or shop_can_move(db, "P2") { "{\"status\":\"passed\"}" } else { shop_finish(db) }
+  }
+}
+# Start a fresh arena match: new match id (→ fresh trail file + fresh signed token),
+# cleared seats, reset board. Returns the contestant's P1 capability token.
+fn arena_new(db :: Db) -> [sql, time, crypto] Str {
+  let mid := int.to_str(time.now_ms())
+  let _ := set_state(db, "shop_match", mid)
+  let _ := set_state(db, "shop_parent", "")
+  let _ := set_state(db, "shop_taken_P1", "")
+  let _ := set_state(db, "shop_taken_P2", "")
+  let _ := shop_reset(db)
+  str.join(["{\"match\":\"", mid, "\",\"token\":\"", game.issue_match_token(shop_secret(), "P1", mid, time.now_ms() + 3600000), "\"}"], "")
+}
+
+# ── Global leaderboard ────────────────────────────────────────────────────────
+fn lb_submit(db :: Db, gm :: Str, player :: Str, score :: Int, model :: Str, chain :: Str) -> [sql, time] Str {
+  let q := str.join(["INSERT INTO leaderboard (game, player, score, model, chain, ts) VALUES ('", sq(gm), "','", sq(player), "',", int.to_str(score), ",'", sq(model), "','", sq(chain), "',", int.to_str(time.now_ms()), ")"], "")
+  let _ := sql.exec(db, q, [])
+  let _ := insert_event(db, str.join(["{\"kind\":\"lb_submit\",\"game\":\"", sq(gm), "\",\"player\":\"", sq(player), "\",\"score\":", int.to_str(score), "}"], ""))
+  "{\"status\":\"ok\"}"
+}
+fn lb_top(db :: Db, gm :: Str) -> [sql] Str {
+  let q := str.join(["SELECT player, score, model, chain FROM leaderboard WHERE game='", sq(gm), "' ORDER BY score DESC, ts ASC LIMIT 20"], "")
+  let result :: Result[List[{ player :: Str, score :: Int, model :: Str, chain :: Str }], SqlError] := sql.query(db, q, [])
+  match result {
+    Err(_) => "{\"rows\":[]}",
+    Ok(rows) => {
+      let items := str.join(list.map(rows, fn (r :: { player :: Str, score :: Int, model :: Str, chain :: Str }) -> Str {
+        str.join(["{\"player\":", json_str(r.player), ",\"score\":", int.to_str(r.score), ",\"model\":", json_str(r.model), ",\"chain\":", json_str(r.chain), "}"], "")
+      }), ",")
+      str.join(["{\"rows\":[", items, "]}"], "")
+    },
+  }
+}
+fn arena_dispatch(db :: Db, name :: Str, args :: jv.Json) -> [sql, time, crypto, fs_write] Str {
+  if name == "arena_new" { arena_new(db) } else {
+  if name == "shop_house_move" { shop_house_move(db) } else {
+  if name == "shop_pass" { shop_pass(db, jv_str_or(args, "by", "")) } else {
+  if name == "lb_submit" { lb_submit(db, jv_str_or(args, "game", ""), jv_str_or(args, "player", ""), jv_int_or(args, "score", 0), jv_str_or(args, "model", ""), jv_str_or(args, "chain", "")) } else {
+  lb_top(db, jv_str_or(args, "game", "")) }}}}
 }
 
 # ── lex-games: Consent Match — matchmaking as a capability-gated draft ─────────
@@ -1461,6 +1547,9 @@ fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :
   if name == "shop_join" or name == "shop_reset" or name == "shop_move" or name == "shop_state" {
     shop_dispatch(db, name, args)
   } else {
+  if name == "arena_new" or name == "shop_house_move" or name == "shop_pass" or name == "lb_submit" or name == "lb_top" {
+    arena_dispatch(db, name, args)
+  } else {
   if name == "love_join" or name == "love_reset" or name == "love_move" or name == "love_state" {
     love_dispatch(db, name, args)
   } else {
@@ -1812,7 +1901,7 @@ fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :
     str.join(["{\"status\":\"dispatched\",\"callsign\":\"RESCUE-7\",\"eta_min\":8,\"capacity\":12}"], "")
   } else {
     str.join(["{\"error\":\"unknown skill: ", sq(name), "\"}"], "")
-  }}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}
+  }}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}
 }
 
 # ── Router ────────────────────────────────────────────────────────────────────
