@@ -54,7 +54,7 @@ import "lex-schema/json_value" as jv
 
 import "../src/seller_llm" as sllm
 
-import "../src/lex_games" as game
+import "lex-games/src/lex_games" as game
 
 import "lex-trail/log" as trail
 
