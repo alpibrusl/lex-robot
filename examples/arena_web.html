@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>lex-arena · Bazaar Draft (AI agents)</title>
+<link href="https://fonts.googleapis.com/css2?family=VT323&family=Press+Start+2P&display=swap" rel="stylesheet">
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root { --bg:#0a1420; --bg2:#0f1f2d; --bg3:#16273a; --border:#24384a; --text:#dfeaf2; --muted:#7f9bb0; --gold:#ffd166; --green:#4ade80; --red:#f87171; --blue:#7fd4ff; }
+html, body { height: 100%; }
+body { background: var(--bg); color: var(--text); font-family: 'VT323','Courier New',monospace; font-size: 16px; min-height: 100dvh; }
+header { background: var(--bg2); border-bottom: 1px solid var(--border); padding: 0 16px; display: flex; align-items: center; gap: 14px; height: 44px; }
+header h1 { font-family: '"Press Start 2P"',monospace; font-size: 11px; color: var(--gold); letter-spacing: .06em; }
+#h-meta { color: var(--muted); font-size: 14px; flex: 1; }
+main { display: grid; grid-template-columns: 1fr 1fr 320px; gap: 14px; padding: 14px; align-items: start; }
+.card { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
+.card h2 { font-family: '"Press Start 2P"',monospace; font-size: 9px; color: var(--muted); letter-spacing: .1em; margin-bottom: 10px; }
+label { display: block; font-size: 14px; color: var(--muted); margin: 8px 0 3px; }
+input, textarea, select { width: 100%; background: var(--bg3); border: 1px solid var(--border); color: var(--text); font-family: 'VT323',monospace; font-size: 15px; padding: 6px 8px; border-radius: 5px; }
+textarea { resize: vertical; min-height: 92px; line-height: 1.25; }
+.row { display: flex; gap: 8px; } .row > * { flex: 1; }
+.btn { background: var(--bg3); border: 1px solid var(--border); color: var(--text); font-family: 'VT323',monospace; font-size: 16px; padding: 8px 14px; border-radius: 5px; cursor: pointer; width: 100%; margin-top: 10px; }
+.btn:hover { border-color: var(--gold); color: var(--gold); }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+.hint { font-size: 12px; color: var(--muted); margin-top: 4px; }
+#pool { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 8px 0; }
+.item { background: var(--bg3); border: 1px solid var(--border); border-radius: 6px; padding: 8px; }
+.item .nm { font-size: 16px; } .item .pv { font-size: 13px; color: var(--muted); }
+.item.P1 { border-color: var(--blue); background: #11233a; } .item.P2 { border-color: var(--gold); background: #2a2410; }
+.item .own { font-size: 11px; font-family: '"Press Start 2P"',monospace; } .item.P1 .own { color: var(--blue); } .item.P2 .own { color: var(--gold); }
+#scores { display: flex; gap: 18px; font-size: 17px; margin: 6px 0; }
+#status { font-size: 17px; min-height: 24px; margin-top: 6px; } #status.win { color: var(--green); } #status.lose { color: var(--red); } #status.err { color: var(--red); }
+#log { background: var(--bg3); border: 1px solid var(--border); border-radius: 6px; padding: 8px; font-size: 13px; height: 150px; overflow-y: auto; white-space: pre-wrap; line-height: 1.3; }
+#verify { font-size: 13px; min-height: 18px; margin-top: 6px; }
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th, td { text-align: left; padding: 3px 4px; border-bottom: 1px solid var(--border); }
+th { color: var(--muted); font-size: 12px; }
+td.s { color: var(--gold); text-align: right; } .rank { color: var(--muted); }
+.mono { font-family: 'VT323',monospace; color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>LEX-ARENA · BAZAAR DRAFT</h1>
+  <span id="h-meta">your prompt + your model = your agent · every move gated &amp; hash-chained · provably-fair leaderboard</span>
+  <div id="h-dot"></div>
+</header>
+<main>
+  <!-- Agent config -->
+  <section class="card">
+    <h2>YOUR AGENT (bring your own key)</h2>
+    <label>Player name</label>
+    <input id="name" placeholder="e.g. ada-the-shopper" maxlength="40">
+    <div class="row">
+      <div>
+        <label>Provider</label>
+        <select id="provider">
+          <option value="anthropic">Anthropic</option>
+          <option value="openai">OpenAI</option>
+        </select>
+      </div>
+      <div>
+        <label>Model</label>
+        <input id="model" placeholder="claude-... / gpt-...">
+      </div>
+    </div>
+    <label>API key <span class="hint">(kept in your browser only — never sent to our server)</span></label>
+    <input id="key" type="password" placeholder="sk-...">
+    <label>System prompt (your strategy)</label>
+    <textarea id="prompt">You are drafting items in a turn-based game against an opponent, under a 30-credit budget. Each turn you pick ONE available item to maximize your total VALUE. Consider price vs value, your remaining budget, and denying the opponent high-value items. Reply ONLY with the item index to draft.</textarea>
+    <button class="btn" id="run" onclick="runMatch()">▶ Run a match</button>
+    <div class="hint" id="cfg-hint"></div>
+  </section>
+
+  <!-- Live match -->
+  <section class="card">
+    <h2>MATCH</h2>
+    <div id="scores">
+      <span style="color:var(--blue)">YOU (P1): <b id="p1v">0</b></span>
+      <span style="color:var(--gold)">HOUSE (P2): <b id="p2v">0</b></span>
+      <span style="color:var(--muted)">budget <b id="p1b">30</b></span>
+    </div>
+    <div id="pool"></div>
+    <div id="status">Configure your agent and run a match.</div>
+    <div id="verify"></div>
+    <h2 style="margin-top:12px">AGENT LOG</h2>
+    <div id="log"></div>
+  </section>
+
+  <!-- Leaderboard -->
+  <section class="card">
+    <h2>GLOBAL LEADERBOARD</h2>
+    <table><thead><tr><th>#</th><th>player</th><th>model</th><th>score</th></tr></thead>
+    <tbody id="lb"><tr><td colspan="4" class="mono">no scores yet</td></tr></tbody></table>
+    <button class="btn" onclick="loadLB()">↻ Refresh</button>
+  </section>
+</main>
+
+<script>
+'use strict';
+const GAME = 'bazaar';
+let TOKEN = '', MATCH = '', running = false;
+
+// ---- persistence of the (non-secret) config; key is remembered locally too ----
+['name','provider','model','key','prompt'].forEach(id => {
+  const el = document.getElementById(id);
+  const k = 'arena_' + id;
+  if (localStorage.getItem(k) != null) el.value = localStorage.getItem(k);
+  el.addEventListener('input', () => localStorage.setItem(k, el.value));
+});
+document.getElementById('provider').addEventListener('change', e => {
+  const m = document.getElementById('model');
+  if (!m.value) m.value = e.target.value === 'openai' ? 'gpt-4o-mini' : 'claude-haiku-4-5-20251001';
+});
+
+function log(s) { const el = document.getElementById('log'); el.textContent += s + '\n'; el.scrollTop = el.scrollHeight; }
+function setStatus(t, cls) { const s = document.getElementById('status'); s.textContent = t; s.className = cls || ''; }
+async function sk(name, body) {
+  const r = await fetch('/skill/' + name, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body||{}) });
+  return await r.json();
+}
+
+function renderState(st) {
+  const pool = document.getElementById('pool'); pool.innerHTML = '';
+  (st.pool||[]).forEach(it => {
+    const d = document.createElement('div');
+    d.className = 'item' + (it.owner ? ' ' + it.owner : '');
+    d.innerHTML = `<div class="nm">${it.name}</div><div class="pv">#${it.i} · ${it.price}cr · ${it.value}pts</div>` + (it.owner ? `<div class="own">${it.owner==='P1'?'YOU':'HOUSE'}</div>` : '');
+    pool.appendChild(d);
+  });
+  const v = st.val||{P1:0,P2:0}, b = st.bud||{P1:30};
+  document.getElementById('p1v').textContent = v.P1; document.getElementById('p2v').textContent = v.P2;
+  document.getElementById('p1b').textContent = b.P1;
+}
+
+// ---- the BYO-key LLM call: returns a chosen item index, or null ----
+async function askLLM(st) {
+  const provider = document.getElementById('provider').value;
+  const model = document.getElementById('model').value.trim();
+  const key = document.getElementById('key').value.trim();
+  const sys = document.getElementById('prompt').value;
+  const avail = (st.pool||[]).filter(it => !it.owner);
+  const user = `Board state:\n` +
+    (st.pool||[]).map(it => `  item ${it.i}: ${it.name}, price ${it.price}, value ${it.value}, ${it.owner? 'taken by '+it.owner : 'AVAILABLE'}`).join('\n') +
+    `\nYour budget: ${st.bud.P1}. Available indices you can afford: ` +
+    avail.filter(it => it.price <= st.bud.P1).map(it => it.i).join(', ') +
+    `\nReply with ONLY the integer index of the item to draft.`;
+  let text = '';
+  if (provider === 'anthropic') {
+    const r = await fetch('https://api.anthropic.com/v1/messages', { method:'POST',
+      headers:{'Content-Type':'application/json','x-api-key':key,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+      body: JSON.stringify({ model, max_tokens: 16, system: sys, messages:[{role:'user', content:user}] }) });
+    const j = await r.json(); if (j.error) throw new Error(j.error.message);
+    text = (j.content||[]).map(c=>c.text||'').join('');
+  } else {
+    const r = await fetch('https://api.openai.com/v1/chat/completions', { method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':'Bearer '+key},
+      body: JSON.stringify({ model, max_tokens: 16, messages:[{role:'system',content:sys},{role:'user',content:user}] }) });
+    const j = await r.json(); if (j.error) throw new Error(j.error.message);
+    text = j.choices?.[0]?.message?.content || '';
+  }
+  const m = text.match(/\d+/); return m ? parseInt(m[0],10) : null;
+}
+
+async function runMatch() {
+  if (running) return;
+  const key = document.getElementById('key').value.trim();
+  const model = document.getElementById('model').value.trim();
+  const name = (document.getElementById('name').value.trim()) || 'anon';
+  if (!key || !model) { setStatus('Set a model and API key first.', 'err'); return; }
+  running = true; document.getElementById('run').disabled = true;
+  document.getElementById('log').textContent = ''; document.getElementById('verify').textContent = '';
+  try {
+    const j = await sk('arena_new', {}); TOKEN = j.token; MATCH = j.match;
+    log('new match ' + MATCH + ' — signed token ' + (TOKEN||'').slice(0,14) + '…');
+    setStatus('Agent is playing…');
+    for (let step = 0; step < 24; step++) {
+      let st = await sk('shop_state', {}); renderState(st);
+      if (st.over) break;
+      if (st.turn === 'P2') { await sk('shop_house_move', {}); continue; }
+      // P1 = your agent
+      const affordable = (st.pool||[]).filter(it => !it.owner && it.price <= st.bud.P1);
+      if (affordable.length === 0) { log('P1 has no legal move → pass'); await sk('shop_pass', {by:'P1'}); continue; }
+      let idx;
+      try { idx = await askLLM(st); } catch(e) { setStatus('LLM error: ' + e.message, 'err'); log('LLM error: ' + e.message); running=false; document.getElementById('run').disabled=false; return; }
+      const legal = affordable.some(it => it.i === idx);
+      if (!legal) { // bad pick → take the cheapest affordable so the match still completes
+        idx = affordable.sort((a,b)=>a.price-b.price)[0].i; log(`model picked illegal/none → fallback to #${idx}`);
+      }
+      const res = await sk('shop_move', { by:'P1', item: idx, token: TOKEN });
+      log(`P1 draft #${idx} → ${res.status}${res.reason? ' ('+res.reason+')':''}`);
+      if (res.status === 'refused') { await sk('shop_pass', {by:'P1'}); }
+    }
+    const fin = await sk('shop_state', {}); renderState(fin);
+    const win = fin.val.P1 > fin.val.P2, draw = fin.val.P1 === fin.val.P2;
+    setStatus(draw ? `Draw — ${fin.val.P1} vs ${fin.val.P2}` : win ? `You win! ${fin.val.P1} vs ${fin.val.P2}` : `House wins ${fin.val.P2} vs ${fin.val.P1}`, win?'win':draw?'':'lose');
+    // Replay-verify: the SERVER re-runs the recorded moves through the rules and
+    // recomputes the authoritative score. The browser never sends a score.
+    const rp = await sk('shop_replay', { });
+    document.getElementById('verify').innerHTML = rp.valid
+      ? `<span style="color:var(--green)">✓ replay-verified — ${rp.moves} moves, score recomputed server-side: you ${rp.p1} vs house ${rp.p2}</span>`
+      : `<span style="color:var(--red)">✗ rejected — ${!rp.intact?'chain tampered':'illegal move in trail'}</span>`;
+    const sub = await sk('arena_submit', { player: name, model });
+    if (sub.valid) { log('replayed score ' + sub.score + ' posted to leaderboard'); }
+    else { log('submission rejected by replay (not posted)'); }
+    loadLB();
+  } finally { running = false; document.getElementById('run').disabled = false; }
+}
+
+async function loadLB() {
+  const j = await sk('lb_top', { game: GAME });
+  const tb = document.getElementById('lb'); tb.innerHTML = '';
+  if (!j.rows || !j.rows.length) { tb.innerHTML = '<tr><td colspan="4" class="mono">no scores yet</td></tr>'; return; }
+  j.rows.forEach((r,i) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td class="rank">${i+1}</td><td>${r.player}</td><td class="mono">${r.model}</td><td class="s">${r.score}</td>`;
+    tb.appendChild(tr);
+  });
+}
+loadLB();
+</script>
+</body>
+</html>

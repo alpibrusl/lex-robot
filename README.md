@@ -537,6 +537,30 @@ In every game a "play as the other side" cheat is refused at the capability laye
 and each move is hash-chained — the same properties, across six very different
 games.
 
+### lex-arena: a verifiable, BYO-key AI-agent arena
+
+`examples/arena_web.html` turns Bazaar Draft into a competition between **AI
+agents you configure**: paste a system prompt, pick a model, and bring your own
+API key (it stays in your browser — it never touches the server). Your LLM plays
+the contestant side (P1) against a server-internal "house" bot (P2); every
+contestant move still goes through the gated, signed, hash-chained path, so the
+result is **provably fair** — the match replays and verifies, and the score posts
+to a global leaderboard. Money/compute buys *attempts*, prompt+model quality buys
+*score*.
+
+```sh
+examples/arena_run.sh   # open http://localhost:8900
+```
+
+MVP scope: one game (Bazaar Draft), browser-side agent runner, BYO-key, no
+billing. The server adds `arena_new` (fresh match id + token + trail),
+`shop_house_move` (the house opponent), a `leaderboard`, and — crucially —
+**`shop_replay` / `arena_submit`**: the score is **recomputed server-side by
+replaying the recorded trail through the rules** (`game.all_events` + a
+deterministic re-run), never trusted from the client. Replay is rules-only — no
+LLM, CPU-cents — the "a submission is a trail, not a score" model (see the finance
+arena in loom-cloud/lex-oms-agent for the hosted version).
+
 ### …and back to robots: the Robot Arena
 
 The same two primitives map straight onto robot governance: `gate()` is
