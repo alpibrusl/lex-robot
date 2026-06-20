@@ -195,14 +195,15 @@ async function runMatch() {
     const fin = await sk('shop_state', {}); renderState(fin);
     const win = fin.val.P1 > fin.val.P2, draw = fin.val.P1 === fin.val.P2;
     setStatus(draw ? `Draw — ${fin.val.P1} vs ${fin.val.P2}` : win ? `You win! ${fin.val.P1} vs ${fin.val.P2}` : `House wins ${fin.val.P2} vs ${fin.val.P1}`, win?'win':draw?'':'lose');
-    // verify this match's chain
-    const v = await sk('game_verify', { game:'shop' });
-    document.getElementById('verify').innerHTML = v.valid
-      ? `<span style="color:var(--green)">✓ match verified — ${v.count} moves hash-chained, intact</span>`
-      : `<span style="color:var(--red)">✗ chain broken</span>`;
-    // submit score = your cart value
-    await sk('lb_submit', { game: GAME, player: name, score: fin.val.P1, model, chain: fin.chain||'' });
-    log('score ' + fin.val.P1 + ' submitted to leaderboard');
+    // Replay-verify: the SERVER re-runs the recorded moves through the rules and
+    // recomputes the authoritative score. The browser never sends a score.
+    const rp = await sk('shop_replay', { });
+    document.getElementById('verify').innerHTML = rp.valid
+      ? `<span style="color:var(--green)">✓ replay-verified — ${rp.moves} moves, score recomputed server-side: you ${rp.p1} vs house ${rp.p2}</span>`
+      : `<span style="color:var(--red)">✗ rejected — ${!rp.intact?'chain tampered':'illegal move in trail'}</span>`;
+    const sub = await sk('arena_submit', { player: name, model });
+    if (sub.valid) { log('replayed score ' + sub.score + ' posted to leaderboard'); }
+    else { log('submission rejected by replay (not posted)'); }
     loadLB();
   } finally { running = false; document.getElementById('run').disabled = false; }
 }

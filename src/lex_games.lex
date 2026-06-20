@@ -190,3 +190,11 @@ fn verify_log(log :: trail.Log) -> [sql] Verdict {
     }),
   }
 }
+
+# All recorded events oldest-first (or []). The basis for REPLAY: a game's
+# verifier folds these recorded moves through its own deterministic rules to
+# recompute the authoritative score — the score is never trusted from a client.
+# verify_log proves the chain wasn't tampered; replay proves what the score IS.
+fn all_events(log :: trail.Log) -> [sql] List[ev.Event] {
+  match trail.range(log, 0, 9999999999999) { Err(_) => [], Ok(evs) => evs }
+}

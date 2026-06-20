@@ -554,7 +554,12 @@ examples/arena_run.sh   # open http://localhost:8900
 
 MVP scope: one game (Bazaar Draft), browser-side agent runner, BYO-key, no
 billing. The server adds `arena_new` (fresh match id + token + trail),
-`shop_house_move` (the house opponent), and a `leaderboard` (`lb_submit`/`lb_top`).
+`shop_house_move` (the house opponent), a `leaderboard`, and — crucially —
+**`shop_replay` / `arena_submit`**: the score is **recomputed server-side by
+replaying the recorded trail through the rules** (`game.all_events` + a
+deterministic re-run), never trusted from the client. Replay is rules-only — no
+LLM, CPU-cents — the "a submission is a trail, not a score" model (see the finance
+arena in loom-cloud/lex-oms-agent for the hosted version).
 
 ### …and back to robots: the Robot Arena
 

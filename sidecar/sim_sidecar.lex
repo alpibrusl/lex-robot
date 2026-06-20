@@ -58,6 +58,8 @@ import "../src/lex_games" as game
 
 import "lex-trail/log" as trail
 
+import "lex-trail/event" as ev
+
 import "../src/a2a_card" as card
 
 import "lex-web/src/router" as router
@@ -688,12 +690,76 @@ fn lb_top(db :: Db, gm :: Str) -> [sql] Str {
     },
   }
 }
+# ── Replay: recompute the authoritative score from the trail (never trust a
+# client score). Re-runs the recorded moves through the Bazaar Draft rules from
+# the initial state; the result is what the server scores + ranks. This is the
+# games equivalent of the finance arena's verify.lex — the core a hosted
+# verify-worker would run over an uploaded trail.
+type RState = { own :: Str, b1 :: Int, b2 :: Int, legal :: Bool, intact :: Bool, moves :: Int }
+fn r_owner_at(s :: Str, i :: Int) -> Str { str.slice(s, i, i + 1) }
+fn r_owner_set(s :: Str, i :: Int, c :: Str) -> Str { str.concat(str.slice(s, 0, i), str.concat(c, str.slice(s, i + 1, 6))) }
+fn r_score(own :: Str, ch :: Str) -> Int {
+  list.fold([0,1,2,3,4,5], 0, fn (acc :: Int, i :: Int) -> Int { if r_owner_at(own, i) == ch { acc + shop_value(i) } else { acc } })
+}
+fn shop_replay_state(log :: trail.Log) -> [sql] RState {
+  list.fold(game.all_events(log), { own: "......", b1: 30, b2: 30, legal: true, intact: true, moves: 0 }, fn (st :: RState, e :: ev.Event) -> RState {
+    let intact := st.intact and ev.is_valid(e)
+    if e.kind != "move" { { own: st.own, b1: st.b1, b2: st.b2, legal: st.legal, intact: intact, moves: st.moves } } else {
+      match jv.parse(e.payload_json) {
+        Err(_) => { own: st.own, b1: st.b1, b2: st.b2, legal: false, intact: intact, moves: st.moves + 1 },
+        Ok(j) => {
+          let by := jv_str_or(j, "by", "")
+          let i := jv_int_or(j, "item", -1)
+          let ch := if by == "P1" { "1" } else { "2" }
+          let bud := if by == "P1" { st.b1 } else { st.b2 }
+          if i < 0 or i > 5 or r_owner_at(st.own, i) != "." or shop_price(i) > bud {
+            { own: st.own, b1: st.b1, b2: st.b2, legal: false, intact: intact, moves: st.moves + 1 }
+          } else {
+            let nown := r_owner_set(st.own, i, ch)
+            if by == "P1" { { own: nown, b1: st.b1 - shop_price(i), b2: st.b2, legal: st.legal, intact: intact, moves: st.moves + 1 } }
+            else { { own: nown, b1: st.b1, b2: st.b2 - shop_price(i), legal: st.legal, intact: intact, moves: st.moves + 1 } }
+          }
+        },
+      }
+    }
+  })
+}
+fn shop_replay(db :: Db) -> [sql, time, fs_write] Str {
+  match trail.open(g_trail_path(db, "shop")) {
+    Err(_) => "{\"valid\":false,\"p1\":0,\"p2\":0,\"moves\":0}",
+    Ok(log) => {
+      let r := shop_replay_state(log)
+      let _ := trail.close(log)
+      let ok := r.legal and r.intact
+      str.join(["{\"valid\":", (if ok { "true" } else { "false" }), ",\"p1\":", int.to_str(r_score(r.own, "1")), ",\"p2\":", int.to_str(r_score(r.own, "2")), ",\"moves\":", int.to_str(r.moves), ",\"intact\":", (if r.intact { "true" } else { "false" }), ",\"legal\":", (if r.legal { "true" } else { "false" }), "}"], "")
+    },
+  }
+}
+# Finalize an arena match: replay the trail → authoritative P1 score, and only
+# then post it to the leaderboard. The browser cannot set the score.
+fn arena_submit(db :: Db, player :: Str, model :: Str) -> [sql, time, fs_write] Str {
+  match trail.open(g_trail_path(db, "shop")) {
+    Err(_) => "{\"valid\":false,\"score\":0}",
+    Ok(log) => {
+      let r := shop_replay_state(log)
+      let _ := trail.close(log)
+      if r.legal and r.intact {
+        let p1 := r_score(r.own, "1")
+        let _ := lb_submit(db, "bazaar", player, p1, model, get_state(db, "shop_chain"))
+        str.join(["{\"valid\":true,\"score\":", int.to_str(p1), "}"], "")
+      } else {
+        "{\"valid\":false,\"score\":0}"
+      }
+    },
+  }
+}
 fn arena_dispatch(db :: Db, name :: Str, args :: jv.Json) -> [sql, time, crypto, fs_write] Str {
   if name == "arena_new" { arena_new(db) } else {
   if name == "shop_house_move" { shop_house_move(db) } else {
   if name == "shop_pass" { shop_pass(db, jv_str_or(args, "by", "")) } else {
-  if name == "lb_submit" { lb_submit(db, jv_str_or(args, "game", ""), jv_str_or(args, "player", ""), jv_int_or(args, "score", 0), jv_str_or(args, "model", ""), jv_str_or(args, "chain", "")) } else {
-  lb_top(db, jv_str_or(args, "game", "")) }}}}
+  if name == "shop_replay" { shop_replay(db) } else {
+  if name == "arena_submit" { arena_submit(db, jv_str_or(args, "player", ""), jv_str_or(args, "model", "")) } else {
+  lb_top(db, jv_str_or(args, "game", "")) }}}}}
 }
 
 # ── lex-games: Consent Match — matchmaking as a capability-gated draft ─────────
@@ -1547,7 +1613,7 @@ fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :
   if name == "shop_join" or name == "shop_reset" or name == "shop_move" or name == "shop_state" {
     shop_dispatch(db, name, args)
   } else {
-  if name == "arena_new" or name == "shop_house_move" or name == "shop_pass" or name == "lb_submit" or name == "lb_top" {
+  if name == "arena_new" or name == "shop_house_move" or name == "shop_pass" or name == "shop_replay" or name == "arena_submit" or name == "lb_top" {
     arena_dispatch(db, name, args)
   } else {
   if name == "love_join" or name == "love_reset" or name == "love_move" or name == "love_state" {
