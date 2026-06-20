@@ -26,7 +26,7 @@ import "std.crypto" as crypto
 
 import "../src/types"     as t
 import "../src/grant"     as grant
-import "../src/lex_games" as game
+import "lex-games/src/lex_games" as game
 
 import "lex-trail/log" as trail
 

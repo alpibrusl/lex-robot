@@ -25,7 +25,7 @@ import "std.http"  as http
 import "std.map"   as map
 import "std.time"  as time
 
-import "../src/lex_games" as game
+import "lex-games/src/lex_games" as game
 import "lex-trail/log"    as trail
 
 # ── board (9 chars, '.' = empty) ─────────────────────────────────────────────

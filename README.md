@@ -85,8 +85,8 @@ src/
   charge.lex     OCPP client for the depot Verify gate (real lex-charge / CSMS)
   a2a_*.lex      A2A protocol: bootstrap blob, Ed25519 cards, handshake, consent, sessions, server
   human_goal.lex human-in-the-loop goal (ask a person at run time, don't hardcode it)
-  lex_games.lex  capability + turn gate + hash-chained record for server-authoritative games
   bazaar*.lex    bazaar shopper + LLM seller logic
+  (the games framework now lives in the lex-games package — a git dependency)
 examples/
   demo / task / budget / depot / safe_rollout / llm_planner   the robot governance demos
   bazaar / peer_meet / ev_fleet / logistics / tinder /
@@ -505,8 +505,9 @@ the LLM-driven ones additionally need a lex-llm provider configured.
 
 ## lex-games: capability-gated, verifiable, agent-playable games
 
-`src/lex_games.lex` is a tiny harness that makes a turn game **cheat-resistant by
-construction** and **verifiable** — the same way the robot grant does for actuation:
+The [lex-games](https://github.com/alpibrusl/lex-games) package (`lex_games.lex`)
+is a tiny harness that makes a turn game **cheat-resistant by construction** and
+**verifiable** — the same way the robot grant does for actuation:
 
 - `gate()` — a connection holds a signed Ed25519 token for exactly one side; it
   **cannot** submit a move as another side, nor out of turn. The illegal call is
