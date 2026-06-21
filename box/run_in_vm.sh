@@ -55,14 +55,22 @@ if [ "${DEBUG_NET:-0}" = 1 ]; then
   # alive (the run is only ~3-4s, so a backgrounded timer would miss it / get
   # torn down). Run with: sudo DEBUG_NET=1 ./box/run_in_vm.sh
   run_lexos & LEXPID=$!
+  # Capture the guest's ACTUAL packets on the tap (dst IP:port is the smoking
+  # gun — proves what address the baked guest dials). Needs tcpdump.
+  if command -v tcpdump >/dev/null 2>&1; then
+    ( timeout 7 tcpdump -nni tap-lex0 -c 40 'ip and not arp' 2>/dev/null ) >/tmp/robot-tcpdump.log 2>&1 &
+  fi
   sleep 3
   {
     echo "== default policies =="; iptables -S 2>/dev/null | grep -- '-P'
     echo "== listener =="; ss -ltnp 2>/dev/null | grep -E ':8900' || echo "  nothing on :8900"
     echo "== INPUT (counters) =="; iptables -L INPUT -v -n 2>/dev/null | grep -E 'Chain|tap-lex0|8900|DROP'
-    echo "== OUTPUT (counters) =="; iptables -L OUTPUT -v -n 2>/dev/null | grep -E 'Chain|tap-lex0|8900|DROP'
+    echo "== FORWARD (counters) =="; iptables -L FORWARD -v -n 2>/dev/null | grep -E 'Chain|tap-lex0|8900|DROP'
     echo "== host->gateway curl =="; curl -v -m 3 169.254.42.1:8900/health 2>&1 | grep -Ei 'connected|refused|timed out|no route|HTTP/|ok'
   } >/tmp/robot-netcheck.log 2>&1 || true
+  sleep 5  # let tcpdump capture the guest's connect attempts
+  echo "== guest packets on tap-lex0 (tcpdump) ==" >>/tmp/robot-netcheck.log
+  cat /tmp/robot-tcpdump.log >>/tmp/robot-netcheck.log 2>/dev/null || true
   echo "== wrote /tmp/robot-netcheck.log =="; cat /tmp/robot-netcheck.log || true
   wait "$LEXPID" || true
 else
