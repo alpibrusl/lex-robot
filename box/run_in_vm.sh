@@ -45,11 +45,11 @@ echo "== sidecar health (host → 127.0.0.1) =="; curl -s -m 2 127.0.0.1:8900/he
 # VM is up. Run with: sudo DEBUG_NET=1 ./box/run_in_vm.sh
 if [ "${DEBUG_NET:-0}" = 1 ]; then
   ( sleep 6
+    echo "== default policies =="; iptables -S 2>/dev/null | grep -- '-P'
     echo "== listener =="; ss -ltnp 2>/dev/null | grep -E ':8900' || echo "  nothing on :8900"
-    echo "== tap addr =="; ip -4 addr show tap-lex0 2>/dev/null || echo "  no tap-lex0"
-    echo "== INPUT rules =="; iptables -S INPUT 2>/dev/null | grep -E 'tap-lex0|8900|policy'
-    echo "== FORWARD rules =="; iptables -S FORWARD 2>/dev/null | grep -E 'tap-lex0|8900|policy'
-    echo "== host→gateway curl =="; curl -s -m 2 169.254.42.1:8900/health || echo "  host cannot reach 169.254.42.1:8900"
+    echo "== INPUT (with packet counters) =="; iptables -L INPUT -v -n 2>/dev/null | grep -E 'Chain|tap-lex0|8900|DROP'
+    echo "== OUTPUT (with packet counters) =="; iptables -L OUTPUT -v -n 2>/dev/null | grep -E 'Chain|tap-lex0|8900|DROP'
+    echo "== host->gateway curl (verbose) =="; curl -v -m 3 169.254.42.1:8900/health 2>&1 | grep -Ei 'connected|refused|timed out|no route|HTTP/|ok'
   ) >/tmp/robot-netcheck.log 2>&1 &
 fi
 
