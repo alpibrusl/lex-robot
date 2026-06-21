@@ -40,26 +40,34 @@ fi
 # Prove the sidecar is actually listening on this host before we even boot the VM.
 echo "== sidecar health (host → 127.0.0.1) =="; curl -s -m 2 127.0.0.1:8900/health || echo "  (host cannot reach its own sidecar — sim_sidecar didn't bind)"
 
-# Opt-in: snapshot host network state mid-run (tap + egress wall + listener) to
-# see exactly where the guest→sidecar connection dies. Fires ~6s in, while the
-# VM is up. Run with: sudo DEBUG_NET=1 ./box/run_in_vm.sh
-if [ "${DEBUG_NET:-0}" = 1 ]; then
-  ( sleep 6
-    echo "== default policies =="; iptables -S 2>/dev/null | grep -- '-P'
-    echo "== listener =="; ss -ltnp 2>/dev/null | grep -E ':8900' || echo "  nothing on :8900"
-    echo "== INPUT (with packet counters) =="; iptables -L INPUT -v -n 2>/dev/null | grep -E 'Chain|tap-lex0|8900|DROP'
-    echo "== OUTPUT (with packet counters) =="; iptables -L OUTPUT -v -n 2>/dev/null | grep -E 'Chain|tap-lex0|8900|DROP'
-    echo "== host->gateway curl (verbose) =="; curl -v -m 3 169.254.42.1:8900/health 2>&1 | grep -Ei 'connected|refused|timed out|no route|HTTP/|ok'
-  ) >/tmp/robot-netcheck.log 2>&1 &
-fi
-
 cd "$LEXOS"
 # --jail-uid/--jail-gid run firecracker under the jailer; the kvm gid lets the
 # guest reach /dev/kvm. The guest binary is baked into the rootfs by setup-assets.sh.
-"$LEXOS"/target/debug/lex-os run \
-  --manifest "$M" --agent robot --guest-script "$SCRIPT" \
-  --jail-uid "$(id -u)" --jail-gid "$(getent group kvm | cut -d: -f3)" \
-  --audit-out "$AUDIT"
+run_lexos() {
+  "$LEXOS"/target/debug/lex-os run \
+    --manifest "$M" --agent robot --guest-script "$SCRIPT" \
+    --jail-uid "$(id -u)" --jail-gid "$(getent group kvm | cut -d: -f3)" \
+    --audit-out "$AUDIT"
+}
+
+if [ "${DEBUG_NET:-0}" = 1 ]; then
+  # Run the box in the background and snapshot host network state WHILE it's
+  # alive (the run is only ~3-4s, so a backgrounded timer would miss it / get
+  # torn down). Run with: sudo DEBUG_NET=1 ./box/run_in_vm.sh
+  run_lexos & LEXPID=$!
+  sleep 3
+  {
+    echo "== default policies =="; iptables -S 2>/dev/null | grep -- '-P'
+    echo "== listener =="; ss -ltnp 2>/dev/null | grep -E ':8900' || echo "  nothing on :8900"
+    echo "== INPUT (counters) =="; iptables -L INPUT -v -n 2>/dev/null | grep -E 'Chain|tap-lex0|8900|DROP'
+    echo "== OUTPUT (counters) =="; iptables -L OUTPUT -v -n 2>/dev/null | grep -E 'Chain|tap-lex0|8900|DROP'
+    echo "== host->gateway curl =="; curl -v -m 3 169.254.42.1:8900/health 2>&1 | grep -Ei 'connected|refused|timed out|no route|HTTP/|ok'
+  } >/tmp/robot-netcheck.log 2>&1 || true
+  echo "== wrote /tmp/robot-netcheck.log =="; cat /tmp/robot-netcheck.log || true
+  wait "$LEXPID" || true
+else
+  run_lexos
+fi
 
 # Fail loudly if the run didn't actually produce fresh outputs this time.
 [ -s "$AUDIT" ] || { echo "ERROR: no audit log at $AUDIT (run did not write it)"; exit 1; }
