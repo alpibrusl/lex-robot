@@ -8,7 +8,7 @@
 #
 # This is the REAL boundary (unlike box/sim_e2e.sh's simulated perimeter). The
 # robot's outbound effect is sealed behind the kernel egress wall: the guest can
-# reach ONLY the allowlisted sidecar address (10.0.2.2:8900).
+# reach ONLY the allowlisted sidecar address (169.254.42.1:8900).
 #
 # Sidecar: defaults to the dependency-free sim_sidecar.py so the box proof runs
 # on any host (the real-physics gym_sidecar.py needs gym/torch, and run_policy
@@ -28,7 +28,7 @@ SIDECAR_PY="${SIDECAR_PY:-sim_sidecar.py}"
 # (a previous version silently passed by reading a prior run's files).
 rm -f "$AUDIT" "$TRAIL"
 
-# Sidecar must be reachable from inside the guest at 10.0.2.2:8900 → bind 0.0.0.0.
+# Sidecar must be reachable from inside the guest at 169.254.42.1:8900 → bind 0.0.0.0.
 cd "$ROOT"
 LEX_ROBOT_SIDECAR_HOST=0.0.0.0 LEX_ROBOT_TRAIL="$TRAIL" \
   python3 "sidecar/$SIDECAR_PY" >/tmp/robot-sidecar.log 2>&1 & SIDECAR=$!

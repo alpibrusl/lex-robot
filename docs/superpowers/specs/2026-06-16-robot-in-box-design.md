@@ -81,7 +81,7 @@ Two control planes, cleanly separated:
 - **Control plane (vsock):** guest agent ↔ host supervisor. Not subject to the
   egress wall. Carries the mediation handshake.
 - **Effect plane (egress-walled TCP):** guest → **host** gym sidecar at the
-  tap-side host IP (`10.0.2.2:<port>`), exactly like the existing Ollama path.
+  tap-side host IP (`169.254.42.1:<port>`), exactly like the existing Ollama path.
   The kernel egress wall is the real boundary — the guest can reach *only* the
   allowlisted sidecar address.
 
@@ -95,7 +95,7 @@ for the microVM rootfs).
    grant-aware mediation                             proposes RunSkill{skill,args}
    budget + audit (hash chain)                       on Allowed, executes effect
         │                                                   │
-        │                                          egress-walled TCP (10.0.2.2)
+        │                                          egress-walled TCP (169.254.42.1)
         ▼                                                   ▼
  gym_sidecar.py (host) ◄───────── HTTP/JSON skill endpoint ─┘
    gym-pusht env, run_policy
@@ -162,7 +162,7 @@ pair), in two variants:
 
 On `Decision::Allowed`, the guest calls the host sidecar's HTTP/JSON endpoint
 via `ureq` (already a guest dep — no WebSocket/musl client needed in the
-rootfs) at `10.0.2.2:<port>`.
+rootfs) at `169.254.42.1:<port>`.
 
 ### CLI (`lex-os/src/main.rs`)
 
@@ -181,7 +181,7 @@ manifest.
 - Add the `actuation` block (skills, workspace bounds, velocity/force caps,
   per-skill reversibility) per DESIGN.md §6.
 - Reconcile the `egress` allowlist (currently `127.0.0.1`/`localhost`) to the
-  guest-visible sidecar address (`10.0.2.2:<port>`), kept to exactly that one
+  guest-visible sidecar address (`169.254.42.1:<port>`), kept to exactly that one
   host:port.
 
 ### box/ docs + scripts (`lex-robot/box/`)

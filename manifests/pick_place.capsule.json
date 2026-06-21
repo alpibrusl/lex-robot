@@ -15,7 +15,7 @@
     "max_api_calls": 200
   },
   "isolation_floor": "Namespace",
-  "egress": ["10.0.2.2:8900"],
+  "egress": ["169.254.42.1:8900"],
   "actuation": {
     "skills": ["read_joints", "read_camera", "move_to", "grasp", "run_policy"],
     "arm": {
