@@ -37,6 +37,21 @@ sleep 3
 if ! kill -0 "$SIDECAR" 2>/dev/null; then
   echo "ERROR: sidecar ($SIDECAR_PY) failed to start:"; tail -5 /tmp/robot-sidecar.log; exit 1
 fi
+# Prove the sidecar is actually listening on this host before we even boot the VM.
+echo "== sidecar health (host → 127.0.0.1) =="; curl -s -m 2 127.0.0.1:8900/health || echo "  (host cannot reach its own sidecar — sim_sidecar didn't bind)"
+
+# Opt-in: snapshot host network state mid-run (tap + egress wall + listener) to
+# see exactly where the guest→sidecar connection dies. Fires ~6s in, while the
+# VM is up. Run with: sudo DEBUG_NET=1 ./box/run_in_vm.sh
+if [ "${DEBUG_NET:-0}" = 1 ]; then
+  ( sleep 6
+    echo "== listener =="; ss -ltnp 2>/dev/null | grep -E ':8900' || echo "  nothing on :8900"
+    echo "== tap addr =="; ip -4 addr show tap-lex0 2>/dev/null || echo "  no tap-lex0"
+    echo "== INPUT rules =="; iptables -S INPUT 2>/dev/null | grep -E 'tap-lex0|8900|policy'
+    echo "== FORWARD rules =="; iptables -S FORWARD 2>/dev/null | grep -E 'tap-lex0|8900|policy'
+    echo "== host→gateway curl =="; curl -s -m 2 169.254.42.1:8900/health || echo "  host cannot reach 169.254.42.1:8900"
+  ) >/tmp/robot-netcheck.log 2>&1 &
+fi
 
 cd "$LEXOS"
 # --jail-uid/--jail-gid run firecracker under the jailer; the kvm gid lets the
