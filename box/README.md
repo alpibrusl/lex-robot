@@ -64,17 +64,26 @@ $LEXOS run --manifest $M --agent robot --guest-script robot-violation --simulate
 ```
 
 ### 4b. Hardware-enforced box (Linux+KVM, root) — the real boundary
-With `/dev/kvm`, root, and fetched assets (`lex-os/demo/setup-assets.sh`):
+With `/dev/kvm` and root. **Stage the assets with the current guest baked into
+the rootfs first** — `setup-assets.sh` rebuilds the static musl `lex-os-guest`
+and loop-mounts it into `rootfs.ext4`, so re-run it whenever the guest changes
+(otherwise the VM boots a stale agent that ignores the robot scripts):
 ```sh
-cargo build -p lex-os-guest --target x86_64-unknown-linux-musl --features vsock   # in lex-os
-sudo -E ./box/run_in_vm.sh                 # robot-demo (in-grant)
-sudo -E ./box/run_in_vm.sh robot-violation # out-of-grant move → Denied at the perimeter
+cd ../lex-os && sudo bash demo/setup-assets.sh   # build + inject the current guest
+cd ../lex-robot
+sudo ./box/run_in_vm.sh                  # robot-demo (in-grant)
+sudo ./box/run_in_vm.sh robot-violation  # out-of-grant move → Denied at the perimeter
 ```
-Verifies (a) the in-grant run completes with `audit_verified: true`; (b) a tight
-`max_commands` budget → `BudgetExhausted` + supervisor kill/reprovision; (c) the
-out-of-grant move → run-time `command_denied`, plus the kernel egress wall drops
-non-allowlisted hosts (`lex-os/demo/wall2.sh`). The robot's effect is sealed
-inside the microVM behind that wall.
+Run the whole script with `sudo` (the jailer needs root). It clears stale
+`/tmp/robot-{audit,trail}.json`, starts the dependency-free `sim_sidecar.py`
+bound to `0.0.0.0:8900` (override with `SIDECAR_PY=gym_sidecar.py` on a
+gym-capable host), runs the task in the microVM, and fails loudly if the audit
+or trail wasn't freshly produced. Verifies (a) the in-grant run completes with
+`audit_verified: true`; (b) a tight `max_commands` budget → `BudgetExhausted` +
+supervisor kill/reprovision; (c) the out-of-grant move → run-time
+`command_denied`, plus the kernel egress wall drops non-allowlisted hosts
+(`lex-os/demo/wall2.sh`). The robot's effect is sealed inside the microVM behind
+that wall.
 
 > The policy **solve quality** — `run_policy` actually solving PushT at high
 > reward — is tracked in issue #2 and demonstrated on a CUDA box. This run proves
