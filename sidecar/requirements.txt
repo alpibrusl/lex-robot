@@ -10,6 +10,8 @@ numpy
 # lerobot
 
 # sim_sidecar.py needs nothing (Python standard library only).
+# A2A card signing is handled by Lex (std.crypto); the sidecar just stores
+# and serves the pre-signed blobs pushed by register_cards (a2a_server.lex).
 
 # depot_mujoco_sidecar.py (Tier-2 MuJoCo depot scene)
 mujoco

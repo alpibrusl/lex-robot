@@ -37,6 +37,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 # rollouts step the same env at once and corrupt each other.
 _SKILL_LOCK = threading.Lock()
 
+# Async run_policy job state. A full rollout runs tens of seconds — longer than
+# the Lex std.http client's hard ~10s timeout — so run_policy can't block on it.
+# Instead it kicks off a background rollout and returns immediately; the Lex side
+# polls `policy_status` (each call sub-10s) until the job finishes. Only one env,
+# so only one job at a time: a single global slot is enough (no job ids needed).
+_POLICY_LOCK = threading.Lock()
+_POLICY_JOB = {"status": "idle"}  # status: idle|running|done (+ outcome/detail when done)
+
 HOST = os.environ.get("LEX_ROBOT_SIDECAR_HOST", "127.0.0.1")
 PORT = int(os.environ.get("LEX_ROBOT_SIDECAR_PORT", "8900"))
 ENV_ID = os.environ.get("LEX_ROBOT_GYM_ENV", "gym_pusht/PushT-v0")
@@ -46,6 +54,9 @@ SOLVE_REWARD = float(os.environ.get("LEX_ROBOT_SOLVE_REWARD", "0.90"))  # diffus
 # units; we treat the incoming x,y as normalised [0,1] and scale to the plane.
 PLANE = 512.0
 
+# Content-addressed lex-trail episode log: a cap.invoked + cap.completed pair
+# per skill call, flushed to LEX_ROBOT_TRAIL. Reconciled against the lex-os
+# audit chain by scripts/reconcile_audit.py.
 from trail import Trail
 EPISODE = Trail()
 _TS = {"n": 0}
@@ -57,13 +68,11 @@ def _next_ts() -> int:
 
 
 def record_skill_trail(name: str, args: dict, result: dict) -> None:
-    """Append a cap.invoked + cap.completed pair for one skill call."""
     EPISODE.emit("cap.invoked",
                  json.dumps({"capability": name, "args": args}, sort_keys=True),
                  ts_ms=_next_ts())
-    outcome = result.get("outcome", "reached")
     EPISODE.emit("cap.completed",
-                 json.dumps({"capability": name, "result": outcome}, sort_keys=True),
+                 json.dumps({"capability": name, "result": result.get("outcome", "reached")}, sort_keys=True),
                  ts_ms=_next_ts())
 
 
@@ -210,6 +219,8 @@ def handle_skill(name: str, args: dict) -> dict:
         return {"outcome": "stalled", "detail": "gym-pusht has no gripper"}
     if name == "run_policy":
         return run_policy(args)
+    if name == "policy_status":
+        return policy_status(args)
     if name == "record_episode":
         return record_episode(args)
     if name == "reset_episode":
@@ -224,27 +235,56 @@ def handle_skill(name: str, args: dict) -> dict:
     return {"error": f"unknown skill: {name}"}
 
 
-def run_policy(args: dict) -> dict:
-    """Roll out a pretrained LeRobot policy in the env until success/timeout.
+def _policy_worker(name: str, max_steps: int) -> None:
+    """Run one rollout to completion and stash the outcome in the global job slot.
 
-    Verified with lerobot 0.5.1 + lerobot/diffusion_pusht on Apple MPS. ~0.2s
-    per step on CPU/MPS, so budget_ms maps to a step cap (≈10ms/step budget,
-    capped at the PushT episode length of 300).
+    Holds _SKILL_LOCK for the rollout (the env is single-instance and not
+    thread-safe). policy_status polls bypass that lock, so they stay responsive
+    while this runs. Verified with lerobot 0.5.1 + lerobot/diffusion_pusht on
+    Apple MPS (~0.1–0.2s per step, so a full 300-step episode is ~15–40s).
     """
+    global _POLICY_JOB
+    try:
+        with _SKILL_LOCK:
+            steps, reward, max_reward, term, trunc = sim().rollout(name, max_steps)
+        # PushT may not emit `terminated`; treat peak coverage ≥ threshold as solved.
+        solved = term or max_reward >= SOLVE_REWARD
+        result = {
+            "status": "done",
+            "outcome": "reached" if solved else "timeout",
+            "detail": f"steps={steps}, max_reward={max_reward:.3f}, final={reward:.3f}, policy={name}",
+        }
+    except Exception as e:
+        result = {"status": "done", "outcome": "stalled", "detail": f"run_policy error ({name}): {e}"}
+    with _POLICY_LOCK:
+        _POLICY_JOB = result
+
+
+def run_policy(args: dict) -> dict:
+    """Start a rollout in the background; return immediately (async).
+
+    budget_ms maps to a step cap (≈100ms/step, capped at the 300-step PushT
+    episode). The rollout itself runs far longer than the Lex http client's ~10s
+    timeout, so we do NOT block on it here — the Lex side polls policy_status.
+    """
+    global _POLICY_JOB
     name = args.get("name", "lerobot/diffusion_pusht")
     budget_ms = int(args.get("budget_ms", 10000))
     max_steps = max(1, min(300, budget_ms // 100))
-    try:
-        steps, reward, max_reward, term, trunc = sim().rollout(name, max_steps)
-    except Exception as e:
-        return {"outcome": "stalled", "detail": f"run_policy error ({name}): {e}"}
-    # PushT may not emit `terminated`; treat peak coverage ≥ threshold as solved.
-    solved = term or max_reward >= SOLVE_REWARD
-    outcome = "reached" if solved else "timeout"
-    return {
-        "outcome": outcome,
-        "detail": f"steps={steps}, max_reward={max_reward:.3f}, final={reward:.3f}, policy={name}",
-    }
+    with _POLICY_LOCK:
+        if _POLICY_JOB.get("status") == "running":
+            return {"status": "running", "detail": "a rollout is already in progress"}
+        _POLICY_JOB = {"status": "running", "detail": f"rollout started: {name}, {max_steps} steps"}
+    threading.Thread(target=_policy_worker, args=(name, max_steps), daemon=True).start()
+    return {"status": "started", "detail": f"{name}, up to {max_steps} steps"}
+
+
+def policy_status(_args: dict) -> dict:
+    """Report the current/last rollout's state. Runs WITHOUT _SKILL_LOCK so it
+    stays responsive while a rollout holds the lock. While running → status
+    'running'; when finished → status 'done' plus the terminal outcome/detail."""
+    with _POLICY_LOCK:
+        return dict(_POLICY_JOB)
 
 
 def record_episode(args: dict) -> dict:
@@ -289,15 +329,20 @@ class Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             return self._send(400, {"error": "invalid json"})
         try:
-            with _SKILL_LOCK:
+            # policy_status must NOT take _SKILL_LOCK: a running rollout holds it
+            # for tens of seconds, and the whole point of polling is to stay
+            # responsive while that rollout runs.
+            if name == "policy_status":
                 result = handle_skill(name, args)
-                record_skill_trail(name, args, result)
-                trail_path = os.environ.get("LEX_ROBOT_TRAIL", "/tmp/robot-trail.json")
-                try:
-                    with open(trail_path, "w") as f:
-                        f.write(EPISODE.to_json())
-                except OSError:
-                    pass
+            else:
+                with _SKILL_LOCK:
+                    result = handle_skill(name, args)
+            record_skill_trail(name, args, result)
+            try:
+                with open(os.environ.get("LEX_ROBOT_TRAIL", "/tmp/robot-trail.json"), "w") as f:
+                    f.write(EPISODE.to_json())
+            except OSError:
+                pass
             self._send(200, result)
         except Exception as e:  # surface sim errors to the Lex side as a stall
             self._send(200, {"outcome": "stalled", "detail": f"sim error: {e}"})

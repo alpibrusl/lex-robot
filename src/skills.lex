@@ -18,8 +18,6 @@ import "std.str" as str
 
 import "std.float" as flt
 
-import "std.int" as int
-
 import "std.list" as list
 
 import "./types" as t
@@ -144,6 +142,15 @@ fn read_camera(r :: t.Robot, name :: Str) -> [net, sense] Result[Str, Str] {
   client.call(r.sidecar_url, "read_camera", str.join(["{\"name\":\"", name, "\"}"], ""))
 }
 
+# Current position of the bystander/person in the workspace (normalized [0,1]).
+# Used by the dynamic keep-out demo to compute a live exclusion box each step.
+fn read_bystander(r :: t.Robot) -> [net, sense] Result[t.Vec3, Str] {
+  match client.call(r.sidecar_url, "read_bystander", "{}") {
+    Err(e) => Err(e),
+    Ok(s) => Ok({ x: jfloat(s, "\"x\":", 0.5), y: jfloat(s, "\"y\":", 0.5), z: 0.0 }),
+  }
+}
+
 # ── Actuating (grant-gated) ──────────────────────────────────────────────────
 fn move_to(r :: t.Robot, target :: t.Pose) -> [net, sense, actuate] t.Outcome {
   if grant.skill_allowed(r.grant, "move_to") {
@@ -172,20 +179,9 @@ fn grasp(r :: t.Robot, force :: Float) -> [net, sense, actuate] t.Outcome {
   }
 }
 
-# Hands the high-rate loop to LeRobot; the lex-os supervisor enforces the budget.
-fn run_policy(r :: t.Robot, name :: Str, goal :: Str, budget_ms :: Int) -> [net, sense, actuate] t.Outcome {
-  if grant.skill_allowed(r.grant, "run_policy") {
-    let body := str.join([
-      "{\"name\":\"", name, "\",\"goal\":\"", goal, "\",\"budget_ms\":", int.to_str(budget_ms), "}"
-    ], "")
-    match client.call(r.sidecar_url, "run_policy", body) {
-      Err(e) => Stalled(e),
-      Ok(resp) => parse_outcome(resp),
-    }
-  } else {
-    Denied("skill run_policy not in grant")
-  }
-}
+# run_policy + its async polling live in ./policy (policy.lex) so the [time]
+# effect they need stays off the core skill surface — a plain move/grasp program
+# that imports this module does not inherit `time`.
 
 # Captures a LeRobotDataset episode: reads sensors ([sense]); the file write
 # happens in the sidecar (Python), so it is not a Lex [fs_write].
@@ -194,5 +190,68 @@ fn record_episode(r :: t.Robot, task :: Str) -> [net, sense] Result[Str, Str] {
     client.call(r.sidecar_url, "record_episode", str.join(["{\"task\":\"", task, "\"}"], ""))
   } else {
     Err("skill record_episode not in grant")
+  }
+}
+
+# ── Dangerous-tool skills ─────────────────────────────────────────────────────
+# Sense whether a workpiece is present in the jig and physically clamped.
+fn workpiece_status(r :: t.Robot) -> [net, sense] Result[t.WorkpieceStatus, Str] {
+  match client.call(r.sidecar_url, "workpiece_status", "{}") {
+    Err(e) => Err(e),
+    # Accept both compact (`"clamped":true`) and spaced (`"clamped": true`) JSON,
+    # so the parse doesn't depend on the sidecar's serializer spacing.
+    Ok(s) => Ok({
+      present: str.contains(s, "\"present\":true") or str.contains(s, "\"present\": true"),
+      clamped: str.contains(s, "\"clamped\":true") or str.contains(s, "\"clamped\": true"),
+    }),
+  }
+}
+
+# Actuate the clamp that holds the workpiece. Precondition for tool firing.
+fn clamp_workpiece(r :: t.Robot) -> [net, sense, actuate] t.Outcome {
+  if grant.skill_allowed(r.grant, "clamp_workpiece") {
+    match client.call(r.sidecar_url, "clamp_workpiece", "{}") {
+      Err(e) => Stalled(e),
+      Ok(resp) => parse_outcome(resp),
+    }
+  } else {
+    Denied("skill clamp_workpiece not in grant")
+  }
+}
+
+# Fire a tool (laser/drill/welder) at target. Three grant checks in order:
+#   1. skill "actuate_tool" in the grant
+#   2. target.pos inside tool_lo..tool_hi (the workpiece bounding box)
+#   3. workpiece sensor reports clamped (re-read every call — no bypass)
+# Power is clamped to max_power before the command is sent.
+fn actuate_tool(r :: t.Robot, power :: Float, target :: t.Pose,
+                tool_lo :: t.Vec3, tool_hi :: t.Vec3, max_power :: Float)
+    -> [net, sense, actuate] t.Outcome {
+  if grant.skill_allowed(r.grant, "actuate_tool") {
+    if grant.in_box_3d(target.pos, tool_lo, tool_hi) {
+      match workpiece_status(r) {
+        Err(e) => Stalled(str.concat("workpiece sensor: ", e)),
+        Ok(ws) => {
+          if ws.clamped {
+            let safe_power := if power > max_power { max_power } else { power }
+            let body := str.join([
+              "{\"power\":", f(safe_power),
+              ",\"x\":", f(target.pos.x), ",\"y\":", f(target.pos.y), ",\"z\":", f(target.pos.z),
+              "}"
+            ], "")
+            match client.call(r.sidecar_url, "fire_tool", body) {
+              Err(e) => Stalled(e),
+              Ok(resp) => parse_outcome(resp),
+            }
+          } else {
+            Denied("workpiece not clamped — clamp before firing tool")
+          }
+        },
+      }
+    } else {
+      Denied("target outside tool firing zone")
+    }
+  } else {
+    Denied("skill actuate_tool not in grant")
   }
 }

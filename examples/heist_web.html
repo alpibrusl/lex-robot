@@ -1,0 +1,683 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Heist Operations</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:     #050a05;
+  --bg2:    #080f08;
+  --bg3:    #0c140c;
+  --border: #1a2a1a;
+  --text:   #a0c0a0;
+  --muted:  #3a5a3a;
+  --green:  #00ff41;
+  --red:    #ff3333;
+  --orange: #ff8c00;
+  --purple: #cc66ff;
+  --white:  #e0ffe0;
+  --amber:  #fbbf24;
+  --cyan:   #22d3ee;
+}
+
+html, body { height: 100%; overflow: hidden; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 12px;
+  line-height: 1.4;
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+}
+
+header {
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  padding: 0 16px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-shrink: 0;
+  height: 40px;
+}
+header h1 { font-size: 13px; color: var(--green); letter-spacing: .15em; font-weight: bold; white-space: nowrap; }
+#h-meta   { color: var(--muted); font-size: 11px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#h-conn   { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); white-space: nowrap; }
+#h-dot    { width: 8px; height: 8px; border-radius: 50%; background: #1a2a1a; flex-shrink: 0; }
+#h-dot.live { background: var(--green); box-shadow: 0 0 8px var(--green); }
+#h-dot.run  { background: var(--amber); box-shadow: 0 0 8px var(--amber); animation: blink 1s infinite; }
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:.25} }
+@keyframes alarm-flash { 0%,100%{background:#1a0505;border-color:#ff3333} 50%{background:#3a0505;border-color:#ff6666} }
+
+#game-container {
+  flex-shrink: 0; height: 250px; overflow: hidden;
+  background: var(--bg); border-bottom: 1px solid var(--border);
+}
+#game-container canvas { display: block; }
+
+#middle {
+  flex: 1; min-height: 0; display: grid;
+  grid-template-columns: 280px 1fr; background: var(--border); gap: 1px; overflow: hidden;
+}
+
+/* Right column: ops feed (compact, top) + event log (tall, flex:1 below) */
+#right-col {
+  display: flex; flex-direction: column; gap: 1px;
+  background: var(--border); overflow: hidden; min-height: 0;
+}
+
+#left-col {
+  display: flex; flex-direction: column; gap: 1px;
+  background: var(--border); overflow: hidden;
+}
+.panel {
+  background: var(--bg); padding: 8px 10px; overflow: hidden;
+  display: flex; flex-direction: column; gap: 5px; min-height: 0;
+}
+.panel-title {
+  font-size: 9px; text-transform: uppercase; letter-spacing: .14em; color: var(--muted);
+  border-bottom: 1px solid var(--border); padding-bottom: 4px; flex-shrink: 0;
+}
+
+#questions-panel { flex-shrink: 0; border: 1px solid var(--amber); border-radius: 4px; margin: 4px; padding: 6px 8px; background: #1a1500; display: none; }
+#questions-panel .panel-title { color: var(--amber); border-color: #44370066; }
+.q-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px; margin-bottom: 5px; flex-shrink: 0; }
+.q-robot { font-size: 9px; font-weight: bold; padding: 1px 5px; border-radius: 8px; margin-bottom: 4px; display: inline-block; }
+.q-text { font-size: 10px; color: var(--text); margin-bottom: 5px; word-break: break-word; }
+.q-reply { display: flex; gap: 5px; }
+.q-input { flex: 1; background: var(--bg3); border: 1px solid var(--border); color: var(--text); font-family: 'Courier New', monospace; font-size: 11px; padding: 3px 7px; border-radius: 4px; outline: none; }
+.q-input:focus { border-color: var(--amber); }
+.btn { background: var(--bg3); border: 1px solid var(--border); color: var(--text); font-family: 'Courier New', monospace; font-size: 11px; padding: 3px 10px; border-radius: 4px; cursor: pointer; white-space: nowrap; transition: border-color .15s, color .15s; flex-shrink: 0; }
+.btn:hover { border-color: var(--green); color: var(--green); }
+
+/* Alarm */
+#alarm-panel { flex-shrink: 0; border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px; }
+#alarm-panel.active { animation: alarm-flash 0.8s infinite; }
+#alarm-indicator { font-size: 12px; font-weight: bold; letter-spacing: .12em; }
+#alarm-indicator.alarm-on  { color: var(--red); }
+#alarm-indicator.alarm-off { color: var(--green); }
+
+/* Agents */
+.agent-row { display: flex; align-items: center; gap: 7px; padding: 2px 0; }
+.agent-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+.agent-name { font-size: 10px; font-weight: bold; width: 65px; }
+.agent-loc  { font-size: 9px; color: var(--muted); }
+
+/* Mission log */
+#mission-log-panel { flex: 1; min-height: 0; }
+#mission-log { overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 2px; }
+.ml-row { font-size: 9px; color: var(--muted); padding: 2px 0; border-bottom: 1px solid #0c140c; flex-shrink: 0; }
+.ml-row .ml-ts { color: #1a2a1a; margin-right: 5px; }
+
+/* A2A feed — compact top half of the right column */
+#a2a-panel {
+  background: var(--bg); padding: 8px 10px; flex: 1; min-height: 0;
+  display: flex; flex-direction: column; gap: 5px; overflow: hidden;
+}
+#a2a-feed { overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 4px; }
+.msg { padding: 5px 9px; border-radius: 4px; font-size: 10px; max-width: 92%; word-break: break-word; border: 1px solid transparent; flex-shrink: 0; line-height: 1.5; }
+.msg-header { display: flex; align-items: center; gap: 4px; margin-bottom: 2px; }
+.msg-who { font-size: 8px; font-weight: bold; padding: 1px 4px; border-radius: 7px; }
+.msg-kind { font-size: 8px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+.msg-body { color: var(--text); }
+.msg-call     { background: #050a05; border-color: #1a2a1a; align-self: flex-start; }
+.msg-success  { background: #051005; border-color: var(--green); }
+.msg-phase    { background: #080f08; border-color: #00ff4155; }
+.msg-alert    { background: #1a0505; border-color: var(--red); }
+.msg-vault    { background: #0a0a20; border-color: var(--purple); }
+.msg-think    { background: #050a05; border-color: #1a3a1a; align-self: flex-start; }
+.msg-question { background: #1a1500; border-color: var(--amber); align-self: flex-start; }
+
+/* Event log — now a tall, readable panel in the right column */
+#log-section {
+  flex: 1; min-height: 0; background: var(--bg);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+#log-hdr { font-size: 9px; text-transform: uppercase; letter-spacing: .14em; color: var(--muted); padding: 6px 11px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+#log     { overflow-y: auto; flex: 1; padding: 4px 11px; }
+.ll      { font-size: 12px; color: var(--muted); white-space: nowrap; line-height: 1.7; }
+.ll .ts  { color: #1a2a1a; margin-right: 7px; }
+.ll .ev  { color: var(--green); margin-right: 5px; }
+.ll .cu  { font-weight: bold; margin-right: 4px; }
+.ll .ok  { color: var(--green); }
+.ll .er  { color: var(--red); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>[HEIST OPS TERMINAL]</h1>
+  <span id="h-meta">mission standby — awaiting activation</span>
+  <div id="h-conn"><div id="h-dot"></div><span id="h-status">connecting</span></div>
+</header>
+
+<div id="game-container"></div>
+
+<div id="middle">
+  <div id="left-col">
+
+    <div id="questions-panel">
+      <div class="panel-title">⚠ Vault Authorization Required</div>
+      <div id="questions-list"></div>
+    </div>
+
+    <div class="panel" id="alarm-panel" style="flex-shrink:0">
+      <div class="panel-title">Security Status</div>
+      <div id="alarm-indicator" class="alarm-on">■ ALARM ACTIVE</div>
+      <div style="font-size:9px;color:var(--muted);margin-top:3px" id="alarm-detail">All security systems online</div>
+    </div>
+
+    <div class="panel" style="flex-shrink:0">
+      <div class="panel-title">Agents</div>
+      <div class="agent-row"><div class="agent-dot" style="background:#e0ffe0;box-shadow:0 0 5px #e0ffe0"></div><span class="agent-name" style="color:#e0ffe0">Scout</span><span class="agent-loc" id="loc-Scout">standby</span></div>
+      <div class="agent-row"><div class="agent-dot" style="background:#00ff41;box-shadow:0 0 5px #00ff41"></div><span class="agent-name" style="color:#00ff41">Hacker</span><span class="agent-loc" id="loc-Hacker">standby</span></div>
+      <div class="agent-row"><div class="agent-dot" style="background:#ff8c00;box-shadow:0 0 5px #ff8c00"></div><span class="agent-name" style="color:#ff8c00">Muscle</span><span class="agent-loc" id="loc-Muscle">standby</span></div>
+      <div class="agent-row"><div class="agent-dot" style="background:#cc66ff;box-shadow:0 0 5px #cc66ff"></div><span class="agent-name" style="color:#cc66ff">Extractor</span><span class="agent-loc" id="loc-Extractor">standby</span></div>
+    </div>
+
+    <div class="panel" id="mission-log-panel">
+      <div class="panel-title">Mission Log</div>
+      <div id="mission-log"></div>
+    </div>
+  </div>
+
+  <div id="right-col">
+    <div id="a2a-panel">
+      <div class="panel-title">Operations Feed</div>
+      <div id="a2a-feed">
+        <div style="color:var(--muted);font-size:11px;text-align:center;margin-top:24px">[STANDBY] — Awaiting mission activation</div>
+      </div>
+    </div>
+
+    <!-- Event log — now a tall, readable side panel -->
+    <div id="log-section">
+      <div id="log-hdr">Event Log</div>
+      <div id="log"></div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/phaser@3.70.0/dist/phaser.min.js"></script>
+<script src="/retro_kit.js"></script>
+<script>
+'use strict';
+
+const AGENTS = {
+  Scout:     { color: 0xe0ffe0, hex: '#e0ffe0', tc: '#050a05' },
+  Hacker:    { color: 0x00ff41, hex: '#00ff41', tc: '#050a05' },
+  Muscle:    { color: 0xff8c00, hex: '#ff8c00', tc: '#050a05' },
+  Extractor: { color: 0xcc66ff, hex: '#cc66ff', tc: '#050a05' },
+};
+
+const ROOMS = ['Lobby', 'Security', 'Server', 'Vault'];
+
+let gameScene = null;
+const eventQueue = [];
+
+class HeistScene extends Phaser.Scene {
+  constructor() {
+    super({ key: 'HeistScene' });
+    this.rooms  = {};
+    this.agents = {};
+    this.cams   = [];
+    this.vaultDoor = null;
+    this.vaultOpen = false;
+  }
+
+  create() {
+    const W = this.scale.width, H = this.scale.height;
+    this.W = W; this.H = H;
+    this.R = 12;
+
+    this._drawBg(W, H);
+    this._buildRooms(W, H);
+    this._buildAgents(W, H);
+
+    gameScene = this;
+    while (eventQueue.length) this.handleEvent(eventQueue.shift());
+  }
+
+  _drawBg(W, H) {
+    RK.drawBg(this, { skyFrac: 0.13 });
+  }
+
+  _buildRooms(W, H) {
+    const RW = W * 0.40, RH = H * 0.34;
+    const positions = {
+      Lobby:    { col: 0, row: 0, accent: 0x6d8c3a, label: 'LOBBY'       },
+      Security: { col: 1, row: 0, accent: 0xc2410c, label: 'SECURITY'    },
+      Server:   { col: 0, row: 1, accent: 0x2b6cb0, label: 'SERVER ROOM' },
+      Vault:    { col: 1, row: 1, accent: 0x8b5cf6, label: 'VAULT'       },
+    };
+    const padX = W * 0.07, padY = H * 0.20;
+    const gapX = W * 0.10, gapY = H * 0.30;
+
+    Object.entries(positions).forEach(([name, def]) => {
+      const cx = padX + def.col * (RW + gapX) + RW / 2;
+      const cy = padY + def.row * (RH + gapY) + RH / 2;
+      const b = RK.makeBuilding(this, cx, cy, RW, RH, def.label, null, def.accent, { icon: name === 'Vault' ? '✦' : '' });
+      this.rooms[name] = { cx, cy, x0: cx - RW / 2, y0: cy - RH / 2, RW, RH, g: b.g, color: def.accent };
+      if (name === 'Security') this._buildCameras(cx, cy, RW, RH, cx - RW / 2, cy - RH / 2);
+      if (name === 'Vault')    this._buildVaultDoor(cx, cy, cx - RW / 2, cy - RH / 2, RW, RH);
+    });
+  }
+
+  _buildCameras(cx, cy, RW, RH, x0, y0) {
+    const camPos = [
+      { x: x0 + RW * 0.22, y: y0 + RH * 0.62 },
+      { x: x0 + RW * 0.50, y: y0 + RH * 0.62 },
+      { x: x0 + RW * 0.78, y: y0 + RH * 0.62 },
+    ];
+    this.cams = camPos.map(pos => {
+      const g = this.add.graphics().setDepth(5);
+      this._drawCam(g, pos.x, pos.y, RK.C.GOLD, true);
+      return { g, x: pos.x, y: pos.y, active: true };
+    });
+  }
+
+  _drawCam(g, x, y, color, active) {
+    g.clear();
+    const col = active ? color : 0x4a4a4a;
+    g.fillStyle(0x2a1c10, 1); g.fillRect(x - 8, y - 5, 16, 10);
+    g.fillStyle(col, active ? 1 : 0.5); g.fillRect(x - 6, y - 3, 12, 6);
+    g.fillTriangle(x + 6, y - 5, x + 13, y - 8, x + 6, y + 5);
+    g.fillStyle(active ? 0xffffff : 0x666666, active ? 0.9 : 0.4); g.fillRect(x - 4, y - 1, 2, 2);
+  }
+
+  _buildVaultDoor(cx, cy, x0, y0, RW, RH) {
+    const dw = Math.min(40, RW * 0.4), dh = Math.min(46, RH * 0.6);
+    const dx = cx - dw / 2, dy = cy - dh / 2 + 8;
+    const g = this.add.graphics().setDepth(5);
+    g.fillStyle(0x2a3340, 1);                     g.fillRect(dx - 2, dy - 2, dw + 4, dh + 4);
+    g.fillStyle(RK.C.STONE_HI, 1);                g.fillRect(dx, dy, dw, dh);
+    g.fillStyle(RK.shade(RK.C.STONE_HI, 0.7), 1); g.fillRect(dx + 3, dy + 3, dw - 6, dh - 6);
+    g.fillStyle(RK.C.GOLD, 1);                    g.fillCircle(cx, dy + dh / 2, 6);
+    g.fillStyle(0x2a1c10, 1);                     g.fillCircle(cx, dy + dh / 2, 2);
+    for (let a = 0; a < 8; a++) { const an = a / 8 * Math.PI * 2; g.fillStyle(RK.C.GOLD, 1); g.fillRect(cx + Math.cos(an) * 9 - 1, dy + dh / 2 + Math.sin(an) * 9 - 1, 2, 2); }
+    this.vaultDoor = { g, dx, dy, dw, dh, cx, cy };
+    this.vaultLabel = this.add.text(cx, dy + dh + 5, 'LOCKED', { fontFamily: RK.PX, fontSize: '11px', color: '#c08a3a' }).setOrigin(0.5, 0).setDepth(6);
+  }
+
+  _buildAgents(W, H) {
+    const startPositions = {
+      Scout:     { x: W * 0.06, y: H * 0.40 },
+      Hacker:    { x: W * 0.06, y: H * 0.62 },
+      Muscle:    { x: W * 0.06, y: H * 0.84 },
+      Extractor: { x: W * 0.13, y: H * 0.51 },
+    };
+    Object.entries(AGENTS).forEach(([name, cfg]) => {
+      const pos = startPositions[name];
+      const con = RK.makeRobot(this, pos.x, pos.y, name[0], cfg.color);
+      this.agents[name] = { container: con, homeX: pos.x, homeY: pos.y, color: cfg.color, thinkTween: null, thinkRing: null, bubble: null };
+    });
+  }
+
+  _moveAgent(name, roomName) {
+    const agent = this.agents[name];
+    const room  = this.rooms[roomName];
+    if (!agent || !room) return;
+    this._clearThink(name);
+    const tx = room.cx + (Math.random() - 0.5) * room.RW * 0.4;
+    const ty = room.cy + (Math.random() - 0.5) * room.RH * 0.3;
+    this.tweens.add({ targets: agent.container, x: tx, y: ty, duration: 700, ease: 'Cubic.easeInOut',
+      onComplete: () => this._bounce(name)
+    });
+    this._pulseRoom(roomName);
+  }
+
+  _pulseRoom(roomName) {
+    const room = this.rooms[roomName]; if (!room) return;
+    const hl = this.add.graphics().setDepth(6);
+    hl.lineStyle(2, 0x00ff41, 0.8); hl.strokeRect(room.x0, room.y0, room.RW, room.RH);
+    this.tweens.add({ targets: hl, alpha: 0, duration: 900, onComplete: () => hl.destroy() });
+  }
+
+  _disableCameras() {
+    this.cams.forEach(cam => {
+      cam.active = false;
+      this._drawCam(cam.g, cam.x, cam.y, 0x2a2a2a, false);
+    });
+    const room = this.rooms['Security'];
+    if (room) {
+      const flash = this.add.graphics().setDepth(8);
+      flash.fillStyle(0xff3333, 0.15); flash.fillRect(room.x0, room.y0, room.RW, room.RH);
+      this.tweens.add({ targets: flash, alpha: 0, duration: 1000, onComplete: () => flash.destroy() });
+      this.add.text(room.cx, room.cy + 24, 'OFFLINE', { fontFamily: RK.PX, fontSize: '12px', color: '#f87171' }).setOrigin(0.5, 0.5).setDepth(9);
+    }
+  }
+
+  _openVault() {
+    if (this.vaultOpen || !this.vaultDoor) return;
+    this.vaultOpen = true;
+    const { g, dx, dw } = this.vaultDoor;
+    if (this.vaultLabel) { this.vaultLabel.setText('OPEN').setColor('#4ade80'); }
+    this.tweens.add({ targets: g, x: -(dx + dw + 8), alpha: 0.2, duration: 1100, ease: 'Cubic.easeInOut',
+      onComplete: () => {
+        const room = this.rooms['Vault'];
+        if (room) {
+          const flash = this.add.graphics().setDepth(10);
+          flash.fillStyle(0x4ade80, 0.25); flash.fillRect(room.x0, room.y0, room.RW, room.RH);
+          this.tweens.add({ targets: flash, alpha: 0, duration: 1200, onComplete: () => flash.destroy() });
+        }
+        RK.capBanner(this, '✓ VAULT OPENED', 'grant');
+      }
+    });
+  }
+
+  _onThink(name) {
+    const agent = this.agents[name]; if (!agent) return;
+    this._clearThink(name);
+    const ring = this.add.graphics().setDepth(18);
+    ring.lineStyle(2, RK.C.GOLD, 1); ring.strokeCircle(0, 0, 15);
+    ring.setPosition(agent.container.x, agent.container.y);
+    agent.thinkRing = ring;
+    agent.thinkTween = this.tweens.add({ targets: ring, scaleX: 2.5, scaleY: 2.5, alpha: 0, duration: 900, repeat: -1, ease: 'Sine.easeOut',
+      onRepeat: () => ring.setPosition(agent.container.x, agent.container.y).setAlpha(1).setScale(1)
+    });
+    const bub = this.add.text(agent.container.x, agent.container.y - 22, '· · ·', { fontFamily: RK.PX, fontSize: '15px', color: '#ffd166' }).setOrigin(0.5, 1).setDepth(25);
+    agent.bubble = bub;
+    this.tweens.add({ targets: bub, y: bub.y - 9, duration: 700, repeat: -1, yoyo: true, ease: 'Sine.easeInOut' });
+  }
+
+  // Lex grant layer refused a skill — stamp the agent and flash a banner.
+  _onDenied(name, skill, why) {
+    const a = this.agents[name];
+    if (a) RK.capStamp(this, a.container.x, a.container.y - 26, '⛔ DENIED', 'deny');
+    RK.capBanner(this, '⛔ GRANT DENIED\n' + (skill || 'skill'), 'deny');
+  }
+
+  _bounce(name) {
+    const r = this.agents[name]; if (!r) return;
+    this.tweens.add({ targets: r.container, y: r.container.y - 7, duration: 120, yoyo: true, ease: 'Sine.easeOut' });
+  }
+
+  _clearThink(name) {
+    const r = this.agents[name]; if (!r) return;
+    if (r.thinkTween) { r.thinkTween.stop(); r.thinkTween = null; }
+    if (r.thinkRing)  { r.thinkRing.destroy(); r.thinkRing = null; }
+    if (r.bubble)     { r.bubble.destroy(); r.bubble = null; }
+  }
+
+  handleEvent(ev) {
+    const k = ev.kind;
+    const name = ev.agent || ev.robot || '';
+    const area = ev.area || ev.room || ev.module || '';
+
+    if (k === 'start') {
+      Object.keys(this.agents).forEach(n => { this._clearThink(n); this.agents[n].container.setAlpha(1); });
+    }
+    else if (k === 'phase') {
+      const txt = this.add.text(this.W/2, 10, `PHASE: ${(ev.phase||'').toUpperCase()}`, {
+        fontFamily: RK.PXH, fontSize: '7px', color: '#ffd166',
+        backgroundColor: '#0a1a1fdd', padding: { x: 10, y: 6 }
+      }).setOrigin(0.5, 0).setDepth(50).setAlpha(0);
+      this.tweens.add({ targets: txt, alpha: 1, duration: 300,
+        onComplete: () => this.tweens.add({ targets: txt, alpha: 0, duration: 400, delay: 1100, onComplete: () => txt.destroy() })
+      });
+    }
+    else if (k === 'denied') {
+      this._onDenied(name, ev.skill || '', ev.why || '');
+    }
+    else if (k === 'qr_meet') this._onQRMeet(name, ev.blob || '');
+    else if (k === 'area_scanned' || k === 'a2a_call') {
+      if (name && area) this._moveAgent(name, area);
+      else if (name) this._onThink(name);
+    }
+    else if (k === 'agent_think') {
+      if (name) this._onThink(name);
+    }
+    else if (k === 'cameras_disabled') {
+      this._disableCameras();
+    }
+    else if (k === 'vault_opened') {
+      this._openVault();
+    }
+    else if (k === 'agent_done') {
+      if (name && this.agents[name]) {
+        this._clearThink(name);
+        const r = this.agents[name];
+        this.tweens.add({ targets: r.container, x: r.homeX, y: r.homeY, duration: 600, ease: 'Sine.easeInOut' });
+      }
+    }
+    else if (k === 'done') {
+      const txt = this.add.text(this.W/2, this.H/2, 'HEIST COMPLETE', {
+        fontFamily: RK.PXH, fontSize: '14px', color: '#4ade80',
+        backgroundColor: '#0a1a1fee', padding: { x: 18, y: 12 }
+      }).setOrigin(0.5, 0.5).setDepth(50).setAlpha(0);
+      this.tweens.add({ targets: txt, alpha: 1, duration: 500,
+        onComplete: () => this.tweens.add({ targets: txt, alpha: 0, duration: 600, delay: 1800, onComplete: () => txt.destroy() })
+      });
+    }
+  }
+
+  _onQRMeet(agentName, blob) {
+    const a = this.agents[agentName]; if (!a || typeof RK === 'undefined') return;
+    const qx = a.container.x, qy = a.container.y - 46;
+    RK.makeQR(this, qx, qy, blob, 50, (grp) => {
+      const tag = this.add.text(qx, qy + 30, 'bootstrap blob — no prior key', { fontFamily: RK.PX, fontSize: '11px', color: '#7fd4ff' }).setOrigin(0.5,0).setDepth(27).setAlpha(0);
+      this.tweens.add({ targets: tag, alpha: 1, duration: 200 });
+      RK.scanBeam(this, a.container.x, a.container.y - 10, qx, qy);
+      this.time.delayedCall(1100, () => { this.tweens.add({ targets: tag, alpha: 0, duration: 350, onComplete: () => tag.destroy() }); this.tweens.add({ targets: [grp.bg, grp.img], alpha: 0, duration: 400, onComplete: () => grp.destroy() }); });
+    });
+  }
+}
+
+window.addEventListener('load', () => {
+  const container = document.getElementById('game-container');
+  const W = Math.max(container.clientWidth || 900, 400);
+  const H = Math.max(container.clientHeight || 250, 240);
+  RK.startWhenFontsReady(() => new Phaser.Game(RK.gameConfig('game-container', W, H, HeistScene)));
+});
+
+async function answerQuestion(qid, btn) {
+  const card = document.getElementById('qcard-' + qid);
+  if (!card) return;
+  const answer = card.querySelector('.q-input').value.trim();
+  if (!answer) return;
+  btn.disabled = true;
+  try {
+    await fetch('/answer-human', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: qid, answer })
+    });
+  } catch(e) { btn.disabled = false; }
+}
+
+function ts() { return new Date().toTimeString().slice(0, 8); }
+
+function addLog(kind, agent, body, cls) {
+  const el = document.createElement('div'); el.className = 'll';
+  const agHtml = agent ? `<span class="cu">${agent}</span>` : '';
+  el.innerHTML = `<span class="ts">${ts()}</span><span class="ev">${kind}</span>${agHtml}<span class="${cls||''}">${body}</span>`;
+  const log = document.getElementById('log');
+  log.appendChild(el); log.scrollTop = log.scrollHeight;
+}
+
+function addMission(text, color) {
+  const el = document.createElement('div'); el.className = 'ml-row';
+  el.style.color = color || 'var(--muted)';
+  el.innerHTML = `<span class="ml-ts">${ts()}</span>${text}`;
+  const log = document.getElementById('mission-log');
+  log.appendChild(el); log.scrollTop = log.scrollHeight;
+}
+
+function addMsg(type, who, kind, body) {
+  const feed = document.getElementById('a2a-feed');
+  if (feed.firstElementChild && !feed.firstElementChild.classList.contains('msg')) feed.innerHTML = '';
+  const el = document.createElement('div'); el.className = `msg ${type}`;
+  el.innerHTML = `<div class="msg-header"><span class="msg-who" style="background:#1a2a1a;color:var(--green)">${who}</span><span class="msg-kind">${kind}</span></div><div class="msg-body">${body}</div>`;
+  feed.appendChild(el); feed.scrollTop = feed.scrollHeight;
+  while (feed.children.length > 80) feed.removeChild(feed.firstChild);
+}
+
+function setAgentLoc(name, loc) {
+  const el = document.getElementById('loc-' + name); if (el) el.textContent = loc;
+}
+
+function addQuestion(qid, agent, question) {
+  const panel = document.getElementById('questions-panel');
+  const list  = document.getElementById('questions-list');
+  if (document.getElementById('qcard-' + qid)) return;
+  panel.style.display = '';
+  const card = document.createElement('div'); card.className = 'q-card'; card.id = 'qcard-' + qid;
+  card.innerHTML = `
+    <span class="q-robot" style="background:#cc66ff33;color:#cc66ff;border:1px solid #cc66ff">VAULT AUTH</span>
+    <div class="q-text">${question}</div>
+    <div class="q-reply">
+      <input class="q-input" type="text" placeholder="Enter override code…">
+      <button class="btn" style="padding:3px 8px;font-size:10px;border-color:var(--purple);color:var(--purple)" onclick="answerQuestion('${qid}', this)">Authorize</button>
+    </div>`;
+  list.appendChild(card);
+  card.querySelector('.q-input').addEventListener('keydown', e => { if (e.key === 'Enter') card.querySelector('.btn').click(); });
+}
+
+function removeQuestion(qid) {
+  const card = document.getElementById('qcard-' + qid); if (card) card.remove();
+  const list = document.getElementById('questions-list');
+  if (!list.children.length) document.getElementById('questions-panel').style.display = 'none';
+}
+
+function setAlarm(active) {
+  const ind = document.getElementById('alarm-indicator');
+  const panel = document.getElementById('alarm-panel');
+  const detail = document.getElementById('alarm-detail');
+  if (active) {
+    ind.className = 'alarm-on'; ind.textContent = '■ ALARM ACTIVE';
+    panel.classList.add('active');
+    detail.textContent = 'Security response en route';
+  } else {
+    ind.className = 'alarm-off'; ind.textContent = '✓ ALARM DISABLED';
+    panel.classList.remove('active');
+    panel.style.borderColor = 'var(--green)';
+    detail.textContent = 'All cameras offline — blind spots active';
+  }
+}
+
+function handleEvent(ev) {
+  const k = ev.kind;
+  const agent = ev.agent || ev.robot || '';
+  const area  = ev.area || ev.room || ev.module || '';
+
+  if (gameScene) gameScene.handleEvent(ev);
+  else eventQueue.push(ev);
+
+  if (k === 'start') {
+    document.getElementById('h-meta').textContent = 'MISSION ACTIVE — all units go';
+    document.getElementById('h-dot').className = 'run';
+    document.getElementById('h-status').textContent = 'running';
+    setAlarm(true);
+    addMission('Mission started', '#00ff41');
+    addLog('start', '', 'Heist initiated', '');
+    return;
+  }
+  if (k === 'phase') {
+    addMsg('msg-phase', 'OPS', 'phase', `◆ ${(ev.phase||'').toUpperCase()}`);
+    addMission(`◆ Phase: ${ev.phase}`, '#00ff41');
+    addLog('phase', '', ev.phase, '');
+    return;
+  }
+  if (k === 'area_scanned') {
+    setAgentLoc(agent, area);
+    addMsg('msg-call', agent, 'scan', `${area} scanned — ${ev.result || 'clear'}`);
+    addMission(`${agent} scanned ${area}`, 'var(--muted)');
+    addLog('area_scanned', agent, area, '');
+    return;
+  }
+  if (k === 'distraction') {
+    addMsg('msg-call', agent, 'distraction', ev.detail || 'distraction deployed');
+    addMission(`Distraction: ${ev.detail || ''}`, '#ff8c00');
+    addLog('distraction', agent, ev.detail || '', '');
+    return;
+  }
+  if (k === 'cameras_disabled') {
+    setAlarm(false);
+    addMsg('msg-success', 'Hacker', '✓ cameras disabled', 'All surveillance feeds terminated');
+    addMission('✓ Cameras disabled', '#00ff41');
+    addLog('cameras_disabled', agent, 'all feeds dark', 'ok');
+    return;
+  }
+  if (k === 'keycard_cloned') {
+    setAgentLoc(agent, 'Lobby');
+    addMsg('msg-success', agent, '✓ keycard cloned', ev.detail || 'Access level: MAX');
+    addMission(`✓ Keycard cloned by ${agent}`, '#00ff41');
+    addLog('keycard_cloned', agent, 'max access', 'ok');
+    return;
+  }
+  if (k === 'file_downloaded') {
+    setAgentLoc(agent, 'Server');
+    addMsg('msg-success', agent, '✓ files downloaded', ev.detail || 'Transfer complete');
+    addMission(`✓ Files exfiltrated by ${agent}`, '#00ff41');
+    addLog('file_downloaded', agent, 'exfil complete', 'ok');
+    return;
+  }
+  if (k === 'vault_opened') {
+    setAgentLoc(agent, 'Vault');
+    addMsg('msg-vault', agent, '✓ VAULT OPEN', '■ ACCESS GRANTED — Extraction in progress');
+    addMission('■ VAULT OPENED', '#cc66ff');
+    addLog('vault_opened', agent, 'vault open', 'ok');
+    return;
+  }
+  if (k === 'denied') {
+    addMsg('msg-alert', agent, '⛔ grant denied', `<strong>${ev.skill || 'skill'}</strong> — ${ev.why || 'not in session grant'}`);
+    addMission(`⛔ GRANT DENIED: ${agent} → ${ev.skill || ''}`, '#ff3333');
+    addLog('denied', agent, `${ev.skill || ''}: ${ev.why || 'denied'}`, 'er');
+    return;
+  }
+  if (k === 'qr_meet') {
+    addMsg('msg-call', agent, '⊞ meet', 'scanned <code>bootstrap blob</code> — no prior key');
+    addLog('qr_meet', agent, `${area}: bootstrap QR`, '');
+    return;
+  }
+  if (k === 'human_question') {
+    addQuestion(ev.id, agent, ev.question || '');
+    addMsg('msg-question', agent, '❓ vault auth', ev.question || '');
+    addLog('human_question', agent, (ev.question||'').slice(0,80), '');
+    return;
+  }
+  if (k === 'human_answered') {
+    removeQuestion(ev.id);
+    addLog('human_answered', agent, `replied to ${ev.id}`, 'ok');
+    return;
+  }
+  if (k === 'agent_done') {
+    setAgentLoc(agent, 'exfil');
+    addMsg('msg-success', agent, 'done', `${agent} exfiltrated`);
+    addMission(`${agent} exfiltrated`, '#00ff41');
+    addLog('agent_done', agent, 'exfil', 'ok');
+    return;
+  }
+  if (k === 'done') {
+    document.getElementById('h-dot').className = 'live';
+    document.getElementById('h-status').textContent = 'complete';
+    addMsg('msg-success', 'OPS', '✓ mission complete', '<strong>All objectives achieved — crew extracted</strong>');
+    addMission('MISSION COMPLETE — CREW EXTRACTED', '#00ff41');
+    addLog('done', '', 'Heist complete', 'ok');
+    return;
+  }
+  if (k === 'agent_think') {
+    addLog('agent_think', agent, 'reasoning', '');
+    return;
+  }
+  addLog(k, agent, JSON.stringify(ev).slice(0, 100), '');
+}
+
+function connect() {
+  const dot = document.getElementById('h-dot'), sts = document.getElementById('h-status');
+  dot.className = ''; sts.textContent = 'connecting';
+  const es = new EventSource('/events');
+  es.onopen = () => { dot.className = 'live'; sts.textContent = 'connected'; };
+  es.onmessage = e => { try { handleEvent(JSON.parse(e.data)); } catch(err) { console.warn('bad event', e.data, err); } };
+  // The /events long-poll closes after each batch, firing onerror. That is NOT a
+  // real disconnect — let the native EventSource reconnect (it preserves
+  // Last-Event-ID). Manually closing + reopening would replay from id 0.
+  es.onerror = () => { dot.className = ''; sts.textContent = 'reconnecting…'; };
+}
+connect();
+</script>
+</body>
+</html>

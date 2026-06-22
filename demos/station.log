@@ -1,0 +1,50 @@
+══════════════════════════════════════════════════════
+   SPACE STATION EMERGENCY — Hull Breach in Cargo Bay
+   Alpha:  Life Support  — pressure & sealing
+   Beta:   Navigation	 — attitude stabilisation
+   Gamma:  Communications — alerts & ground contact
+   Delta:  Cargo Bay	 — containment & venting
+   Dashboard: http://localhost:8900
+══════════════════════════════════════════════════════
+[station] setting up 4 modules ...
+   Life Support  pubkey=l0ucLfADeC_3_sfP...
+   Navigation  pubkey=uSNKqEEq0CPPu7LD...
+   Communications  pubkey=msmgt5QqDNUyQpeF...
+   Cargo Bay  pubkey=BDqkMW02TNKl5kBL...
+── Alpha dispatched to Life Support ──────────────────────
+  [Alpha] connected to Life Support — running emergency protocol ...
+  LLM → read_sensor(sensor_id="hull_integrity")
+  LLM ← {"module":"station_life_support","oxygen_pct":21.0,"pressure_kpa":101.3,"temperature_c":22.0,"breach":false,"status":"nominal"}
+  LLM → adjust_pressure(target_kpa=85)
+  LLM ← {"status":"ok","pressure_kpa":85,"equalizing":true,"eta_s":45}
+  LLM → emergency_seal()
+  LLM ← {"status":"sealed","pressurizing":true,"time_to_seal_s":45}
+  [Alpha] done: RESULT:SECURED
+── Beta dispatched to Navigation ─────────────────────────
+  [Beta] connected to Navigation — running stabilisation protocol ...
+  LLM → read_sensor(sensor_id="attitude")
+  LLM ← {"module":"station_navigation","oxygen_pct":21.0,"pressure_kpa":101.3,"temperature_c":22.0,"breach":false,"status":"nominal"}
+  LLM → course_correct(delta_v=12)
+  LLM ← {"status":"ok","delta_applied_deg":0,"new_heading_deg":180}
+  LLM → deploy_thrusters(duration_s=8)
+  LLM ← {"status":"firing","burn_duration_s":10,"delta_v_ms":2.3}
+  [Beta] done: RESULT:CORRECTED
+── Gamma dispatched to Communications ────────────────────
+  [Gamma] connected to Communications — running alert protocol ...
+  LLM → read_sensor(sensor_id="comms_link")
+  LLM ← {"module":"station_comms","oxygen_pct":21.0,"pressure_kpa":101.3,"temperature_c":22.0,"breach":false,"status":"nominal"}
+  LLM → broadcast_alert(message="MAYDAY: Hull breach in Cargo Bay. All crew to emergency stations.")
+  LLM ← {"status":"sent","message":"MAYDAY: Hull breach in Cargo Bay. All crew to emergency stations.","stations_reached":847,"priority":"high"}
+  LLM → contact_ground(status="Hull breach emergency ? requesting evacuation guidance")
+  LLM ← {"status":"ok","latency_s":0.8,"ground_reply":"Acknowledged. Emergency protocols activated."}
+  [Gamma] done: RESULT:ALERTED
+── Delta dispatched to Cargo Bay ─────────────────────────
+  [Delta] connected to Cargo Bay — running containment protocol ...
+  LLM → read_sensor(sensor_id="pressure_differential")
+  LLM ← {"module":"station_cargo","oxygen_pct":18.5,"pressure_kpa":85.0,"temperature_c":5.0,"breach":true,"status":"CRITICAL - HULL BREACH"}
+  LLM → seal_cargo_bay(mode="emergency")
+  LLM ← {"status":"sealed","doors_closed":4,"time_s":12,"pressure_restoring":true}
+  [Delta] done: RESULT:SEALED
+══════════════════════════════════════════════════════
+   EMERGENCY RESPONSE COMPLETE — check http://localhost:8900
+null

@@ -7,13 +7,30 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 fail=0
+skipped=0
 pass() { printf "  \033[32mPASS\033[0m %s\n" "$1"; }
 bad()  { printf "  \033[31mFAIL\033[0m %s\n" "$1"; fail=1; }
+skip() { printf "  \033[33mSKIP\033[0m %s\n" "$1"; skipped=$((skipped+1)); }
 
+# Type-check every Lex source. A file is SKIPped (visible, not silent) only when
+# an external package it imports isn't present in the minimal CI — the lex-guard
+# A2A-commerce demos use the `../lex-guard` path dep, absent from a lone lex-robot
+# checkout. A genuine type error still FAILs. (std.crypto.ed25519 — used by the
+# A2A cards and lex-games — ships in lex v0.9.11, the toolchain CI installs, so
+# those type-check rather than skip.)
+skippable() { grep -qiE "package import error|no such file|failed to (fetch|resolve|clone)|could not (find|resolve)" <<<"$1"; }
 echo "== lex check =="
 for f in src/*.lex examples/*.lex; do
-  if lex check "$f" >/dev/null 2>&1; then pass "check $f"; else bad "check $f"; fi
+  if out="$(lex check "$f" 2>&1)"; then
+    pass "check $f"
+  elif skippable "$out"; then
+    skip "check $f (needs an external package not present here — e.g. ../lex-guard)"
+  else
+    bad "check $f"
+    echo "$out" | sed 's/^/      /'
+  fi
 done
+[ "$skipped" -gt 0 ] && echo "  ($skipped skipped — external dep not present in this checkout)"
 
 # Run a demo and assert an expected substring appears in its output.
 expect() { # <demo> <needle> <label>
@@ -27,6 +44,20 @@ expect llm   "BLOCKED (never sent): 3" "LLM planner blocks 3 unsafe actions"
 expect llm   "chain intact" "LLM planner audit chain verifies"
 expect task  "SUCCESS" "evidence-gated task graph succeeds"
 expect depot "task SUCCESS" "OCPP-gated depot demo succeeds"
+expect dynamic_keepout "commands BLOCKED" "dynamic keep-out blocks intrusions into moving bystander zone"
+expect dynamic_keepout "entered zone: 0" "dynamic keep-out: zero commands reach the moving zone when governed"
+expect tool_fire "BLOCKED: target outside tool firing zone" "tool fire: out-of-zone attempts blocked"
+expect tool_fire "BLOCKED: workpiece not clamped" "tool fire: pre-clamp attempt blocked"
+expect tool_fire "→ FIRED" "tool fire: valid fire after clamp verify"
+
+# The budget wall (DESIGN.md §6/§9.5): the grant carries action + wall-clock
+# budgets, and the in-box supervisor (src/budget.lex) kills a run that exceeds
+# them BEFORE the next command leaves the box — the runtime twin of the effect
+# wall. budget_demo uses a zero-action grant, so the same task that SUCCEEDs
+# above is killed with no command sent, and the kill is recorded in the trail.
+echo "== budget kill =="
+expect budget "action budget exhausted" "supervisor reports the budget breach reason"
+expect budget "task KILLED" "zero-action grant → run killed before any command"
 
 # The effect wall (DESIGN.md §4): actuate/sense are real Lex effects, so the
 # judgment/authority split is type-enforced — not a runtime convention. Both

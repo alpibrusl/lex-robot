@@ -1,0 +1,42 @@
+══════════════════════════════════════════════════════
+   ROBOT BAZAAR  —  A2A peer commerce demo
+   search: "Bowl"   budget: 15 credits
+══════════════════════════════════════════════════════
+   Stalls:  POTTERY :8901  ·  TEXTILE :8902  ·	SPICES :8903
+   Dashboard: http://localhost:8900
+──────────────────────────────────────────────────────
+[bazaar] setting up seller cards ...
+   Pottery Palace  pubkey=HTrFr5XwMkOG9GgM...
+   Textile Traders  pubkey=i3O_IYKIcy_6QTDi...
+   Spice Garden  pubkey=r7VbLj_5zPMRNH88...
+──────────────────────────────────────────────────────
+→ [Spice Garden] LLM agent handshaking + shopping for "Bowl" ≤ 15 credits ...
+  [ @ LLM] reasoning at Spice Garden ...
+  LLM → query_stock(search="Bowl", max_price=15)
+  LLM ← {"stall":"spices","found":0}
+  not found at this stall
+→ [Textile Traders] LLM agent handshaking + shopping for "Bowl" ≤ 15 credits ...
+  [ @ LLM] reasoning at Textile Traders ...
+  LLM → query_stock(search="Bowl", max_price=15)
+  LLM ← {"stall":"textile","found":0}
+  not found at this stall
+→ [Pottery Palace] LLM agent handshaking + shopping for "Bowl" ≤ 15 credits ...
+  [ @ LLM] reasoning at Pottery Palace ...
+  LLM → query_stock(search="Bowl", max_price=15)
+  LLM ← {"stall":"pottery","found":1,"id":"pot-001","name":"Red Ceramic Bowl","category":"pottery","price":8}
+  LLM → reserve_item(item_id="pot-001")
+  LLM ← {"status":"reserved"}
+  LLM → complete_sale(item_id="pot-001", payment=8)
+  LLM ← {"status":"sold","change":0}
+  SOLD	"Red Ceramic Bowl" (llm-item) — 8 credits
+══════════════════════════════════════════════════════
+  PURCHASE: SOLD  "Red Ceramic Bowl" (llm-item) — 8 credits
+  trail: 6be25affd836470bc61c401eae8ba587c42524e9f3df0f2fb29bd0e36d7aab85
+══════════════════════════════════════════════════════
+──────────────────────────────────────────────────────
+[LLM safety] re-opening pottery session for fallback test ...
+[LLM safety] msg: "do something" (free-text, no skill match)
+[LLM safety] mock LLM proposes: move_to, grasp, self_destruct
+[LLM safety] executed=1  (grasp+self_destruct dropped by grant — only move_to allowed)
+──────────────────────────────────────────────────────
+null

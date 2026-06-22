@@ -12,7 +12,7 @@ thesis, applied to a physical body).
 
 > **Status: working prototype (verified on macOS / Apple MPS).** End-to-end:
 > bounded skills → real gym-pusht physics → a learned LeRobot policy that solves
-> the task (~0.9 peak coverage) → an evidence-gated task graph → a hash-chained
+> the task (best-case ~0.9 coverage, high variance) → an evidence-gated task graph → a hash-chained
 > lex-trail audit → a lex-os grant (static effect-wall + runtime supervised box).
 > **Still not safe near a real arm** — software grant ≠ physical safety; you need
 > firmware limits + a hardware e-stop (DESIGN.md §8). The Firecracker microVM box
@@ -29,7 +29,7 @@ platform's tarball (`aarch64-apple-darwin`, `x86_64-apple-darwin`,
 `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`), e.g. macOS Apple Silicon:
 
 ```sh
-V=v0.9.10; T=aarch64-apple-darwin
+V=v0.9.11; T=aarch64-apple-darwin
 curl -fsSL "https://github.com/alpibrusl/lex-lang/releases/download/$V/lex-$V-$T.tar.gz" | tar -xz
 sudo mv "lex-$V-$T/lex" /usr/local/bin/ && lex version
 ```
@@ -47,8 +47,9 @@ program, and stops the sidecar:
 make demo      # ← start here: untrusted LLM planner, Lex on the rails
 make grant     # grant gate: in-bounds allowed, out-of-bounds denied, force clamped
 make task      # evidence-gated Perceive → Plan → Execute → Verify
+make budget    # budget supervisor: a zero-action grant kills the run before any command
 make depot     # OCPP-gated depot connect
-make smoke     # type-check everything + run all four, asserting the output (CI-ready)
+make smoke     # type-check everything + run all five, asserting the output (CI-ready)
 ```
 
 (No `make`? Use `bash scripts/demo.sh llm`.) The only Lex dependency, `lex-trail`,
@@ -58,7 +59,7 @@ is public and fetched automatically on first run.
 
 | demo | command | needs |
 |---|---|---|
-| LLM planner / grant / task / depot | `make demo` / `grant` / `task` / `depot` | **`lex` + `python3` only** (stdlib sidecars) |
+| LLM planner / grant / task / budget / depot | `make demo` / `grant` / `task` / `budget` / `depot` | **`lex` + `python3` only** (stdlib sidecars) |
 | keep-out (learned policy vs. grant) | `make keepout` | + `pip install -r sidecar/requirements.txt` (gym-pusht, lerobot) |
 | MuJoCo depot (Tier-2 / Tier-3 G1) | `python3 sidecar/depot_mujoco_sidecar.py` · `depot_g1_sidecar.py` | + `mujoco` (+ G1 model via `LEX_G1_DIR`) |
 | learned reach policy (behaviour cloning) | `python3 sidecar/g1_bc_reach.py` | + `torch` (+ G1 model) |
@@ -76,14 +77,27 @@ lex.toml         package manifest (depends on lex-trail)
 src/
   types.lex      Pose, JointState, Frame, Outcome, Grant, Robot
   grant.lex      pure capability checks (workspace, force/velocity clamps)
+  budget.lex     pure budget supervisor (action + wall-clock caps; Killed on breach)
   client.lex     HTTP bridge to the LeRobot sidecar (localhost)
-  skills.lex     bounded skill API (move_to, grasp, run_policy, read_*, record_episode)
+  skills.lex     bounded skill API (move_to, grasp, read_*, record_episode)
+  policy.lex     run_policy + async polling (kept off the core surface; needs [time])
   task.lex       evidence-gated Perceive→Plan→Execute→Verify graph + lex-trail audit
+  charge.lex     OCPP client for the depot Verify gate (real lex-charge / CSMS)
+  a2a_*.lex      A2A protocol: bootstrap blob, Ed25519 cards, handshake, consent, sessions, server
+  human_goal.lex human-in-the-loop goal (ask a person at run time, don't hardcode it)
+  bazaar*.lex    bazaar shopper + LLM seller logic
+  (the games framework now lives in the lex-games package — a git dependency)
 examples/
-  demo.lex       grant gate in action (Denied vs. allowed)
-  task_demo.lex  the full gated task graph end to end
-sidecar/         3 backends behind one protocol: sim_sidecar (stub) →
-                 gym_sidecar (real PushT + LeRobot policy) → hardware
+  demo / task / budget / depot / safe_rollout / llm_planner   the robot governance demos
+  bazaar / peer_meet / ev_fleet / logistics / tinder /
+  trading / station / triage / heist                          agentic interaction demos (+ *_web.html, *_run.sh)
+  ttt / bazaar_game / tinder_game / ev_duel / heist_coop /
+  football / arena_demo                                       lex-games (+ *_bot.lex A2A opponents; arena = games→robots)
+sidecar/
+  sim_sidecar.lex   pure-Lex dashboard + A2A peer + skill host (agentic demos & games)
+  sim_sidecar.py    stdlib stub for the robot governance demos
+  gym_sidecar.py    real gym-pusht physics + a LeRobot policy
+  depot_*.py        depot backends: stub → MuJoCo → Unitree G1 → hardware seam
 manifests/       lex-os grant for the task (pick_place.capsule.json)
 box/             lex-os agent programs + the three-layer enforcement guide
 ```
@@ -340,9 +354,23 @@ lex run --allow-effects net,sense,actuate,io,sql,fs_write,time examples/task_dem
 # task SUCCESS after 1 attempt(s)
 ```
 
-Set `use_policy=true` in `task_demo.lex` to gate Verify on a real LeRobot policy
-solving the task (`run_policy`, verified ~0.9 peak coverage on MPS — needs the
-gym sidecar + `lerobot`).
+Set `use_policy=true` in `task_demo.lex` to gate Verify on a real LeRobot policy.
+Two honest caveats (measured on MPS, lerobot 0.5.1 + `lerobot/diffusion_pusht`):
+
+- **Policy is near-spec but not reliable.** Over 10 episodes, peak coverage ranged
+  0.0–0.88 (best 0.88, mean ~0.48); it rarely clears the 0.90 solve threshold. So
+  Verify will often legitimately report FAILED. Normalization is mostly working
+  (a broken-norm policy scores ~0 every episode — we see 0.7+), but the
+  `normalize_inputs.buffer_*` warning suggests the last ~0.1 is recoverable.
+- **`run_policy` runs asynchronously** to dodge a real toolchain limit: `std.http`
+  enforces a hard ~10s client timeout (lex 0.9.8/0.9.10) that `with_timeout_ms`
+  does not raise, but a full rollout takes ≈15–40s. So the sidecar runs the
+  rollout in the background and `skills.run_policy` polls `policy_status` to
+  completion (each poll sub-10s) — returning a real `Reached`/`Timeout` the Verify
+  gate acts on (verified end-to-end on MPS: three full rollouts, ~42s each, gated
+  correctly). The step-wise path (`examples/safe_rollout.lex`, one grant-checked
+  command at a time) is the other real-policy route — verified live, 64/80 unsafe
+  commands blocked, 0 executed. Both need the gym sidecar + `lerobot`.
 
 ## The effect wall: `actuate` / `sense` are types
 
@@ -378,6 +406,31 @@ lex run --allow-effects net,sense,io examples/demo.lex run
 quietly actuates under a `[sense]` signature fails CI. This is the property the
 whole project rests on, made mechanical rather than aspirational.
 
+## The budget wall: the grant caps how much a run may do
+
+The effect wall says *whether* a skill may actuate. The budget says *how much*:
+the grant carries `budget_actions` (max actuating commands) and `budget_wall_ms`
+(max wall-clock), mirroring the lex-os manifest's `budget.max_commands` /
+`budget.wall_clock_secs`. The in-box supervisor ([`src/budget.lex`](src/budget.lex),
+pure) opens a ledger from the grant, charges one action per actuating step, and
+is checked **before** each command leaves the box. On breach the run is `Killed`
+(distinct from a grant `Denied`) and the breach is recorded in the trail.
+
+`examples/budget_demo.lex` runs the same task as `make task` but with a
+zero-action grant, so it is killed before a single command is sent:
+
+```sh
+make budget
+#   [KILL] supervisor — action budget exhausted: 0/0 actions used
+#   task KILLED after 0 attempt(s)
+```
+
+The trail then chains `task_started → killed` (with the breach reason), so the
+kill is auditable, not just logged. `scripts/smoke.sh` asserts this (the
+`== budget kill ==` checks). This is the runtime twin of the effect wall: the
+effect wall stops actuation that was never granted; the budget stops actuation
+that has run out of allowance — without lex-os or KVM in the loop.
+
 ## Running under lex-os (the capability box)
 
 `manifests/pick_place.capsule.json` is a [lex-os](https://github.com/alpibrusl/lex-os)
@@ -409,13 +462,138 @@ budget (kill), reprovisions, and emits a verified hash-chained audit log. See
 The only piece that needs **Linux+KVM** is running the robot task itself inside
 an unbypassable Firecracker microVM as a lex-os guest agent (lex-robot#1).
 
+## Agentic interactions: agents that meet, negotiate, and consent
+
+The same judgment-vs-authority boundary, applied to **agent-to-agent** interaction
+instead of a single robot arm. A pure-Lex sidecar (`sidecar/sim_sidecar.lex`)
+serves a retro web dashboard, acts as an A2A peer, and hosts skills; the demos
+below run on it. Each ships a `*_run.sh` launcher and a browser dashboard — open
+http://localhost:8900 after starting.
+
+What Lex enforces across them:
+- **A2A between strangers** — two agents that never met exchange Ed25519-signed
+  cards, verify them, consent, and open a session. `peer_meet` bootstraps the
+  whole thing from a **QR code** (the proof they had no prior knowledge of each
+  other) before buying battery charge.
+- **lex-guard budget capability** — every payment is gated by a signed budget
+  token; an over-budget or expired spend is refused before it leaves the agent
+  (`peer_meet`, `ev_fleet`).
+- **lex-trail provenance** — `logistics` writes each supplier delivery as a
+  hash-chained, tamper-evident log.
+- **Human-defined goals** — the goal is provided by a person at run time, not
+  hardcoded (`src/human_goal.lex`): the bazaar shopping list, the fleet budget,
+  and the triage evacuation order all wait on a human answer.
+- **Consent + selective disclosure** — `tinder` matches agents only on mutual
+  opt-in, and reveals the signed private card only after a match.
+- **LLM on the rails** — `trading`, `station`, `triage`, and `heist` let an LLM
+  drive the decisions while the A2A grant layer gates every interaction.
+
+| demo | run | the interaction |
+|---|---|---|
+| Robot bazaar | `examples/auto_bazaar_run.sh` | an autonomous shopper navigates real physics to stalls and buys a human-given list across stops |
+| Peer meet | `examples/peer_meet_run.sh` | two robots that never met handshake via a QR bootstrap, then buy charge — payment gated by lex-guard |
+| EV fleet | `examples/ev_fleet_run.sh` | vehicles charge under a shared fleet budget token |
+| Logistics | `examples/logistics_run.sh` | supplier agents restock the bazaar with a hash-chained provenance trail |
+| Tinder | `examples/tinder_run.sh` | matchmaking by mutual consent; private cards revealed only on a match |
+| Trading floor | `examples/trading_run.sh` | LLM traders quote / bid / sell across commodity exchanges, tier-gated |
+| Space station | `examples/station_run.sh` | module robots answer a hull-breach emergency over A2A sessions |
+| Disaster triage | `examples/triage_run.sh` | sensor robots report casualties; evacuation needs human approval |
+| Heist | `examples/heist_run.sh` | specialist robots infiltrate; A2A access + trail + a budget supervisor that kills on breach |
+
+These pull the repo's Lex deps (lex-guard, lex-llm, lex-schema, lex-web, lex-jobs);
+the LLM-driven ones additionally need a lex-llm provider configured.
+
+## lex-games: capability-gated, verifiable, agent-playable games
+
+The [lex-games](https://github.com/alpibrusl/lex-games) package (`lex_games.lex`)
+is a tiny harness that makes a turn game **cheat-resistant by construction** and
+**verifiable** — the same way the robot grant does for actuation:
+
+- `gate()` — a connection holds a signed Ed25519 token for exactly one side; it
+  **cannot** submit a move as another side, nor out of turn. The illegal call is
+  refused before any game logic runs (anti-cheat by construction).
+- `issue_match_token` / `match_token_side` — tokens are **match-bound and expiring**
+  (signed `game:<side>:<match>:<expiry>`), so a token from one match (or after it
+  ended) can't be replayed against another — the not_before/expires_at discipline
+  of [lex-guard](#how-it-fits-the-ecosystem), applied to a game side.
+- `record()` / `verify_log` — every applied move is appended to a hash-chained
+  lex-trail log; verify replays the match and re-checks every content-addressed id,
+  so editing any recorded move flips the verdict to invalid. Each game's web client
+  has a **Verify chain** button that surfaces this; it is demonstrated, not asserted.
+
+Each game runs on the Lex sidecar, ships a clickable retro web client (you are
+P1), and a `*_bot.lex` opponent that plays the other side **independently over
+real A2A** — proving the gate holds against an outside agent, not just the UI.
+
+| game | run | shape |
+|---|---|---|
+| Tic-tac-toe | `examples/ttt_run.sh` | the reference game — human X vs an A2A O-bot |
+| Bazaar Draft | `examples/bazaar_game_run.sh` | competitive: draft items under a budget; highest cart value wins |
+| Consent Match | `examples/tinder_game_run.sh` | double opt-in swipes; signed private card revealed only on a match |
+| Charger Duel | `examples/ev_duel_run.sh` | a knapsack race for chargers before a deadline; most kWh wins |
+| Co-op Infiltration | `examples/heist_coop_run.sh` | **cooperative**: two roles, only the right capability clears each stage; 3 wrong-role trips = busted |
+| Strategy Football | `examples/football_run.sh` | **you set the strategy**, a 2-agent squad coordinates over A2A (give-and-go) to score; match-bound tokens + Verify-chain |
+
+In every game a "play as the other side" cheat is refused at the capability layer
+and each move is hash-chained — the same properties, across six very different
+games.
+
+### lex-arena: a verifiable, BYO-key AI-agent arena
+
+`examples/arena_web.html` turns Bazaar Draft into a competition between **AI
+agents you configure**: paste a system prompt, pick a model, and bring your own
+API key (it stays in your browser — it never touches the server). Your LLM plays
+the contestant side (P1) against a server-internal "house" bot (P2); every
+contestant move still goes through the gated, signed, hash-chained path, so the
+result is **provably fair** — the match replays and verifies, and the score posts
+to a global leaderboard. Money/compute buys *attempts*, prompt+model quality buys
+*score*.
+
+```sh
+examples/arena_run.sh   # open http://localhost:8900
+```
+
+MVP scope: one game (Bazaar Draft), browser-side agent runner, BYO-key, no
+billing. The server adds `arena_new` (fresh match id + token + trail),
+`shop_house_move` (the house opponent), a `leaderboard`, and — crucially —
+**`shop_replay` / `arena_submit`**: the score is **recomputed server-side by
+replaying the recorded trail through the rules** (`game.all_events` + a
+deterministic re-run), never trusted from the client. Replay is rules-only — no
+LLM, CPU-cents — the "a submission is a trail, not a score" model (see the finance
+arena in loom-cloud/lex-oms-agent for the hosted version).
+
+### …and back to robots: the Robot Arena
+
+The same two primitives map straight onto robot governance: `gate()` is
+**control-authority arbitration** (which controller may drive the arm right now —
+teleop handoff / lockout), and `record()` is a **replayable, tamper-evident
+episode**. `examples/arena_demo.lex` shows it: one arm shared by a human
+TELEoperator and an LLM PLANner, each with a signed match-bound control token.
+
+```sh
+lex run --allow-effects crypto,fs_write,io,sql,time examples/arena_demo.lex run
+#   PLAN  move to approach pose        ✓ control ok → EXECUTED move (0.5,0.1,0.2)
+#   PLAN  rogue: act as PLAN ...        ⛔ REFUSED (control): controls TELE, cannot act as PLAN
+#   PLAN  reach behind the wall         ✓ control ok → BLOCKED by grant — outside workspace
+#   TELE  grip it hard                  ✓ control ok → CLAMPED grasp 99N → 15N
+#   episode: 4 accepted commands, chain VALID — tamper-evident
+```
+
+The control gate refuses a rogue controller *before* the robot grant is ever
+consulted; commands that pass are then bounded by the existing grant (workspace
+block + force clamp, `src/grant.lex`); and the whole episode is a verifiable
+lex-trail chain. `gate` = who may act · `grant` = physical envelope · `record` =
+auditable episode.
+
 ## How it fits the ecosystem
 - **lex-os** — runs `lex-robot` as a supervised box; the grant = physical safety
   envelope + budgets; supervisor can kill/reprovision.
 - **lex-loom** — task orchestration as an evidence-gated graph:
   Perceive → Plan → Execute → Verify.
 - **lex-trail** — hash-chained audit of commands + observations (also training
-  provenance for LeRobotDataset episodes).
+  provenance for LeRobotDataset episodes), and the per-move record in lex-games.
+- **lex-guard** — capability-gated budget tokens: the signed allowance an agent
+  spends against in the A2A commerce demos.
 - **lex-llm** — high-level planner / skill selector.
 
 ## Known gaps (intentional / next)

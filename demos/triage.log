@@ -1,0 +1,43 @@
+══════════════════════════════════════════════════════
+   DISASTER TRIAGE DEMO  —  3 sensor robots, 1 coordinator
+   Sensor-A → Zone Alpha (:8901)
+   Sensor-B → Zone Beta  (:8902)
+   Sensor-G → Zone Gamma (:8903)
+   Coordinator → Hospital HQ (:8904)
+   Dashboard: http://localhost:8900
+══════════════════════════════════════════════════════
+[triage] setting up 4 zones ...
+   Zone Alpha  pubkey=r5lURHsBpf3l68aA...
+   Zone Beta  pubkey=yMMkaEmYE7blndoc...
+   Zone Gamma  pubkey=MgCvR2AgrHNoMjGJ...
+   Hospital HQ	pubkey=uDIVD169ZDYm3joI...
+── Phase 1: Scanning zones ──────────────────────────
+  [Sensor-A @ LLM] scanning Zone Alpha ...
+  Sensor-A → survey_zone()
+  LLM ← {"zone":"zone_alpha","casualties":12,"severity":"critical","accessible":true,"buildings_affected":4,"fires":1}
+  Sensor-A → tag_survivors(zone_id="zone_alpha")
+  LLM ← {"status":"ok","tagged":12,"priority_cases":5,"zone":"zone_alpha"}
+[Sensor-A] Zone Zone Alpha (Sensor-A): RESULT:SURVEYED:12
+  [Sensor-B @ LLM] scanning Zone Beta ...
+  Sensor-B → survey_zone()
+  LLM ← {"zone":"zone_beta","casualties":3,"severity":"moderate","accessible":true,"buildings_affected":4,"fires":1}
+  Sensor-B → tag_survivors(zone_id="zone_beta")
+  LLM ← {"status":"ok","tagged":3,"priority_cases":2,"zone":"zone_beta"}
+[Sensor-B] Zone Zone Beta (Sensor-B): RESULT:SURVEYED:3
+  [Sensor-G @ LLM] scanning Zone Gamma ...
+  Sensor-G → survey_zone()
+  LLM ← {"zone":"zone_gamma","casualties":7,"severity":"high","accessible":false,"buildings_affected":4,"fires":1}
+[Sensor-G] Zone Zone Gamma (Sensor-G): RESULT:INACCESSIBLE
+── Phase 2: Dispatching units ───────────────────────
+[Coordinator] zone reports: Zone Zone Alpha (Sensor-A): RESULT:SURVEYED:12 | Zone Zone Beta (Sensor-B): RESULT:SURVEYED:3 | Zone Zone Gamma (Sensor-G): RESULT:INACCESSIBLE
+  [Coordinator @ LLM] dispatching rescue units ...
+  Coordinator → dispatch_unit(zone_id="Zone Alpha", unit_count=12)
+  LLM ← {"status":"dispatched","zone":"Zone Alpha","units":12,"eta_min":12}
+  Coordinator → request_helicopter(zone_id="Zone Alpha")
+  LLM ← {"status":"dispatched","callsign":"RESCUE-7","eta_min":8,"capacity":12}
+  Coordinator → dispatch_unit(zone_id="Zone Beta", unit_count=3)
+  LLM ← {"status":"dispatched","zone":"Zone Beta","units":3,"eta_min":12}
+[Coordinator]
+══════════════════════════════════════════════════════
+   TRIAGE COMPLETE  —  check http://localhost:8900
+null

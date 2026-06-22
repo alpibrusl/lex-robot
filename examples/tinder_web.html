@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Consent Matching — A2A double opt-in</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root { --bg:#0a1420; --bg2:#0f1f2d; --border:#24384a; --text:#dfeaf2; --muted:#7f9bb0; --gold:#ffd166; --green:#4ade80; --red:#f87171; --blue:#7fd4ff; --pink:#f472b6; }
+html, body { height: 100%; overflow: hidden; }
+body { background: var(--bg); color: var(--text); font-family: 'VT323','Courier New',monospace; font-size: 15px; display: flex; flex-direction: column; height: 100dvh; }
+header { background: var(--bg2); border-bottom: 1px solid var(--border); padding: 0 16px; display: flex; align-items: center; gap: 14px; flex-shrink: 0; height: 42px; }
+header h1 { font-family: '"Press Start 2P"',monospace; font-size: 11px; color: var(--pink); letter-spacing: .08em; }
+#h-meta { color: var(--muted); font-size: 14px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#h-conn { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
+#h-dot { width: 9px; height: 9px; border-radius: 50%; background: #2a3f50; }
+#h-dot.live { background: var(--green); box-shadow: 0 0 8px var(--green); }
+#h-dot.run { background: var(--gold); box-shadow: 0 0 8px var(--gold); animation: blink 1s infinite; }
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
+#main { flex: 1; min-height: 0; display: flex; flex-direction: row; overflow: hidden; }
+#game-col { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
+#game-container { flex: 1; min-height: 0; overflow: hidden; background: var(--bg); }
+#game-container canvas { display: block; }
+#sidebar { width: 330px; flex-shrink: 0; background: var(--border); border-left: 1px solid var(--border); display: flex; flex-direction: column; gap: 1px; overflow: hidden; }
+.panel { background: var(--bg); padding: 9px 11px; display: flex; flex-direction: column; gap: 6px; overflow: hidden; }
+.panel-title { font-family: '"Press Start 2P"',monospace; font-size: 7px; letter-spacing: .12em; color: var(--muted); border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+#matches-panel { flex: 1; min-height: 0; }
+#matches { overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 6px; }
+.match-card { background: #1f1220; border: 1px solid var(--pink); border-radius: 6px; padding: 7px 9px; }
+.match-card .who { color: var(--pink); font-size: 14px; }
+.match-card .priv { color: var(--text); font-size: 12px; margin-top: 3px; line-height: 1.4; }
+.match-card .sig { color: var(--blue); font-size: 11px; }
+#log-section { flex-shrink: 0; height: 26%; background: var(--bg); border-top: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden; }
+#log-hdr { font-family: '"Press Start 2P"',monospace; font-size: 7px; letter-spacing: .12em; color: var(--muted); padding: 6px 11px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+#log { overflow-y: auto; flex: 1; padding: 4px 11px; }
+.ll { font-size: 12px; color: var(--muted); white-space: nowrap; line-height: 1.7; }
+.ll .ts { color: #3a5266; margin-right: 7px; } .ll .ev { color: var(--blue); margin-right: 6px; } .ll .ok { color: var(--green); } .ll .er { color: var(--red); }
+</style>
+</head>
+<body>
+<header>
+  <h1>CONSENT MATCH</h1>
+  <span id="h-meta">public profile = open card · private card revealed only on mutual consent (A2A double opt-in)</span>
+  <div id="h-conn"><div id="h-dot"></div><span id="h-status">connecting</span></div>
+</header>
+<div id="main">
+  <div id="game-col"><div id="game-container"></div></div>
+  <div id="sidebar">
+    <div class="panel" id="matches-panel">
+      <div class="panel-title">Matches · revealed private cards</div>
+      <div id="matches"><span style="color:var(--muted);font-size:13px">no matches yet — private cards stay sealed</span></div>
+    </div>
+    <div id="log-section">
+      <div id="log-hdr">Event Log</div>
+      <div id="log"></div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/phaser/3.70.0/phaser.min.js"></script>
+<script src="/retro_kit.js"></script>
+<script>
+'use strict';
+let gameScene = null;
+const eventQueue = [];
+const COLORS = { Ada: 0xf472b6, Bo: 0x60a5fa, Cy: 0x4ade80, Dee: 0xffd166 };
+
+class TinderScene extends Phaser.Scene {
+  constructor() { super({ key: 'TinderScene' }); this.agents = {}; }
+  create() {
+    const W = this.scale.width, H = this.scale.height;
+    this.W = W; this.H = H;
+    RK.drawBg(this, { skyFrac: 0.16 });
+    gameScene = this;
+    while (eventQueue.length) this.handleEvent(eventQueue.shift());
+  }
+  _layout(agents) {
+    const W = this.W, H = this.H;
+    const pos = { Ada: [W*0.32, H*0.36], Bo: [W*0.68, H*0.36], Cy: [W*0.32, H*0.72], Dee: [W*0.68, H*0.72] };
+    agents.forEach(a => {
+      const p = pos[a.name] || [W*0.5, H*0.5];
+      if (this.agents[a.name]) return;
+      const con = RK.makeRobot(this, p[0], p[1], a.name[0], COLORS[a.name] || 0xa78bfa);
+      this.add.text(p[0], p[1] + 28, a.name, { fontFamily: RK.PX, fontSize: '15px', color: '#f0e6cf' }).setOrigin(0.5, 0).setDepth(21);
+      this.add.text(p[0], p[1] + 44, '♥ ' + (a.interests||[]).join(' · '), { fontFamily: RK.PX, fontSize: '12px', color: '#8aa0aa' }).setOrigin(0.5, 0).setDepth(21);
+      this.agents[a.name] = { x: p[0], y: p[1], con };
+    });
+  }
+  handleEvent(ev) {
+    const k = ev.kind;
+    if      (k === 'tinder_start') this._layout(ev.agents || []);
+    else if (k === 'swipe')        this._swipe(ev.from, ev.to, ev.like);
+    else if (k === 'match')        this._match(ev.a, ev.b);
+    else if (k === 'no_match')     { /* shown in log/sidebar */ }
+    else if (k === 'done')         RK.capBanner(this, 'MATCHMAKING DONE', 'grant');
+  }
+  _swipe(from, to, like) {
+    const a = this.agents[from], b = this.agents[to]; if (!a || !b) return;
+    const sym = like ? '♥' : '✗', col = like ? '#f472b6' : '#f87171';
+    const t = this.add.text(a.x, a.y - 18, sym, { fontFamily: RK.PX, fontSize: '20px', color: col }).setOrigin(0.5).setDepth(30);
+    const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2 - 20;
+    this.tweens.add({ targets: t, x: b.x, y: b.y - 18, duration: 500, ease: 'Cubic.easeInOut',
+      onComplete: () => this.tweens.add({ targets: t, alpha: 0, y: t.y - 12, duration: 350, onComplete: () => t.destroy() }) });
+  }
+  _match(an, bn) {
+    const a = this.agents[an], b = this.agents[bn]; if (!a || !b) return;
+    [a, b].forEach(g => this.tweens.add({ targets: g.con, scaleX: 1.3, scaleY: 1.3, duration: 180, yoyo: true, ease: 'Sine.easeOut' }));
+    const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+    const heart = this.add.text(mx, my, '♥', { fontFamily: RK.PX, fontSize: '26px', color: '#f472b6' }).setOrigin(0.5).setDepth(31).setAlpha(0).setScale(0.5);
+    this.tweens.add({ targets: heart, alpha: 1, scale: 1.4, duration: 280, ease: 'Back.easeOut' });
+    this.tweens.add({ targets: heart, alpha: 0, y: my - 28, duration: 600, delay: 800, onComplete: () => heart.destroy() });
+    // line linking the matched pair
+    const g = this.add.graphics().setDepth(5); g.lineStyle(2, 0xf472b6, 0.7); g.beginPath(); g.moveTo(a.x, a.y); g.lineTo(b.x, b.y); g.strokePath();
+    this.tweens.add({ targets: g, alpha: 0.25, duration: 600 });
+  }
+}
+
+window.addEventListener('load', () => {
+  const c = document.getElementById('game-container');
+  const W = Math.max(c.clientWidth || 900, 400), H = Math.max(c.clientHeight || 360, 300);
+  RK.startWhenFontsReady(() => new Phaser.Game(RK.gameConfig('game-container', W, H, TinderScene)));
+});
+
+// ── HTML side ───────────────────────────────────────────────────
+function ts() { return new Date().toTimeString().slice(0, 8); }
+function addLog(kind, body, cls) { const el = document.createElement('div'); el.className = 'll'; el.innerHTML = `<span class="ts">${ts()}</span><span class="ev">${kind}</span><span class="${cls||''}">${body}</span>`; const log = document.getElementById('log'); log.appendChild(el); log.scrollTop = log.scrollHeight; }
+function addMatch(ev) {
+  const m = document.getElementById('matches');
+  if (m.firstElementChild && !m.firstElementChild.classList.contains('match-card')) m.innerHTML = '';
+  const el = document.createElement('div'); el.className = 'match-card';
+  el.innerHTML = `<div class="who">${ev.a} ✚ ${ev.b}</div>`
+    + `<div class="priv">🔓 ${ev.a}: ${ev.a_contact} — "${ev.a_note}" <span class="sig">[sig ${ev.a_sig}]</span></div>`
+    + `<div class="priv">🔓 ${ev.b}: ${ev.b_contact} — "${ev.b_note}" <span class="sig">[sig ${ev.b_sig}]</span></div>`;
+  m.appendChild(el); m.scrollTop = m.scrollHeight;
+}
+
+const ANIM_DELAY = { tinder_start: 300, swipe: 550, match: 900, reveal: 700, no_match: 500, done: 700 };
+const _q = []; let _qt = null;
+function _qDrain() { if (!_q.length) { _qt = null; return; } const { ev, fn, delay } = _q.shift(); if (ev) { if (gameScene) gameScene.handleEvent(ev); else eventQueue.push(ev); } if (fn) fn(); _qt = setTimeout(_qDrain, delay ?? 0); }
+function enqueue(ev, fn, delay) { _q.push({ ev, fn, delay: delay ?? 0 }); if (!_qt) _qDrain(); }
+
+function handleEvent(ev) {
+  const k = ev.kind;
+  const fn = () => {
+    if      (k === 'tinder_start') { document.getElementById('h-dot').className = 'run'; document.getElementById('h-status').textContent = 'running'; addLog('tinder_start', (ev.agents||[]).map(a=>a.name).join(', '), ''); }
+    else if (k === 'swipe')        addLog('swipe', `${ev.from} ${ev.like?'♥':'✗'} ${ev.to}`, ev.like?'ok':'');
+    else if (k === 'match')        addLog('match', `${ev.a} ✚ ${ev.b}`, 'ok');
+    else if (k === 'reveal')       addMatch(ev);
+    else if (k === 'no_match')     addLog('no_match', `${ev.a} / ${ev.b}${ev.one_sided?' (one-sided — needs BOTH)':''}`, 'er');
+    else if (k === 'done')         { document.getElementById('h-dot').className = 'live'; document.getElementById('h-status').textContent = 'complete'; addLog('done', ev.result||'', 'ok'); }
+    else addLog(k, JSON.stringify(ev).slice(0,80), '');
+  };
+  enqueue(ev, fn, ANIM_DELAY[k] ?? 0);
+}
+function connect() {
+  const dot = document.getElementById('h-dot'), sts = document.getElementById('h-status');
+  dot.className = ''; sts.textContent = 'connecting';
+  const es = new EventSource('/events');
+  es.onopen = () => { dot.className = 'live'; sts.textContent = 'connected'; };
+  es.onmessage = e => { try { handleEvent(JSON.parse(e.data)); } catch(err) { console.warn('bad event', e.data, err); } };
+  es.onerror = () => { dot.className = ''; sts.textContent = 'reconnecting…'; };
+}
+connect();
+</script>
+</body>
+</html>

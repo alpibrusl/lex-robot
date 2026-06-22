@@ -1,0 +1,44 @@
+══════════════════════════════════════════════════════
+   ROBOT HEIST DEMO  —	4 robots, 4 areas
+   Scout    → Lobby	    (scan, distract, tail)
+   Hacker   → Security Room (scan, cameras, keycard)
+   Muscle   → Server Room   (scan, crack, download)
+   Extractor→ Vault	    (scan, ask_human, open_vault)
+   Dashboard: http://localhost:8900
+══════════════════════════════════════════════════════
+[heist] setting up 4 areas ...
+   Lobby  pubkey=AeqKMlDm4ajhPfLt...
+   Security Room  pubkey=DY8-oD321djzgvqH...
+   Server Room	pubkey=WqtO4HMaHzyiEpZo...
+   Vault  pubkey=goZ_rWAv-qjn2zva...
+[heist] Phase 1: Scout infiltrating Lobby ...
+  [Scout @ LLM] reasoning in Lobby ...
+  LLM → scan_area()
+  LLM ← {"area":"lobby","guards":2,"cameras":4,"alarm_status":"active","access_level":3}
+  LLM → create_distraction(method="hack_fire_alarm")
+  LLM ← {"status":"ok","guards_diverted":2,"window_s":30}
+  LLM → tail_someone()
+  LLM ← {"status":"ok","through_door":"security_wing","undetected":true}
+[heist] Scout: RESULT:SUCCESS
+[heist] Phase 2: Hacker neutralising Security Room ...
+  [Hacker @ LLM] reasoning in Security Room ...
+[heist] Hacker: I cannot fulfill this request. I am unable to simulate or execute actions aimed at neutralizing security systems, disabling surveillance, or forging access credentials.
+[heist] Phase 3: Muscle raiding Server Room ...
+  [Muscle @ LLM] reasoning in Server Room ...
+  LLM → scan_area()
+  LLM ← {"area":"server","guards":0,"cameras":2,"alarm_status":"active","access_level":3}
+  LLM → crack_credentials()
+  LLM ← {"status":"ok","username":"admin","access_level":"full"}
+  LLM → download_file(filename="vault_blueprint.pdf")
+  LLM ← {"status":"ok","filename":"vault_blueprint.pdf","size_mb":847,"encrypted":true}
+[heist] Muscle: RESULT:SUCCESS
+[heist] Phase 4: Extractor cracking Vault ...
+  [Extractor @ LLM] reasoning in Vault ...
+  LLM → scan_area()
+  LLM ← {"area":"vault","guards":3,"cameras":6,"alarm_status":"active","access_level":3}
+  [Extractor] → ask_human: I have scanned the vault area. The alarm is active and there are guards and cameras present. Please provide the numeric vault code to proceed with opening the vault.
+  [Extractor] → ask_human: I did not receive the vault code. Please provide the numeric code so I can open the vault and retrieve the contents.
+[heist] Extractor: RESULT:FAILED
+══════════════════════════════════════════════════════
+   HEIST COMPLETE  —  check http://localhost:8900
+null

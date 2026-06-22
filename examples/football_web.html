@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>lex-games · Strategy Football</title>
+<link href="https://fonts.googleapis.com/css2?family=VT323&family=Press+Start+2P&display=swap" rel="stylesheet">
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root { --bg:#0a1a0e; --bg2:#0f2415; --bg3:#143020; --line:#1f4a30; --turf:#1a5e34; --turf2:#178030; --text:#e3f2e8; --muted:#86b89b; --gold:#ffd166; --green:#4ade80; --red:#f87171; --blue:#7fd4ff; }
+html, body { height: 100%; overflow: hidden; }
+body { background: var(--bg); color: var(--text); font-family: 'VT323','Courier New',monospace; font-size: 16px; display: flex; flex-direction: column; height: 100dvh; }
+header { background: var(--bg2); border-bottom: 1px solid var(--line); padding: 0 16px; display: flex; align-items: center; gap: 14px; flex-shrink: 0; height: 42px; }
+header h1 { font-family: '"Press Start 2P"',monospace; font-size: 11px; color: var(--green); letter-spacing: .08em; }
+#h-meta { color: var(--muted); font-size: 14px; flex: 1; }
+#h-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--line); } #h-dot.live { background: var(--green); box-shadow: 0 0 8px var(--green); }
+#main { flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 16px; }
+#status { font-size: 20px; min-height: 26px; } #status.win { color: var(--green); } #status.deny { color: var(--red); }
+#pitch { display: grid; grid-template-columns: repeat(5, 92px); gap: 0; border: 3px solid #2e7d4a; border-radius: 6px; overflow: hidden; }
+.zone { height: 200px; background: var(--turf); border-right: 1px dashed #2e7d4a; position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; }
+.zone:nth-child(odd) { background: #17542f; }
+.zone:last-child { border-right: none; }
+.zlabel { position: absolute; top: 4px; left: 0; right: 0; text-align: center; font-size: 12px; color: rgba(255,255,255,.35); }
+.goal { position: absolute; right: -3px; top: 50%; transform: translateY(-50%); width: 6px; height: 80px; background: var(--gold); }
+.chip { width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-family: '"Press Start 2P"',monospace; font-size: 9px; color: #06210f; transition: all .25s ease; }
+.chip.H { background: var(--blue); } .chip.D { background: var(--red); color:#2a0606; }
+.chip.ball { box-shadow: 0 0 0 3px var(--gold), 0 0 12px var(--gold); }
+#hud { display: flex; gap: 22px; font-size: 16px; align-items: center; }
+.who { font-family: '"Press Start 2P"',monospace; font-size: 9px; }
+.home .who { color: var(--blue); } .away .who { color: var(--red); }
+#controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: center; }
+.btn { background: var(--bg3); border: 1px solid var(--line); color: var(--text); font-family: 'VT323',monospace; font-size: 16px; padding: 6px 12px; border-radius: 5px; cursor: pointer; }
+.btn:hover { border-color: var(--green); color: var(--green); }
+.btn.on { border-color: var(--gold); color: var(--gold); }
+#verdict { font-size: 15px; color: var(--muted); min-height: 20px; }
+#say { font-size: 14px; color: var(--gold); min-height: 18px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>STRATEGY FOOTBALL</h1>
+  <span id="h-meta">you set the strategy · a 2-agent squad coordinates over A2A to score · every move gated + hash-chained</span>
+  <div id="h-dot"></div>
+</header>
+<div id="main">
+  <div id="status">Connecting…</div>
+  <div id="hud">
+    <span class="home"><span class="who">HOME</span> · squad (H0+H1, A2A)</span>
+    <span id="left" style="color:var(--muted)">budget 24</span>
+    <span class="away"><span class="who">AWAY</span> · presser (D0) + sweeper (D1)</span>
+  </div>
+  <div id="pitch"></div>
+  <div id="say"></div>
+  <div id="controls">
+    <span style="color:var(--muted)">strategy:</span>
+    <button class="btn" id="s-poss" onclick="setStrategy('possession')">possession</button>
+    <button class="btn" id="s-dir" onclick="setStrategy('direct')">direct</button>
+    <button class="btn" onclick="newMatch()">New match</button>
+    <button class="btn" onclick="verify()">Verify chain</button>
+  </div>
+  <div id="verdict"></div>
+</div>
+
+<script>
+'use strict';
+let state = null;
+const ZONES = ['DEF','BUILD','MID','FINAL','BOX'];
+
+async function sk(name, body) { try { const r = await fetch('/skill/'+name, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body||{}) }); return await r.json(); } catch(e){ return null; } }
+async function fetchState() { state = await sk('fb_state', {}); render(); }
+async function setStrategy(s) { await sk('fb_strategy', { strategy:s }); fetchState(); }
+async function newMatch() { await sk('fb_reset', {}); document.getElementById('verdict').textContent=''; fetchState(); }
+async function verify() {
+  const v = await sk('fb_verify', {});
+  const el = document.getElementById('verdict');
+  if (!v) return;
+  el.textContent = v.valid ? `✓ chain verified — ${v.count} moves, every link intact (tamper-evident)` : `✗ chain BROKEN — a recorded move was altered`;
+  el.style.color = v.valid ? 'var(--green)' : 'var(--red)';
+}
+
+function render() {
+  if (!state) return;
+  const pitch = document.getElementById('pitch');
+  pitch.innerHTML = '';
+  for (let z=0; z<5; z++) {
+    const d = document.createElement('div'); d.className = 'zone';
+    d.innerHTML = `<span class="zlabel">z${z} · ${ZONES[z]}</span>` + (z===4 ? '<div class="goal"></div>' : '');
+    ['H0','H1','D0','D1'].forEach(p => {
+      if (state[p] === z) {
+        const c = document.createElement('div');
+        c.className = 'chip ' + (p[0]==='H'?'H':'D') + (state.ball===p ? ' ball' : '');
+        c.textContent = p;
+        d.appendChild(c);
+      }
+    });
+    pitch.appendChild(d);
+  }
+  document.getElementById('left').textContent = 'budget ' + state.left;
+  document.getElementById('s-poss').classList.toggle('on', state.strategy==='possession');
+  document.getElementById('s-dir').classList.toggle('on', state.strategy==='direct');
+  const sig = state.sig||{};
+  document.getElementById('say').textContent = [sig.H0&&`H0: ${sig.H0}`, sig.H1&&`H1: ${sig.H1}`].filter(Boolean).join('   ·   ');
+  if (state.over) setStatus(state.result==='home' ? '⚽ GOAL — the squad broke the press!' : '🧱 Full time — the defense held', state.result==='home'?'win':'deny');
+  else setStatus(state.turn ? `${state.turn} to act` : 'kick-off', '');
+}
+function setStatus(t, cls) { const s = document.getElementById('status'); s.textContent = t; s.className = cls||''; }
+
+function handleEvent(ev) {
+  if (ev.kind === 'fb_goal') { fetchState(); setStatus('⚽ GOAL — the squad broke the press!', 'win'); }
+  else if (ev.kind === 'fb_over') fetchState();
+  else fetchState();
+}
+function connect() {
+  const dot = document.getElementById('h-dot');
+  const es = new EventSource('/events');
+  es.onopen = () => { dot.className = 'live'; };
+  es.onmessage = e => { try { handleEvent(JSON.parse(e.data)); } catch(err){} };
+  es.onerror = () => { dot.className = ''; };
+}
+fetchState();
+connect();
+</script>
+</body>
+</html>

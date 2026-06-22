@@ -1,0 +1,55 @@
+══════════════════════════════════════════════════════
+   ROBOT BAZAAR RUSH HOUR  —  3 customers, 6 stalls
+   Alice:  Bowl    ≤ 15 cr
+   Bob:    Bowl    ≤ 15 cr  (competes with Alice!)
+   Carlos: Saffron ≤  8 cr
+   Dashboard: http://localhost:8900
+══════════════════════════════════════════════════════
+[rush] setting up 6 stalls ...
+   Pottery Palace  pubkey=HTrFr5XwMkOG9GgM...
+   Textile Traders  pubkey=i3O_IYKIcy_6QTDi...
+   Spice Garden  pubkey=r7VbLj_5zPMRNH88...
+   Clay Corner	pubkey=-nA4k-A0Doqwj9aC...
+   Fabric House  pubkey=G6iZkQ7k0ziO2k71...
+   Herb Garden	pubkey=9Q0jDRyXFxd0ij7I...
+── Alice: Find and buy a Bowl for at most 15 credits ──────────────────────────
+  [Alice] → Pottery Palace
+  [Alice @ LLM] reasoning at Pottery Palace ...
+  LLM → query_stock(search="Bowl", max_price=15)
+  LLM ← {"stall":"pottery","found":1,"id":"pot-001","name":"Red Ceramic Bowl","category":"pottery","price":8}
+  LLM → reserve_item(item_id="pot-001")
+  LLM ← {"status":"reserved"}
+  LLM → complete_sale(item_id="pot-001", payment=8)
+  LLM ← {"status":"sold","change":0}
+  [Alice] ← SOLD  "Red Ceramic Bowl" (llm-item) — 8 credits
+── Alice done: SOLD Red Ceramic Bowl - 8 cr ──────────────────────────────────────────────
+── Bob: Find and buy a Bowl for at most 15 credits ──────────────────────────
+  [Bob] → Pottery Palace
+  [Bob @ LLM] reasoning at Pottery Palace ...
+  LLM → query_stock(search="Bowl", max_price=15)
+  LLM ← {"stall":"pottery","found":0}
+  [Bob] ← not found at this stall
+  [Bob] → Clay Corner
+  [Bob @ LLM] reasoning at Clay Corner ...
+  LLM → query_stock(search="Bowl", max_price=15)
+  LLM ← {"stall":"clay","found":1,"id":"clay-001","name":"Stoneware Bowl","category":"pottery","price":10}
+  LLM → reserve_item(item_id="clay-001")
+  LLM ← {"status":"reserved"}
+  LLM → complete_sale(item_id="clay-001", payment=10)
+  LLM ← {"status":"sold","change":0}
+  [Bob] ← SOLD	"Stoneware Bowl" (llm-item) — 10 credits
+── Bob done: SOLD Stoneware Bowl - 10 cr ──────────────────────────────────────────────
+── Carlos: Find Saffron for at most 8 credits ──────────────────────────
+  [Carlos] → Spice Garden
+  [Carlos @ LLM] reasoning at Spice Garden ...
+  LLM → query_stock(search="Saffron", max_price=8)
+  LLM ← {"stall":"spices","found":1,"id":"spi-001","name":"Saffron 10g","category":"spices","price":5}
+  LLM → reserve_item(item_id="spi-001")
+  LLM ← {"status":"reserved"}
+  LLM → complete_sale(item_id="spi-001", payment=5)
+  LLM ← {"status":"sold","change":0}
+  [Carlos] ← SOLD  "Saffron 10g" (llm-item) — 5 credits
+── Carlos done: SOLD Saffron 10g - 5 cr ──────────────────────────────────────────────
+══════════════════════════════════════════════════════
+   RUSH HOUR COMPLETE  —  check http://localhost:8900
+null
