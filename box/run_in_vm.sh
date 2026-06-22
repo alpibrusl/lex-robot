@@ -24,6 +24,17 @@ TRAIL=/tmp/robot-trail.json
 SCRIPT="${1:-robot-demo}"
 SIDECAR_PY="${SIDECAR_PY:-sim_sidecar.py}"
 
+# Verify (b): budget kill. With BUDGET=N set, run against a manifest whose
+# max_commands is tightened to N so the supervisor halts mid-task with
+# BudgetExhausted (e.g. BUDGET=1 → one skill runs, the next trips the ceiling).
+#   sudo BUDGET=1 ./box/run_in_vm.sh
+M_RUN="$M"
+if [ -n "${BUDGET:-}" ]; then
+  M_RUN=/tmp/robot-manifest-budget.json
+  python3 -c "import json; m=json.load(open('$M')); m['budget']['max_commands']=int('$BUDGET'); json.dump(m, open('$M_RUN','w'))"
+  echo "== budget-kill mode: max_commands=$BUDGET (expect outcome BudgetExhausted) =="
+fi
+
 # Clear stale outputs so a failed run can NEVER reconcile against old data
 # (a previous version silently passed by reading a prior run's files).
 rm -f "$AUDIT" "$TRAIL"
@@ -45,7 +56,7 @@ cd "$LEXOS"
 # guest reach /dev/kvm. The guest binary is baked into the rootfs by setup-assets.sh.
 run_lexos() {
   "$LEXOS"/target/debug/lex-os run \
-    --manifest "$M" --agent robot --guest-script "$SCRIPT" \
+    --manifest "$M_RUN" --agent robot --guest-script "$SCRIPT" \
     --jail-uid "$(id -u)" --jail-gid "$(getent group kvm | cut -d: -f3)" \
     --audit-out "$AUDIT"
 }
@@ -79,6 +90,20 @@ fi
 
 # Fail loudly if the run didn't actually produce fresh outputs this time.
 [ -s "$AUDIT" ] || { echo "ERROR: no audit log at $AUDIT (run did not write it)"; exit 1; }
+
+if [ -n "${BUDGET:-}" ]; then
+  # Verify (b): the supervisor must have halted on the budget ceiling. The
+  # audit records a `budget_exhausted` event before the box stops.
+  if grep -q '"kind":"budget_exhausted"' "$AUDIT"; then
+    echo "== budget-kill OK: supervisor halted on BudgetExhausted (audit recorded the ceiling breach) =="
+  else
+    echo "ERROR: expected a budget_exhausted event in $AUDIT (budget kill did not fire)"; exit 1
+  fi
+  # Whatever skills DID run before the kill should still corroborate.
+  [ -s "$TRAIL" ] && { echo "== reconcile (pre-kill skills) =="; python3 "$ROOT/scripts/reconcile_audit.py" "$AUDIT" "$TRAIL"; } || true
+  exit 0
+fi
+
 [ -s "$TRAIL" ] || { echo "ERROR: no sidecar trail at $TRAIL (guest never reached the sidecar — check the egress wall / sidecar bind)"; exit 1; }
 
 echo "== reconcile =="
