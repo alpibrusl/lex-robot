@@ -12,8 +12,21 @@
     "wall_clock_secs": 120,
     "max_commands": 200,
     "max_money_cents": 0,
-    "max_api_calls": 0
+    "max_api_calls": 200
   },
   "isolation_floor": "Namespace",
-  "egress": ["127.0.0.1", "localhost"]
+  "egress": ["169.254.42.1:8900"],
+  "actuation": {
+    "skills": ["read_joints", "read_camera", "move_to", "grasp", "run_policy"],
+    "arm": {
+      "workspace_m": [
+        {"min": 0.1, "max": 0.5},
+        {"min": -0.3, "max": 0.3},
+        {"min": 0.0, "max": 0.4}
+      ],
+      "max_velocity_mps": 0.25,
+      "max_force_n": 15.0
+    },
+    "gripper": {"max_grip_force_n": 20.0}
+  }
 }
