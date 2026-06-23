@@ -104,6 +104,15 @@ else
   pass "run-time: actuate withheld → actuating skill blocked before execution"
 fi
 
+# The live policy-eval leaderboard (direction #3, end to end): real rollouts under
+# different ISO-derived grants are scored through the lex-games robot_task referee
+# and ranked; the compliant policy wins and a forged out-of-grant submission is
+# disqualified — proving the legality gate on live runs, not just a fixture.
+echo "== live policy-eval leaderboard =="
+pe="$(bash examples/policy_eval_run.sh 2>/dev/null | tr -d '\r')"
+if grep -qF "winner: compliant_policy" <<<"$pe"; then pass "live leaderboard: compliant policy wins"; else bad "live leaderboard: wrong/no winner"; echo "$pe" | sed 's/^/      /'; fi
+if grep -qF "DISQUALIFIED" <<<"$pe"; then pass "live leaderboard: forged over-grant submission disqualified"; else bad "live leaderboard: forged submission not disqualified"; fi
+
 echo
 if [ "$fail" -eq 0 ]; then echo "ALL GREEN"; else echo "FAILURES ABOVE"; fi
 exit "$fail"
