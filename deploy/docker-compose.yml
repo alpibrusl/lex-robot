@@ -1,0 +1,27 @@
+# Standalone compose for the live game referee. On the shared Hetzner box, copy
+# the `arena-referee` service block into the existing stack's docker-compose and
+# let the shared Caddy route a subdomain to it (see deploy/Caddyfile.snippet).
+services:
+  arena-referee:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      secrets: [github_token]
+    image: ghcr.io/alpibrusl/lex-arena-referee:latest
+    restart: unless-stopped
+    environment:
+      LEX_ROBOT_SIDECAR_PORT: "8900"
+      LEX_DASHBOARD_HTML: bazaar_web.html
+      # Players bring their own model; the referee itself needs none. If a demo
+      # uses the in-house seller/customer LLMs, point them at a model endpoint:
+      # LITELLM_BASE_URL: http://litellm:4000
+      # LITELLM_MODEL: mistral-small:latest
+    ports:
+      - "8900:8900"      # behind Caddy in production; direct for local testing
+    volumes:
+      - arena-data:/data
+secrets:
+  github_token:
+    environment: GH_TOKEN
+volumes:
+  arena-data:

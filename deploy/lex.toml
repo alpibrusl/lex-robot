@@ -1,0 +1,17 @@
+# Referee-only manifest for the live game-server container image.
+# The referee (sidecar/sim_sidecar.lex) imports only these five packages — it does
+# NOT use lex-jobs or lex-guard, so dropping them here keeps the image self-
+# contained and avoids the local-path deps that only a couple of examples need.
+[package]
+name    = "lex-robot"
+version = "0.1.0"
+lex     = "0.9.8"
+license = "EUPL-1.2"
+description = "lex-robot live game referee (deploy image)"
+
+[dependencies]
+lex-trail  = { git = "https://github.com/alpibrusl/lex-trail" }
+lex-llm    = { git = "https://github.com/alpibrusl/lex-llm" }
+lex-schema = { git = "https://github.com/alpibrusl/lex-schema" }
+lex-games  = { git = "https://github.com/alpibrusl/lex-games" }
+lex-web    = { git = "https://github.com/alpibrusl/lex-web" }
