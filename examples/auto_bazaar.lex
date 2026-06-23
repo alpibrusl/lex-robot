@@ -18,7 +18,9 @@
 #   AUTO_ITEM              item to search for (default "Bowl")
 #   AUTO_QTY               how many to buy    (default 2)
 #   AUTO_BUDGET            credit ceiling      (default 50)
-#   VERTEX_ACCESS_TOKEN / VERTEX_PROJECT / VERTEX_LOCATION
+#   LITELLM_BASE_URL       run the shopper on a LOCAL model via the LiteLLM proxy
+#                          (e.g. http://localhost:4000); LITELLM_MODEL picks it.
+#   VERTEX_ACCESS_TOKEN / VERTEX_PROJECT / VERTEX_LOCATION  (used only if no LITELLM_BASE_URL)
 #
 # Run via examples/auto_bazaar_run.sh
 
@@ -39,6 +41,8 @@ import "lex-llm/src/tool"             as t
 import "lex-llm/src/message"          as msg
 import "lex-llm/src/delta"            as d
 import "lex-llm/src/providers/vertex" as vtx
+import "lex-llm/src/providers"        as providers
+import "lex-llm/src/provider"         as prov
 
 import "lex-schema/schema"     as s
 import "lex-schema/json_value" as jv
@@ -427,8 +431,14 @@ fn run() -> [env, net, io, llm, time, proc] Unit {
   }
   let now_ms   := time.now_ms()
 
-  let provider := vtx.make_provider(vtx.config_at(token, project, location))
-  let model    := vtx.gemini_35_flash()
+  # Provider: local first. Set LITELLM_BASE_URL (e.g. http://localhost:4000) to
+  # run the shopper on a local model via the LiteLLM proxy; otherwise fall back
+  # to Vertex (VERTEX_ACCESS_TOKEN/PROJECT). LITELLM_MODEL picks the model.
+  let litellm_base := match env.get("LITELLM_BASE_URL") { None => "", Some(v) => v }
+  let local_model  := match env.get("LITELLM_MODEL") { None => "qwen3-coder:30b", Some(v) => if str.is_empty(v) { "qwen3-coder:30b" } else { v } }
+  let use_local := not str.is_empty(litellm_base)
+  let provider := if use_local { providers.litellm() } else { vtx.make_provider(vtx.config_at(token, project, location)) }
+  let model    := if use_local { prov.make_model_ref("litellm", local_model) } else { vtx.gemini_35_flash() }
 
   let list_str := str.join(items, ", ")
   let _ := io.print("══════════════════════════════════════════════════════")

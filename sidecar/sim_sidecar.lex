@@ -1546,7 +1546,7 @@ fn physics_call(physics_url :: Str, skill :: Str, raw_args :: Str) -> [net] Str 
   }
 }
 
-fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :: Str, dash :: Str, physics_url :: Str, seller_on :: Bool, seller_token :: Str, seller_project :: Str, seller_location :: Str) -> [sql, net, time, llm, io, proc, crypto, fs_write] Str {
+fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :: Str, dash :: Str, physics_url :: Str, seller_on :: Bool, seller_token :: Str, seller_project :: Str, seller_location :: Str, seller_base :: Str, seller_model :: Str) -> [sql, net, time, llm, io, proc, crypto, fs_write] Str {
   # ── Bazaar skills ────────────────────────────────────────────────
   if name == "query_stock" {
     let search := jv_str_or(args, "search", "")
@@ -1565,7 +1565,7 @@ fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :
                   let item_name := jv_str_or(item_j, "name", "")
                   let base_p    := jv_int_or(item_j, "price", 0)
                   let category  := jv_str_or(item_j, "category", "")
-                  let quoted    := sllm.quote_price(stall, item_id, item_name, base_p, max_p, seller_token, seller_project, seller_location)
+                  let quoted    := sllm.quote_price(stall, item_id, item_name, base_p, max_p, seller_token, seller_project, seller_location, seller_base, seller_model)
                   let upd := str.join(["UPDATE stock SET price=", int.to_str(quoted), " WHERE item_id='", sq(item_id), "'"], "")
                   let _ := sql.exec(db, upd, [])
                   JObj([("id", JStr(item_id)), ("name", JStr(item_name)), ("category", JStr(category)), ("price", JInt(quoted))])
@@ -1980,7 +1980,7 @@ fn json_resp_cors(body :: Str) -> resp.Response {
   cors_resp(resp.json(body))
 }
 
-fn build_router(db :: Db, stall :: Str, dash :: Str, html_path :: Str, examples_dir :: Str, physics_url :: Str, seller_on :: Bool, seller_token :: Str, seller_project :: Str, seller_location :: Str) -> router.Router {
+fn build_router(db :: Db, stall :: Str, dash :: Str, html_path :: Str, examples_dir :: Str, physics_url :: Str, seller_on :: Bool, seller_token :: Str, seller_project :: Str, seller_location :: Str, seller_base :: Str, seller_model :: Str) -> router.Router {
   # Shared wide-effect handler type required by route_effectful / route_stream.
   # Each closure captures db / stall / dash from the outer scope.
   let r0 := router.new()
@@ -2072,7 +2072,7 @@ fn build_router(db :: Db, stall :: Str, dash :: Str, html_path :: Str, examples_
       None => cors_resp(resp.bad_request("missing skill name")),
       Some(name) => {
         let args := match jv.parse(c.body) { Ok(j) => j, Err(_) => JObj([]) }
-        json_resp_cors(handle_skill(db, name, args, c.body, stall, dash, physics_url, seller_on, seller_token, seller_project, seller_location))
+        json_resp_cors(handle_skill(db, name, args, c.body, stall, dash, physics_url, seller_on, seller_token, seller_project, seller_location, seller_base, seller_model))
       },
     }
   })
@@ -2090,7 +2090,7 @@ fn build_router(db :: Db, stall :: Str, dash :: Str, html_path :: Str, examples_
         let skill := jv_str_or(task_j, "skill", "")
         let args_j := match jv.get_field(task_j, "args") { Some(v) => v, None => JObj([]) }
         let args_raw := match jv.get_field(task_j, "args") { Some(_) => c.body, None => "{}" }
-        let result := handle_skill(db, skill, args_j, args_raw, stall, dash, physics_url, seller_on, seller_token, seller_project, seller_location)
+        let result := handle_skill(db, skill, args_j, args_raw, stall, dash, physics_url, seller_on, seller_token, seller_project, seller_location, seller_base, seller_model)
         json_resp_cors(str.join(["{\"jsonrpc\":\"2.0\",\"id\":", json_str(rpc_id), ",\"result\":{\"kind\":\"artifact\",\"output\":", result, "}}"], ""))
       },
     }
@@ -2221,9 +2221,13 @@ fn run() -> [env, io, sql, net, time, proc, concurrent, crypto, random, fs_read,
   let seller_token   := match env.get("VERTEX_ACCESS_TOKEN") { None => "", Some(v) => v }
   let seller_project := match env.get("VERTEX_PROJECT") { None => "", Some(v) => v }
   let seller_location := match env.get("VERTEX_LOCATION") { None => "eu", Some(v) => if str.is_empty(v) { "eu" } else { v } }
+  # Local-first seller: LITELLM_BASE_URL routes the seller LLM through the local
+  # LiteLLM proxy; LITELLM_MODEL picks the model. Empty → Vertex (if configured).
+  let seller_base  := match env.get("LITELLM_BASE_URL") { None => "", Some(v) => v }
+  let seller_model := match env.get("LITELLM_MODEL") { None => "qwen3-coder:30b", Some(v) => if str.is_empty(v) { "qwen3-coder:30b" } else { v } }
   let stall_tag   := if str.is_empty(stall) { "" } else { str.concat("  stall=", stall) }
   let phys_tag    := if str.is_empty(physics_url) { "" } else { str.concat("  physics=", physics_url) }
-  let seller_tag  := if seller_on { "  seller=llm" } else { "" }
+  let seller_tag  := if seller_on { if str.is_empty(seller_base) { "  seller=llm(vertex)" } else { "  seller=llm(local)" } } else { "" }
   let _ := io.print(str.join(["lex-robot sim sidecar on http://127.0.0.1:", int.to_str(port), stall_tag, phys_tag, seller_tag, "  db=", db_file, "  (Ctrl-C to stop)"], ""))
 
   match sql.open(db_file) {
@@ -2235,7 +2239,7 @@ fn run() -> [env, io, sql, net, time, proc, concurrent, crypto, random, fs_read,
         let a2a_now := time.now_ms()
         init_stall_a2a(db, stall, port, dash, a2a_now)
       } else { () }
-      let r := build_router(db, stall, dash, html, ex_dir, physics_url, seller_on, seller_token, seller_project, seller_location)
+      let r := build_router(db, stall, dash, html, ex_dir, physics_url, seller_on, seller_token, seller_project, seller_location, seller_base, seller_model)
       let handler := fn (req :: Request) -> [env, io, sql, net, time, proc, concurrent, crypto, random, fs_read, fs_write, llm] Response {
         let raw := { body: req.body, method: req.method, path: req.path, query: req.query, headers: req.headers }
         match router.dispatch_outcome(r, raw) {

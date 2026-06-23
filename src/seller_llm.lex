@@ -19,6 +19,8 @@ import "std.io"   as io
 import "lex-llm/src/agent"            as llm_agent
 import "lex-llm/src/message"          as msg
 import "lex-llm/src/delta"            as d
+import "lex-llm/src/providers"        as providers
+import "lex-llm/src/provider"         as prov
 import "lex-llm/src/providers/vertex" as vtx
 
 # ── Seller personalities ──────────────────────────────────────────────────────
@@ -67,8 +69,13 @@ fn extract_price(text :: Str, fallback :: Int) -> Int {
 # Makes one LLM turn to decide the asking price for an item.
 # Falls back to base_price if the token is missing or the model gives no price.
 
-fn quote_price(stall :: Str, item_id :: Str, item_name :: Str, base_price :: Int, buyer_max :: Int, token :: Str, project :: Str, location :: Str) -> [net, llm, io, proc] Int {
-  if str.is_empty(token) or str.is_empty(project) {
+# Provider is local-first: a non-empty `base_url` (LITELLM_BASE_URL) runs the
+# seller on a local model via the LiteLLM proxy; otherwise Vertex is used when
+# token+project are present; otherwise we fall back to the base price.
+fn quote_price(stall :: Str, item_id :: Str, item_name :: Str, base_price :: Int, buyer_max :: Int, token :: Str, project :: Str, location :: Str, base_url :: Str, model_name :: Str) -> [net, llm, io, proc] Int {
+  let use_local  := not str.is_empty(base_url)
+  let use_vertex := str.is_empty(base_url) and not str.is_empty(token) and not str.is_empty(project)
+  if not use_local and not use_vertex {
     base_price
   } else {
     let personality := stall_personality(stall)
@@ -85,8 +92,8 @@ fn quote_price(stall :: Str, item_id :: Str, item_name :: Str, base_price :: Int
       "What is your asking price? (Must be ≥ 1. If above the buyer's ceiling they won't buy.)\n",
       "Respond: PRICE:<integer>"
     ], "")
-    let provider := vtx.make_provider(vtx.config_at(token, project, location))
-    let model    := vtx.gemini_35_flash()
+    let provider := if use_local { providers.litellm_at(base_url) } else { vtx.make_provider(vtx.config_at(token, project, location)) }
+    let model    := if use_local { prov.make_model_ref("litellm", model_name) } else { vtx.gemini_35_flash() }
     let opts     := { temperature: Some(0.7), top_p: None, max_steps: Some(1), max_tokens: Some(128) }
     let agent    := llm_agent.make_agent(stall, system_msg, model, provider, [], opts)
     let steps    := iter.to_list(llm_agent.run_loop(agent, [UserMsg(user_msg)]))
