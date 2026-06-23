@@ -54,8 +54,11 @@ LEX_DASHBOARD_HTML=bazaar_web.html \
 DASH_PID=$!
 
 # ── Stall sidecars (autonomous sellers — each runs an LLM to set prices) ─────
-# VERTEX_ACCESS_TOKEN / VERTEX_PROJECT / VERTEX_LOCATION are inherited from the
-# parent shell.  If not set, sellers fall back to static base prices.
+# Both the sellers and the customer run on a LOCAL model when LITELLM_BASE_URL is
+# exported (e.g. `export LITELLM_BASE_URL=http://localhost:4000 LITELLM_MODEL=mistral-small:latest`);
+# it is inherited by every process below. Otherwise VERTEX_ACCESS_TOKEN /
+# VERTEX_PROJECT / VERTEX_LOCATION are used; if neither is set, sellers fall back
+# to static base prices.
 echo "[auto_bazaar] starting pottery stall on :${POTTERY_PORT} (seller=llm) ..."
 SELLER_LLM=1 \
 LEX_STALL_NAME=pottery \
