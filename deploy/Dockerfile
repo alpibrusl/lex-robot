@@ -5,7 +5,7 @@
 # is recorded to the hash-chained trail.
 FROM ubuntu:24.04
 
-ARG LEX_VERSION=0.9.11
+ARG LEX_VERSION=0.9.13
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl git ca-certificates tar python3 \
@@ -36,6 +36,10 @@ RUN --mount=type=secret,id=github_token \
     if [ -n "$TOKEN" ]; then git config --global url."https://${TOKEN}@github.com/".insteadOf "https://github.com/"; fi; \
     lex pkg install; \
     git config --global --unset-all 'url.https://github.com/.insteadof' 2>/dev/null || true
+
+# Fail the build if the referee doesn't type-check (catch dep drift at build time,
+# not container start).
+RUN lex check sidecar/sim_sidecar.lex
 
 EXPOSE 8900
 ENV LEX_ROBOT_SIDECAR_PORT=8900 \
