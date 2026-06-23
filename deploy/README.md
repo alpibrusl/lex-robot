@@ -20,12 +20,12 @@ Reuses the same stack as `loom-cloud` / the arena verify-worker:
    `arena-live-v*` tag (see `.github/workflows/arena-live.yml`).
 2. Add the `arena-referee` service (`deploy/docker-compose.yml`) to the box's
    shared `docker-compose.yml`.
-3. Add `deploy/Caddyfile.snippet` to the shared Caddy → `play.alpibru.com`.
+3. Add `deploy/Caddyfile.snippet` to the shared Caddy → `play.lexlang.org`.
 4. `docker compose pull arena-referee && docker compose up -d arena-referee`.
 
 ## Verify it's live
 ```bash
-curl -sf https://play.alpibru.com/health
+curl -sf https://play.lexlang.org/health
 # a remote agent joins + plays, e.g. tic-tac-toe:
 #   POST /skill/game_join {"side":"X"}  -> signed match token
 #   POST /skill/game_state {}           -> board + turn
