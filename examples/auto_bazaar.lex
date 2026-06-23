@@ -276,6 +276,43 @@ fn make_query_tool(conns :: List[StallConn], now_ms :: Int) -> t.Tool {
     })
 }
 
+# Haggle: send a price OFFER for a named item to a stall over A2A. The stall's
+# seller LLM replies {"decision":"counter|accept|walk","ask":N} (it sources its
+# own cost floor — the buyer never supplies it). The customer agent reads the
+# reply and decides: raise the offer and call again, accept the ask, or walk.
+fn make_offer_tool(conns :: List[StallConn], now_ms :: Int, dash_url :: Str) -> t.Tool {
+  t.define("make_offer_at",
+    "Haggle over price: send a whole-credit OFFER for a named item to a stall via A2A. Returns the seller's reply JSON {\"decision\":\"counter|accept|walk\",\"ask\":N}. If decision is accept, the seller will sell at your offer — call purchase_at with that payment. If counter, either raise your offer toward ask and call make_offer_at again, or accept the ask by purchasing at it. Negotiate a good price within budget.",
+    { title: "offer_params", description: "Send a price offer for an item to a stall", fields: [
+        s.required_str("stall", []),
+        s.required_str("name", []),
+        s.required_float("offer", [])
+      ] },
+    fn (args :: jv.Json) -> [net, io, proc] Result[jv.Json, e.Errors] {
+      let stall_name := match jv.get_field(args, "stall") { Some(JStr(v)) => v, _ => "" }
+      let it_name    := match jv.get_field(args, "name")  { Some(JStr(v)) => v, _ => "" }
+      let offer      := match jv.get_field(args, "offer") { Some(JFloat(f)) => float.to_int(f), Some(JInt(n)) => n, _ => 0 }
+      let _ := notify_auto(dash_url, str.join(["{\"kind\":\"llm_tool\",\"customer\":\"robot\",\"stall\":", json_str(stall_name), ",\"tool\":\"make_offer_at\"}"], ""))
+      let _ := io.print(str.join(["  [robot A2A] → make_offer_at(stall=\"", stall_name, "\", name=\"", it_name, "\", offer=", int.to_str(offer), ")"], ""))
+      match find_session(conns, stall_name) {
+        None => Ok(JObj([("decision", JStr("walk")), ("detail", JStr("no-session"))])),
+        Some(session) => {
+          let hargs := str.join(["{\"name\":\"", it_name, "\",\"offer\":", int.to_str(offer), "}"], "")
+          let _ := notify_auto(dash_url, str.join(["{\"kind\":\"a2a_call\",\"customer\":\"robot\",\"stall\":", json_str(stall_name), ",\"skill\":\"haggle\"}"], ""))
+          match sess.invoke_skill(session, { skill: "haggle", args_json: hargs }, now_ms) {
+            (SkillOk(body), _) => {
+              let _ := notify_auto(dash_url, str.join(["{\"kind\":\"a2a_resp\",\"customer\":\"robot\",\"stall\":", json_str(stall_name), ",\"skill\":\"haggle\",\"body\":", json_str(body), ",\"ok\":true}"], ""))
+              let _ := io.print(str.concat("  [robot A2A] ← seller: ", body))
+              Ok(JObj([("seller_reply", JStr(body))]))
+            },
+            (SkillDenied(why), _) => Ok(JObj([("decision", JStr("walk")), ("detail", JStr(why))])),
+            (SkillFailed(why), _) => Ok(JObj([("decision", JStr("walk")), ("detail", JStr(why))])),
+          }
+        },
+      }
+    })
+}
+
 fn make_purchase_tool(conns :: List[StallConn], now_ms :: Int, dash_url :: Str) -> t.Tool {
   t.define("purchase_at",
     "Purchase an item from a stall via A2A (reserve then complete). Use item_id and price from query_stock_at. Payment must equal the item price.",
@@ -516,6 +553,7 @@ fn run() -> [env, net, io, llm, time, proc] Unit {
 
   let tools := [
     make_move_tool(base_url, base_url),
+    make_offer_tool(conns, now_ms, base_url),
     make_purchase_tool(conns, now_ms, base_url),
   ]
 
@@ -525,13 +563,18 @@ fn run() -> [env, net, io, llm, time, proc] Unit {
     "SHOPPING LIST: ", list_str, "\n",
     "Total budget: ", int.to_str(budget), " credits.\n\n",
     "You have ALREADY visited every stall and gathered the full market data below ",
-    "(which stall sells which item, and at what price). Now DECIDE how to ",
-    "distribute your purchases: for each item on your list, choose the stall ",
-    "offering it at the best price, and buy it — keeping the running total within ",
-    "budget. If you cannot afford the whole list, buy the largest subset you can.\n\n",
+    "(which stall sells which item, and at what advertised price). For each item ",
+    "on your list, choose a stall and then HAGGLE the price down before buying — ",
+    "keep the running total within budget. If you cannot afford the whole list, ",
+    "buy the largest subset you can.\n\n",
     "For each item you decide to buy:\n",
     "  1. move_to(stall) — navigate to the chosen stall.\n",
-    "  2. purchase_at(stall, item_id, payment) — buy it (exact item_id + price).\n\n",
+    "  2. make_offer_at(stall, name, offer) — HAGGLE: open below the advertised ",
+    "price and read the seller's reply {decision, ask}. If 'counter', raise your ",
+    "offer toward the ask and call make_offer_at again; repeat until the seller ",
+    "'accept's, or accept a fair ask. Negotiate — don't pay the first price.\n",
+    "  3. purchase_at(stall, item_id, payment) — buy at the agreed price (your ",
+    "accepted offer, or the ask you accepted).\n\n",
     "When finished, output EXACTLY:\n",
     "  DONE:BOUGHT:<count>:<total_spent>\n",
     "where <count> is how many list items you acquired.\n",

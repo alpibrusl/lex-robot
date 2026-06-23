@@ -1547,6 +1547,23 @@ fn physics_call(physics_url :: Str, skill :: Str, raw_args :: Str) -> [net] Str 
 }
 
 fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :: Str, dash :: Str, physics_url :: Str, seller_on :: Bool, seller_token :: Str, seller_project :: Str, seller_location :: Str, seller_base :: Str, seller_model :: Str) -> [sql, net, time, llm, io, proc, crypto, fs_write] Str {
+  # ── Haggle: one seller turn in a multi-round negotiation ──────────
+  # The buyer drives the loop, POSTing {name, base, offer} each round; the stall's
+  # seller LLM replies {"decision":"counter|accept|walk","ask":N}. Stateless per
+  # call (the buyer carries the round state), so it works over /skill/haggle and
+  # /a2a/task alike. Without a seller LLM, a static rule: accept once offer ≥ base.
+  if name == "haggle" {
+    let it_name := jv_str_or(args, "name", "item")
+    let base    := jv_int_or(args, "base", 8)
+    let offer   := jv_int_or(args, "offer", 0)
+    let _ := notify_dash(dash, str.join(["{\"kind\":\"haggle\",\"stall\":", json_str(stall), ",\"name\":", json_str(it_name), ",\"offer\":", int.to_str(offer), "}"], ""))
+    if seller_on and not str.is_empty(stall) {
+      sllm.haggle_reply(stall, it_name, base, offer, seller_token, seller_project, seller_location, seller_base, seller_model)
+    } else {
+      if offer >= base { str.join(["{\"decision\":\"accept\",\"ask\":", int.to_str(offer), "}"], "") }
+      else { str.join(["{\"decision\":\"counter\",\"ask\":", int.to_str(base), "}"], "") }
+    }
+  } else {
   # ── Bazaar skills ────────────────────────────────────────────────
   if name == "query_stock" {
     let search := jv_str_or(args, "search", "")
@@ -1967,7 +1984,7 @@ fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :
     str.join(["{\"status\":\"dispatched\",\"callsign\":\"RESCUE-7\",\"eta_min\":8,\"capacity\":12}"], "")
   } else {
     str.join(["{\"error\":\"unknown skill: ", sq(name), "\"}"], "")
-  }}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}
+  }}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}
 }
 
 # ── Router ────────────────────────────────────────────────────────────────────

@@ -92,6 +92,7 @@ examples/
   policy_eval                                                 live policy-eval leaderboard (real rollouts → lex-games robot_task referee → ranked; forged over-grant run is disqualified)
   auto_bazaar / seller_pricing_demo                           LLM marketplace — seller stalls + customer negotiate on LOCAL models (LITELLM_BASE_URL) or Vertex
   haggle_demo                                                 multi-round buyer↔seller price haggling (offer/counter-offer to a deal) on local models
+  haggle_a2a_demo                                             DISTRIBUTED haggle — buyer here ↔ seller LLM in a stall sidecar, over A2A/HTTP (the `haggle` skill auto_bazaar uses)
   bazaar / peer_meet / ev_fleet / logistics / tinder /
   trading / station / triage / heist                          agentic interaction demos (+ *_web.html, *_run.sh)
   ttt / bazaar_game / tinder_game / ev_duel / heist_coop /

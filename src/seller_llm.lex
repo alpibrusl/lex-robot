@@ -103,3 +103,62 @@ fn quote_price(stall :: Str, item_id :: Str, item_name :: Str, base_price :: Int
     quoted
   }
 }
+
+# ── Haggle: one seller turn (for the multi-round negotiation skill) ────────────
+#
+# Given the buyer's current offer, the seller LLM either counters with a new ASK,
+# ACCEPTs the offer, or WALKs. Returns serializable JSON for the `haggle` skill:
+#   {"decision":"counter","ask":<int>}  |  {"decision":"accept","ask":<offer>}  |
+#   {"decision":"walk","ask":0}
+# The ask is clamped to never drop below base cost. Provider is local-first
+# (LITELLM_BASE_URL via base_url), else Vertex, else a static rule.
+
+fn pick_seller_move(text :: Str, base :: Int, offer :: Int) -> Str {
+  let lo := str.to_lower(text)
+  if str.contains(lo, "accept") {
+    str.join(["{\"decision\":\"accept\",\"ask\":", int.to_str(offer), "}"], "")
+  } else { if str.contains(lo, "walk") {
+    "{\"decision\":\"walk\",\"ask\":0}"
+  } else {
+    let asked := extract_tagged(lo, "ask:", base)
+    let ask   := if asked < base { base } else { asked }
+    str.join(["{\"decision\":\"counter\",\"ask\":", int.to_str(ask), "}"], "")
+  }}
+}
+
+fn extract_tagged(text_lower :: Str, tag :: Str, fallback :: Int) -> Int {
+  let lines := str.split(text_lower, "\n")
+  list.fold(lines, fallback, fn (acc :: Int, line :: Str) -> Int {
+    match str.strip_prefix(str.trim(line), tag) {
+      None => acc,
+      Some(rest) => match str.to_int(str.trim(rest)) { Some(n) => if n >= 0 { n } else { acc }, None => acc },
+    }
+  })
+}
+
+fn haggle_reply(stall :: Str, item_name :: Str, base :: Int, offer :: Int, token :: Str, project :: Str, location :: Str, base_url :: Str, model_name :: Str) -> [net, llm, io, proc] Str {
+  let use_local  := not str.is_empty(base_url)
+  let use_vertex := str.is_empty(base_url) and not str.is_empty(token) and not str.is_empty(project)
+  if not use_local and not use_vertex {
+    # static fallback: take any offer that clears cost, else hold at base
+    if offer >= base { str.join(["{\"decision\":\"accept\",\"ask\":", int.to_str(offer), "}"], "") }
+    else { str.join(["{\"decision\":\"counter\",\"ask\":", int.to_str(base), "}"], "") }
+  } else {
+    let system_msg := str.join([stall_personality(stall), "\n\n",
+      "You are haggling over ONE item. Reply with EXACTLY one line and nothing else:\n",
+      "  ASK:<int>   to counter (never below your base cost)\n",
+      "  ACCEPT      to take the buyer's current offer\n",
+      "  WALK        to refuse\n",
+      "Move your ASK down toward the offer to close; ACCEPT once the offer clears your cost."], "")
+    let user_msg := str.join(["Item: \"", item_name, "\". Your base cost: ", int.to_str(base),
+      ". The buyer offers ", int.to_str(offer), ". Respond ASK:<int> / ACCEPT / WALK."], "")
+    let provider := if use_local { providers.litellm_at(base_url) } else { vtx.make_provider(vtx.config_at(token, project, location)) }
+    let model    := if use_local { prov.make_model_ref("litellm", model_name) } else { vtx.gemini_35_flash() }
+    let opts     := { temperature: Some(0.6), top_p: None, max_steps: Some(1), max_tokens: Some(64) }
+    let agent    := llm_agent.make_agent(stall, system_msg, model, provider, [], opts)
+    let steps    := iter.to_list(llm_agent.run_loop(agent, [UserMsg(user_msg)]))
+    let reply    := pick_seller_move(extract_text(steps), base, offer)
+    let _log     := io.print(str.join(["  [", stall, " seller] \"", item_name, "\" base=", int.to_str(base), " offer=", int.to_str(offer), " → ", reply], ""))
+    reply
+  }
+}
