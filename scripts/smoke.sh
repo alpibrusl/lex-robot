@@ -79,6 +79,23 @@ else
 fi
 rm -f "$neg"
 
+# The structured SkillOutcome: the single grant-checked move records
+# skill+args+grant (integer milli-units) in the trail, so the lex-games
+# `robot_task` verifier can re-derive that the move stayed inside its workspace
+# box. The `task` demo (run above) wrote its trail to /tmp/lex-robot-trail.db.
+echo "== structured SkillOutcome =="
+scripts/demo.sh task >/dev/null 2>&1 || true   # (re)write /tmp/lex-robot-trail.db
+if command -v sqlite3 >/dev/null 2>&1; then
+  pj="$(sqlite3 /tmp/lex-robot-trail.db "select payload_json from events where kind='execute' limit 1;" 2>/dev/null || true)"
+  if grep -qF '"skill":"move_to"' <<<"$pj" && grep -qF '"grant"' <<<"$pj"; then
+    pass "execute event records the structured SkillOutcome (skill+args+grant)"
+  else
+    bad "execute event is not the structured SkillOutcome — got: $pj"
+  fi
+else
+  skip "structured SkillOutcome (sqlite3 not present)"
+fi
+
 # Run-time: the grant's authority is --allow-effects. Withhold `actuate` and the
 # same demo code is unreachable before it runs — no command can leave the box.
 if lex run --allow-effects net,sense,io examples/demo.lex run >/dev/null 2>&1; then

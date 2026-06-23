@@ -12,6 +12,8 @@ import "std.io" as io
 
 import "std.int" as int
 
+import "std.float" as flt
+
 import "lex-trail/src/log" as tlog
 
 import "std.time" as time
@@ -60,6 +62,42 @@ fn trail(log :: tlog.Log, parent :: Str, kind :: Str, detail :: Str) -> [sql, ti
     Ok(ev) => ev.id,
     Err(_) => parent,
   }
+}
+
+# Same, but the payload is already a JSON object (not wrapped/sanitized as a
+# `{"detail":...}` string). Used for the structured SkillOutcome execute event.
+fn trail_raw(log :: tlog.Log, parent :: Str, kind :: Str, payload_json :: Str) -> [sql, time] Str {
+  match tlog.append(log, kind, Some(parent), payload_json) {
+    Ok(ev) => ev.id,
+    Err(_) => parent,
+  }
+}
+
+# ── Structured SkillOutcome payload (the lex-os SkillOutcome shape) ───────────
+# Integer milli-units on the wire: metres→mm, newtons→mN. This is what the
+# lex-games `robot_task` verifier re-checks for grant legality — a move_to must
+# land inside ws_min..ws_max, a grasp must stay under max_grip. Keeping it
+# integral avoids whole-valued floats serializing without a decimal (and decoding
+# back as Int). Grant force caps should be ISO/TS 15066-derived in production.
+fn milli(x :: Float) -> Str { int.to_str(flt.to_int(x * 1000.0)) }
+
+fn grant_json(g :: t.Grant) -> Str {
+  str.join([
+    "\"grant\":{\"ws_min\":{\"x\":", milli(g.ws_min.x), ",\"y\":", milli(g.ws_min.y), ",\"z\":", milli(g.ws_min.z),
+    "},\"ws_max\":{\"x\":", milli(g.ws_max.x), ",\"y\":", milli(g.ws_max.y), ",\"z\":", milli(g.ws_max.z),
+    "},\"max_force\":", milli(g.max_force), ",\"max_grip\":", milli(g.max_grip_force), "}"
+  ], "")
+}
+
+# A structured move_to execute payload: the actuation + the grant it ran under +
+# the outcome, so a verifier can re-derive that the move respected its authority.
+fn skill_payload(g :: t.Grant, target :: t.Pose, o :: t.Outcome) -> Str {
+  let oc := str.replace(outcome_str(o), "\"", "'")
+  str.join([
+    "{\"skill\":\"move_to\",\"args\":{\"x\":", milli(target.pos.x), ",\"y\":", milli(target.pos.y),
+    ",\"z\":", milli(target.pos.z), ",\"force\":0},", grant_json(g),
+    ",\"outcome\":\"", oc, "\"}"
+  ], "")
 }
 
 # ── Phases ───────────────────────────────────────────────────────────────────
@@ -117,7 +155,14 @@ fn attempt(r :: t.Robot, n :: Int, use_policy :: Bool, log :: tlog.Log, parent :
     let e_pl := trail(log, e_p, "plan", "target 0.5,0.5,0.2")
     let o := execute(r, target, use_policy)
     let __3 := log_step({ phase: "execute", ok: is_reached(o), detail: outcome_str(o) })
-    let e_ex := trail(log, e_pl, "execute", outcome_str(o))
+    # The single grant-checked move records the structured SkillOutcome (so the
+    # verifier can re-derive legality); a policy rollout drives many sub-moves
+    # inside the sidecar that this layer can't see, so it keeps the detail form.
+    let e_ex := if use_policy {
+      trail(log, e_pl, "execute", outcome_str(o))
+    } else {
+      trail_raw(log, e_pl, "execute", skill_payload(r.grant, target, o))
+    }
     let v := verify(o)
     let __4 := log_step(v)
     let e_v := trail(log, e_ex, "verify", v.detail)
