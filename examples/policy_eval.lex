@@ -24,6 +24,7 @@ import "lex-trail/src/event" as ev
 
 import "lex-games/src/arena/trail_file" as tf
 import "lex-games/src/games/robot_task" as rt
+import "lex-games/src/arena/rank"       as rank
 
 import "../src/types" as t
 import "../src/task"  as task
@@ -109,7 +110,9 @@ fn forged_lines() -> List[tf.Line] {
 
 # --- leaderboard -------------------------------------------------------------
 
-fn rank_key(r :: Row) -> Int { if r.verified { 0 - r.score } else { 1000000 } }
+# The arena's canonical ordering (verified by highest score; DQ to the bottom)
+# lives once in lex-games — this live demo shares it rather than re-deriving it.
+fn rank_key(r :: Row) -> Int { rank.key(r.verified, r.score) }
 fn yn(x :: Bool) -> Str { if x { "yes" } else { "no " } }
 
 fn fmt_row(rank :: Int, r :: Row) -> Str {
