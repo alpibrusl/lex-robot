@@ -72,7 +72,7 @@ fn reply_text(o :: srv.HandlerOutcome) -> Str {
 # ── Tests ─────────────────────────────────────────────────────────────────────
 
 # 1. Deny: skill not in grant → handler returns "denied:…" immediately.
-fn test_deny_skill_not_in_grant() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, actuate, sense] Result[Unit, Str] {
+fn test_deny_skill_not_in_grant() -> [sql, fs_write, time, net] Result[Unit, Str] {
   match sql.open(":memory:") {
     Err(e) => Err(e.message),
     Ok(db) => match trail.open_memory() {
@@ -93,7 +93,7 @@ fn test_deny_skill_not_in_grant() -> [io, time, crypto, random, sql, fs_read, fs
 }
 
 # 2. Allow: skill present, target in workspace → hits sidecar (stalled ≠ denied).
-fn test_allow_reaches_sidecar() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, actuate, sense] Result[Unit, Str] {
+fn test_allow_reaches_sidecar() -> [sql, fs_write, time, net] Result[Unit, Str] {
   match sql.open(":memory:") {
     Err(e) => Err(e.message),
     Ok(db) => match trail.open_memory() {
@@ -114,7 +114,7 @@ fn test_allow_reaches_sidecar() -> [io, time, crypto, random, sql, fs_read, fs_w
 }
 
 # 3. Clamp: grasp force above max_grip_force is clamped, not denied.
-fn test_grasp_force_clamped_not_denied() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, actuate, sense] Result[Unit, Str] {
+fn test_grasp_force_clamped_not_denied() -> [sql, fs_write, time, net] Result[Unit, Str] {
   match sql.open(":memory:") {
     Err(e) => Err(e.message),
     Ok(db) => match trail.open_memory() {
@@ -135,7 +135,7 @@ fn test_grasp_force_clamped_not_denied() -> [io, time, crypto, random, sql, fs_r
 }
 
 # 4. Budget: budget_actions=1; second actuating call returns "killed:…".
-fn test_budget_exhausted_returns_killed() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, actuate, sense] Result[Unit, Str] {
+fn test_budget_exhausted_returns_killed() -> [sql, fs_write, time, net] Result[Unit, Str] {
   match sql.open(":memory:") {
     Err(e) => Err(e.message),
     Ok(db) => match trail.open_memory() {
@@ -159,7 +159,7 @@ fn test_budget_exhausted_returns_killed() -> [io, time, crypto, random, sql, fs_
 
 # ── Runner (CI: panics on any failure) ───────────────────────────────────────
 
-fn main() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, actuate, sense] Nil {
+fn main() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Nil {
   let results := [
     test_deny_skill_not_in_grant(),
     test_allow_reaches_sidecar(),
