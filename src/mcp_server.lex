@@ -192,7 +192,7 @@ fn read_camera_cap() -> cap.Capability {
 
 # ── Actuating skill handlers (budget-supervised, grant-gated) ─────────────────
 
-fn do_move_to(robot :: t.Robot, db :: Db, log :: trail.Log, m :: msg.Message) -> [sql, time, net] srv.HandlerOutcome {
+fn do_move_to(robot :: t.Robot, db :: Db, log :: trail.Log, m :: msg.Message) -> [sql, time, net, actuate] srv.HandlerOutcome {
   let args := extract_args(m)
   let target := {
     pos: { x: get_float(args, "x", 0.0), y: get_float(args, "y", 0.0), z: get_float(args, "z", 0.0) },
@@ -212,7 +212,7 @@ fn do_move_to(robot :: t.Robot, db :: Db, log :: trail.Log, m :: msg.Message) ->
   }
 }
 
-fn do_grasp(robot :: t.Robot, db :: Db, log :: trail.Log, m :: msg.Message) -> [sql, time, net] srv.HandlerOutcome {
+fn do_grasp(robot :: t.Robot, db :: Db, log :: trail.Log, m :: msg.Message) -> [sql, time, net, actuate] srv.HandlerOutcome {
   let args := extract_args(m)
   let force := get_float(args, "force", 0.0)
   let now := time.now_ms()
@@ -230,7 +230,7 @@ fn do_grasp(robot :: t.Robot, db :: Db, log :: trail.Log, m :: msg.Message) -> [
   }
 }
 
-fn do_connect_charger(robot :: t.Robot, db :: Db, log :: trail.Log, m :: msg.Message) -> [sql, time, net] srv.HandlerOutcome {
+fn do_connect_charger(robot :: t.Robot, db :: Db, log :: trail.Log, m :: msg.Message) -> [sql, time, net, actuate] srv.HandlerOutcome {
   let args := extract_args(m)
   let force := get_float(args, "force", 0.0)
   let now := time.now_ms()
@@ -250,7 +250,7 @@ fn do_connect_charger(robot :: t.Robot, db :: Db, log :: trail.Log, m :: msg.Mes
 
 # ── Sensing handlers (no budget charge, no grant gate) ────────────────────────
 
-fn do_read_joints(robot :: t.Robot, m :: msg.Message) -> [net] srv.HandlerOutcome {
+fn do_read_joints(robot :: t.Robot, m :: msg.Message) -> [net, sense] srv.HandlerOutcome {
   let _ := m
   match skills.read_joints(robot) {
     Err(e) => err_reply(str.concat("read_joints error: ", e)),
@@ -258,7 +258,7 @@ fn do_read_joints(robot :: t.Robot, m :: msg.Message) -> [net] srv.HandlerOutcom
   }
 }
 
-fn do_read_camera(robot :: t.Robot, m :: msg.Message) -> [net] srv.HandlerOutcome {
+fn do_read_camera(robot :: t.Robot, m :: msg.Message) -> [net, sense] srv.HandlerOutcome {
   let args := extract_args(m)
   let name := get_str(args, "name", "main")
   match skills.read_camera(robot, name) {
@@ -274,31 +274,31 @@ fn do_read_camera(robot :: t.Robot, m :: msg.Message) -> [net] srv.HandlerOutcom
 # satisfies the wider row). Pattern from lex-guard/src/skill.lex.
 
 fn make_move_to_skill(robot :: t.Robot, db :: Db, log :: trail.Log) -> srv.Skill {
-  { capability: move_to_cap(), handle: fn (m :: msg.Message) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] srv.HandlerOutcome {
+  { capability: move_to_cap(), handle: fn (m :: msg.Message) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, actuate] srv.HandlerOutcome {
     do_move_to(robot, db, log, m)
   } }
 }
 
 fn make_grasp_skill(robot :: t.Robot, db :: Db, log :: trail.Log) -> srv.Skill {
-  { capability: grasp_cap(), handle: fn (m :: msg.Message) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] srv.HandlerOutcome {
+  { capability: grasp_cap(), handle: fn (m :: msg.Message) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, actuate] srv.HandlerOutcome {
     do_grasp(robot, db, log, m)
   } }
 }
 
 fn make_connect_charger_skill(robot :: t.Robot, db :: Db, log :: trail.Log) -> srv.Skill {
-  { capability: connect_charger_cap(), handle: fn (m :: msg.Message) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] srv.HandlerOutcome {
+  { capability: connect_charger_cap(), handle: fn (m :: msg.Message) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, actuate] srv.HandlerOutcome {
     do_connect_charger(robot, db, log, m)
   } }
 }
 
 fn make_read_joints_skill(robot :: t.Robot) -> srv.Skill {
-  { capability: read_joints_cap(), handle: fn (m :: msg.Message) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] srv.HandlerOutcome {
+  { capability: read_joints_cap(), handle: fn (m :: msg.Message) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, sense] srv.HandlerOutcome {
     do_read_joints(robot, m)
   } }
 }
 
 fn make_read_camera_skill(robot :: t.Robot) -> srv.Skill {
-  { capability: read_camera_cap(), handle: fn (m :: msg.Message) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] srv.HandlerOutcome {
+  { capability: read_camera_cap(), handle: fn (m :: msg.Message) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, sense] srv.HandlerOutcome {
     do_read_camera(robot, m)
   } }
 }
