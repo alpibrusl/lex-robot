@@ -1,0 +1,44 @@
+name: Live arena referee (build + deploy)
+
+# Builds the live game-server (referee) image and optionally deploys it to the
+# shared Hetzner box (same pattern as the arena verify worker). The referee uses
+# the referee-only manifest (deploy/lex.toml), so private deps resolve with the
+# repo-scoped GITHUB_TOKEN — no extra secrets for the build itself.
+on:
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: "Deploy to the VM after building"
+        type: boolean
+        default: true
+  push:
+    tags: ["arena-live-v*"]
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/lex-arena-referee
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build + push referee image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          push: true
+          tags: ${{ env.IMAGE }}:latest,${{ env.IMAGE }}:${{ github.sha }}
+          secrets: |
+            github_token=${{ secrets.GITHUB_TOKEN }}
+  # A deploy job (ssh to the box, docker compose pull + up -d) mirrors
+  # loom-cloud's release.yml — wire it in once the box secrets are available.

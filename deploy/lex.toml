@@ -1,0 +1,21 @@
+# Referee-only manifest for the live game-server image. The referee imports
+# lex-schema/games/trail/web directly and lex-llm transitively (via src/seller_llm);
+# it never needs the lex-jobs/lex-guard path deps the dev manifest carries.
+#
+# Deps track `main` (a coherent set — the flat layout requires one version of each
+# across the whole transitive closure, and lex has no lockfile to pin it). The
+# build is made reproducible by pinning the LEX VERSION (Dockerfile LEX_VERSION)
+# to what `main` compiles under. Revisit if lex gains lockfiles.
+[package]
+name    = "lex-robot"
+version = "0.1.0"
+lex     = "0.9.13"
+license = "EUPL-1.2"
+description = "lex-robot live game referee (deploy image)"
+
+[dependencies]
+lex-trail  = { git = "https://github.com/alpibrusl/lex-trail" }
+lex-llm    = { git = "https://github.com/alpibrusl/lex-llm" }
+lex-schema = { git = "https://github.com/alpibrusl/lex-schema" }
+lex-games  = { git = "https://github.com/alpibrusl/lex-games" }
+lex-web    = { git = "https://github.com/alpibrusl/lex-web" }

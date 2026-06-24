@@ -1,0 +1,9 @@
+# Add to the shared Caddy on the Hetzner box. Players' A2A agents and the web UI
+# both reach the referee over TLS at this subdomain.
+play.lexlang.org {
+    reverse_proxy arena-referee:8900
+    # SSE (the live event stream) needs unbuffered, long-lived connections:
+    reverse_proxy /events* arena-referee:8900 {
+        flush_interval -1
+    }
+}
