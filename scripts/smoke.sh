@@ -20,7 +20,7 @@ skip() { printf "  \033[33mSKIP\033[0m %s\n" "$1"; skipped=$((skipped+1)); }
 # those type-check rather than skip.)
 skippable() { grep -qiE "package import error|no such file|failed to (fetch|resolve|clone)|could not (find|resolve)" <<<"$1"; }
 echo "== lex check =="
-for f in src/*.lex examples/*.lex; do
+for f in src/*.lex examples/*.lex tests/*.lex; do
   if out="$(lex check "$f" 2>&1)"; then
     pass "check $f"
   elif skippable "$out"; then
@@ -58,6 +58,14 @@ expect tool_fire "→ FIRED" "tool fire: valid fire after clamp verify"
 echo "== budget kill =="
 expect budget "action budget exhausted" "supervisor reports the budget breach reason"
 expect budget "task KILLED" "zero-action grant → run killed before any command"
+
+echo "== MCP grant gate =="
+# test_mcp_grant.lex panics (1/0) on any failure; exit 0 on all-pass.
+if scripts/demo.sh mcp_grant >/dev/null 2>&1; then
+  pass "MCP grant gate: all four assertions pass (deny / allow / clamp / kill)"
+else
+  bad "MCP grant gate: one or more assertions failed"
+fi
 
 # The effect wall (DESIGN.md §4): actuate/sense are real Lex effects, so the
 # judgment/authority split is type-enforced — not a runtime convention. Both

@@ -2,13 +2,13 @@
 # python3 (no pip). The ML demos (keep-out / MuJoCo / learned policy) need the
 # Python deps in sidecar/requirements.txt — see the README dependency matrix.
 
-.PHONY: help check smoke demo grant task budget depot keepout dynamic_keepout tool_fire deps clean
+.PHONY: help check smoke demo grant task budget depot keepout dynamic_keepout tool_fire mcp-grant deps clean
 
 help: ## Show this help
 	@grep -hE '^[a-z-]+:.*##' $(MAKEFILE_LIST) | sed -E 's/:.*## /\t/' | sort
 
 check: ## Type-check all src + example programs
-	@for f in src/*.lex examples/*.lex; do lex check $$f >/dev/null && echo "ok  $$f"; done
+	@for f in src/*.lex examples/*.lex tests/*.lex; do lex check $$f >/dev/null && echo "ok  $$f"; done
 
 smoke: ## Run the zero-dep smoke test (check + 5 demos, asserts output)
 	@bash scripts/smoke.sh
@@ -41,6 +41,9 @@ dynamic_keepout: ## Dynamic human keep-out: live-updating no-go zone (no ML deps
 
 tool_fire: ## Dangerous-tool fire-only-in-bounds: grant blocks out-of-zone + unclamped (no ML deps)
 	@bash scripts/demo.sh tool_fire
+
+mcp-grant: ## MCP grant gate smoke test (deny/allow/clamp/budget-kill, no sidecar needed)
+	@bash scripts/demo.sh mcp_grant
 
 clean: ## Remove stray run artifacts
 	@rm -f MUJOCO_LOG.TXT /tmp/lex-robot-*.log
