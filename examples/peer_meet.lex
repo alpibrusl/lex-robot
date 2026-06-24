@@ -123,7 +123,7 @@ fn buy_charge(session :: sess.PeerSession, units :: Int, dash :: Str, log :: tra
   let price := units * 4
   let _ := io.print(str.join(["[A] want ", int.to_str(units), " units of charge (", int.to_str(price), "cr) — asking lex-guard ..."], ""))
   let _ := notify(dash, str.join(["{\"kind\":\"spend_check\",\"units\":", int.to_str(units), ",\"amount\":", int.to_str(price), "}"], ""))
-  let intent := { merchant: session.peer_name, amount: price, currency: "EUR", category: "energy", memo: str.join([int.to_str(units), " charge units"], ""), idempotency_key: str.join(["chg-", int.to_str(now_ms), "-", int.to_str(units)], "") }
+  let intent := { merchant: session.peer_name, amount: price, currency: "EUR", category: "energy", memo: str.join([int.to_str(units), " charge units"], "") }
   match guard.spend(gpolicy, log, gexec.mock, intent) {
     Err(e) => {
       let _ := io.print(str.join(["[A] gate system error: ", e], ""))
@@ -170,7 +170,7 @@ fn a_policy() -> gmod.Policy {
   { token_id: "tok-peer-a", agent_id: "robot-a", currency: "EUR",
     cap_total: 200, cap_per_day: 200, cap_per_transaction: 50,
     merchants_allow: ["Robot B"], categories_allow: ["energy"],
-    max_tx_per_hour: 0, expires_at: 0, not_before: 0, require_memo: false, policy_version: 1 }
+    max_tx_per_hour: 0, expires_at: 0, require_memo: false, policy_version: 1 }
 }
 
 # Issue + verify the budget token, returning the verified policy (or the demo

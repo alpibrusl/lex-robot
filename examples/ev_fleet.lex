@@ -112,7 +112,7 @@ fn try_charge(session :: sess.PeerSession, vehicle :: Str, kwh :: Int, rate :: I
   let price := kwh * rate
   let _ := io.print(str.join(["[", vehicle, "] wants ", int.to_str(kwh), " kWh @ ", charger, " (", int.to_str(price), "cr) — lex-guard ..."], ""))
   let _ := notify(dash, str.join(["{\"kind\":\"spend_check\",\"vehicle\":\"", vehicle, "\",\"charger\":", json_str(charger), ",\"kwh\":", int.to_str(kwh), ",\"amount\":", int.to_str(price), "}"], ""))
-  let intent := { merchant: charger, amount: price, currency: "EUR", category: "energy", memo: str.join([int.to_str(kwh), " kWh"], ""), idempotency_key: str.join([vehicle, "-", int.to_str(now_ms), "-", int.to_str(kwh)], "") }
+  let intent := { merchant: charger, amount: price, currency: "EUR", category: "energy", memo: str.join([int.to_str(kwh), " kWh"], "") }
   match guard.spend(gpolicy, log, gexec.mock, intent) {
     Err(e) => {
       let _ := notify(dash, str.join(["{\"kind\":\"spend_denied\",\"vehicle\":\"", vehicle, "\",\"amount\":", int.to_str(price), ",\"reason\":", json_str(e), "}"], ""))
@@ -159,7 +159,7 @@ fn fleet_policy(cap_total :: Int) -> gmod.Policy {
   { token_id: "tok-fleet", agent_id: "ev-fleet", currency: "EUR",
     cap_total: cap_total, cap_per_day: cap_total, cap_per_transaction: 50,
     merchants_allow: ["Standard", "Fast", "Premium"], categories_allow: ["energy"],
-    max_tx_per_hour: 0, expires_at: 0, not_before: 0, require_memo: false, policy_version: 1 }
+    max_tx_per_hour: 0, expires_at: 0, require_memo: false, policy_version: 1 }
 }
 fn verified_policy(dash :: Str, cap_total :: Int) -> [net] gmod.Policy {
   match gtok.issue(issuer_seed(), fleet_policy(cap_total)) {
