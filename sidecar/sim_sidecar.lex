@@ -2027,15 +2027,34 @@ fn build_router(db :: Db, stall :: Str, dash :: Str, html_path :: Str, examples_
     }
   })
 
+  # GET /games/:file — serve individual game HTML/JS pages from examples/ so the
+  # lobby at / can link out to each game without embedding them inline.
+  let r3c := router.route_effectful(r3b, "GET", "/games/:file", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+    match ctx.path_param(c, "file") {
+      None => cors_resp(resp.not_found()),
+      Some(f) =>
+        let safe := (str.ends_with(f, ".html") or str.ends_with(f, ".js")) and not str.contains(f, "..")
+        if not safe { cors_resp(resp.not_found()) } else {
+          let full := str.join([examples_dir, "/", f], "")
+          match io.read(full) {
+            Err(_) => cors_resp(resp.not_found()),
+            Ok(body) =>
+              let ct := if str.ends_with(f, ".js") { "application/javascript; charset=utf-8" } else { "text/html; charset=utf-8" }
+              cors_resp({ body: body, status: 200, headers: map.from_list([("content-type", ct)]) }),
+          }
+        }
+    }
+  })
+
   # GET /events — SSE long-poll (dashboard only)
   let r4 := if str.is_empty(stall) {
-    router.route_stream(r3b, "GET", "/events", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] stream.StreamResponse {
+    router.route_stream(r3c, "GET", "/events", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] stream.StreamResponse {
       let last_id := parse_int_or(ctx.header_or(c, "last-event-id", "0"), 0)
       let events := list.cons("retry: 2000\n\n", poll_events(db, last_id, 10000))
       let hdrs := map.from_list([("content-type", "text/event-stream; charset=utf-8"), ("cache-control", "no-cache"), ("connection", "keep-alive"), ("access-control-allow-origin", "*")])
       { body: iter.from_list(events), status: 200, headers: hdrs }
     })
-  } else { r3 }
+  } else { r3c }
 
   # GET /stock
   let r5 := router.route_effectful(r4, "GET", "/stock", fn (_ :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {

@@ -44,7 +44,7 @@ RUN lex check sidecar/sim_sidecar.lex
 EXPOSE 8900
 ENV LEX_ROBOT_SIDECAR_PORT=8900 \
     LEX_ROBOT_REPO_ROOT=/app \
-    LEX_DASHBOARD_HTML=bazaar_web.html
+    LEX_DASHBOARD_HTML=games_lobby.html
 
 # The dashboard/referee: serves the web UI + hosts every game's skills + SSE.
 CMD ["sh","-c","lex run --allow-effects concurrent,crypto,env,fs_read,fs_write,io,llm,net,proc,random,sql,time --allow-proc sh sidecar/sim_sidecar.lex run"]

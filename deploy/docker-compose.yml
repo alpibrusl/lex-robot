@@ -11,7 +11,7 @@ services:
     restart: unless-stopped
     environment:
       LEX_ROBOT_SIDECAR_PORT: "8900"
-      LEX_DASHBOARD_HTML: bazaar_web.html
+      LEX_DASHBOARD_HTML: games_lobby.html
       # Players bring their own model; the referee itself needs none. If a demo
       # uses the in-house seller/customer LLMs, point them at a model endpoint:
       # LITELLM_BASE_URL: http://litellm:4000
