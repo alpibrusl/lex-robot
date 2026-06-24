@@ -20,7 +20,7 @@ skip() { printf "  \033[33mSKIP\033[0m %s\n" "$1"; skipped=$((skipped+1)); }
 # those type-check rather than skip.)
 skippable() { grep -qiE "package import error|no such file|failed to (fetch|resolve|clone)|could not (find|resolve)" <<<"$1"; }
 echo "== lex check =="
-for f in src/*.lex examples/*.lex; do
+for f in src/*.lex examples/*.lex tests/*.lex; do
   if out="$(lex check "$f" 2>&1)"; then
     pass "check $f"
   elif skippable "$out"; then
@@ -58,6 +58,28 @@ expect tool_fire "→ FIRED" "tool fire: valid fire after clamp verify"
 echo "== budget kill =="
 expect budget "action budget exhausted" "supervisor reports the budget breach reason"
 expect budget "task KILLED" "zero-action grant → run killed before any command"
+
+echo "== MCP grant gate =="
+# test_mcp_grant.lex panics (1/0) on any failure; exit 0 on all-pass.
+if scripts/demo.sh mcp_grant >/dev/null 2>&1; then
+  pass "MCP grant gate: all four assertions pass (deny / allow / clamp / kill)"
+else
+  bad "MCP grant gate: one or more assertions failed"
+fi
+
+# The MCP server serves actuation over HTTP, but the effect wall still holds at
+# RUN time: the request handler declares `sense`/`actuate`, so withholding them
+# from --allow-effects makes the server unable to drive the arm even though the
+# same code is reachable over the network. (We don't bind a port here — the run
+# is rejected before serving because the actuating skills are unreachable.)
+mcpw="$(lex run --allow-effects io,time,crypto,random,sql,fs_read,fs_write,net,concurrent,llm,proc,sense \
+          examples/mcp_server_demo.lex run 2>&1 | tr -d '\r')"
+if grep -qF "effect \`actuate\` not in --allow-effects" <<<"$mcpw"; then
+  pass "MCP server: actuate withheld → actuating tools unreachable (runtime wall holds over HTTP)"
+else
+  bad "MCP server: actuate withheld did NOT block the server"
+  echo "$mcpw" | sed 's/^/      /'
+fi
 
 # The effect wall (DESIGN.md §4): actuate/sense are real Lex effects, so the
 # judgment/authority split is type-enforced — not a runtime convention. Both

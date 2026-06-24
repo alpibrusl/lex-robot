@@ -7,15 +7,20 @@ description = "Effect-typed, capability-bounded control layer over LeRobot (desi
 
 # src/ (types/grant/client/skills) is std-only. src/task.lex adds lex-trail for
 # a hash-chained audit of each Perceive/Plan/Execute/Verify step.
+# src/mcp_server.lex adds lex-agent + lex-mcp + lex-spec (declared directly
+# even though transitively available via lex-guard).
+# All dependencies are pinned to their GitHub projects — no local path deps, so
+# a fresh checkout (and CI) resolves the full graph the same way a newcomer does.
 [dependencies]
 lex-trail  = { git = "https://github.com/alpibrusl/lex-trail" }
 lex-llm    = { git = "https://github.com/alpibrusl/lex-llm" }
 lex-schema = { git = "https://github.com/alpibrusl/lex-schema" }
+lex-spec   = { git = "https://github.com/alpibrusl/lex-spec" }
+lex-agent  = { git = "https://github.com/alpibrusl/lex-agent" }
+lex-mcp    = { git = "https://github.com/alpibrusl/lex-mcp" }
 # The games framework + arena verifier live in their own lean repo now; the
 # interactive demos here depend on it instead of vendoring src/lex_games.lex.
 lex-games  = { git = "https://github.com/alpibrusl/lex-games" }
-# lex-web pinned to git (identical to ../lex-web-fix) so it unifies with the copy
-# lex-agent pulls transitively via lex-guard — a flat layout holds one copy.
 lex-web    = { git = "https://github.com/alpibrusl/lex-web" }
-lex-jobs   = { path = "../lex-jobs-fix" }
-lex-guard  = { path = "../lex-guard" }
+lex-jobs   = { git = "https://github.com/alpibrusl/lex-jobs" }
+lex-guard  = { git = "https://github.com/alpibrusl/lex-guard" }
