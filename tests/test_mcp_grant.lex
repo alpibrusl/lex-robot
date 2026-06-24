@@ -77,7 +77,7 @@ fn test_deny_skill_not_in_grant() -> [sql, fs_write, time, net] Result[Unit, Str
     Err(e) => Err(e.message),
     Ok(db) => match trail.open_memory() {
       Err(e) => Err(e),
-      Ok(log) =>
+      Ok(log) => {
         let robot := make_robot(["grasp"], 10)
         let _ := mcp.ledger_init(db, robot.grant, time.now_ms())
         let skill := mcp.make_move_to_skill(robot, db, log)
@@ -86,7 +86,8 @@ fn test_deny_skill_not_in_grant() -> [sql, fs_write, time, net] Result[Unit, Str
           Ok(())
         } else {
           Err(str.concat("expected denied, got: ", reply_text(o)))
-        },
+        }
+      },
     },
   }
 }
@@ -97,7 +98,7 @@ fn test_allow_reaches_sidecar() -> [sql, fs_write, time, net] Result[Unit, Str] 
     Err(e) => Err(e.message),
     Ok(db) => match trail.open_memory() {
       Err(e) => Err(e),
-      Ok(log) =>
+      Ok(log) => {
         let robot := make_robot(["move_to"], 10)
         let _ := mcp.ledger_init(db, robot.grant, time.now_ms())
         let skill := mcp.make_move_to_skill(robot, db, log)
@@ -106,7 +107,8 @@ fn test_allow_reaches_sidecar() -> [sql, fs_write, time, net] Result[Unit, Str] 
           Err(str.concat("skill was denied but should have reached sidecar: ", reply_text(o)))
         } else {
           Ok(())
-        },
+        }
+      },
     },
   }
 }
@@ -117,7 +119,7 @@ fn test_grasp_force_clamped_not_denied() -> [sql, fs_write, time, net] Result[Un
     Err(e) => Err(e.message),
     Ok(db) => match trail.open_memory() {
       Err(e) => Err(e),
-      Ok(log) =>
+      Ok(log) => {
         let robot := make_robot(["grasp"], 10)
         let _ := mcp.ledger_init(db, robot.grant, time.now_ms())
         let skill := mcp.make_grasp_skill(robot, db, log)
@@ -126,7 +128,8 @@ fn test_grasp_force_clamped_not_denied() -> [sql, fs_write, time, net] Result[Un
           Err(str.concat("grasp was denied (should be clamped): ", reply_text(o)))
         } else {
           Ok(())
-        },
+        }
+      },
     },
   }
 }
@@ -137,7 +140,7 @@ fn test_budget_exhausted_returns_killed() -> [sql, fs_write, time, net] Result[U
     Err(e) => Err(e.message),
     Ok(db) => match trail.open_memory() {
       Err(e) => Err(e),
-      Ok(log) =>
+      Ok(log) => {
         let robot := make_robot(["move_to"], 1)
         let _ := mcp.ledger_init(db, robot.grant, time.now_ms())
         let skill := mcp.make_move_to_skill(robot, db, log)
@@ -148,7 +151,8 @@ fn test_budget_exhausted_returns_killed() -> [sql, fs_write, time, net] Result[U
           Ok(())
         } else {
           Err(str.concat("expected killed, got: ", reply_text(second)))
-        },
+        }
+      },
     },
   }
 }

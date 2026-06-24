@@ -202,12 +202,13 @@ fn do_move_to(robot :: t.Robot, db :: Db, log :: trail.Log, m :: msg.Message) ->
   let led := ledger_read(db, robot.grant, now)
   match bud.breach(led, now) {
     Some(reason) => outcome_reply(Killed(reason)),
-    None =>
+    None => {
       let o := skills.move_to(robot, target)
       let spent := bud.spend(led)
       let _ := ledger_write(db, spent)
       let _ := rtask.trail_raw(log, "mcp", "mcp.move_to", rtask.skill_payload(robot.grant, target, o))
-      outcome_reply(o),
+      outcome_reply(o)
+    },
   }
 }
 
@@ -218,13 +219,14 @@ fn do_grasp(robot :: t.Robot, db :: Db, log :: trail.Log, m :: msg.Message) -> [
   let led := ledger_read(db, robot.grant, now)
   match bud.breach(led, now) {
     Some(reason) => outcome_reply(Killed(reason)),
-    None =>
+    None => {
       let o := skills.grasp(robot, force)
       let spent := bud.spend(led)
       let _ := ledger_write(db, spent)
       let detail := str.join(["{\"skill\":\"grasp\",\"force\":", flt.to_str(force), ",\"outcome\":\"", rtask.outcome_str(o), "\"}"], "")
       let _ := rtask.trail_raw(log, "mcp", "mcp.grasp", detail)
-      outcome_reply(o),
+      outcome_reply(o)
+    },
   }
 }
 
@@ -235,13 +237,14 @@ fn do_connect_charger(robot :: t.Robot, db :: Db, log :: trail.Log, m :: msg.Mes
   let led := ledger_read(db, robot.grant, now)
   match bud.breach(led, now) {
     Some(reason) => outcome_reply(Killed(reason)),
-    None =>
+    None => {
       let o := skills.connect_charger(robot, force)
       let spent := bud.spend(led)
       let _ := ledger_write(db, spent)
       let detail := str.join(["{\"skill\":\"connect_charger\",\"force\":", flt.to_str(force), ",\"outcome\":\"", rtask.outcome_str(o), "\"}"], "")
       let _ := rtask.trail_raw(log, "mcp", "mcp.connect_charger", detail)
-      outcome_reply(o),
+      outcome_reply(o)
+    },
   }
 }
 
@@ -326,18 +329,21 @@ fn make_agent(robot :: t.Robot, db :: Db, log :: trail.Log) -> srv.AgentDef {
 
 fn run(robot :: t.Robot, port :: Int, trail_path :: Str, db_path :: Str) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Nil {
   match trail.open(trail_path) {
-    Err(e) =>
+    Err(e) => {
       let _ := str.concat("trail open failed: ", e)
-      (),
+      ()
+    },
     Ok(log) => match sql.open(db_path) {
-      Err(e) =>
+      Err(e) => {
         let _ := str.concat("ledger db open failed: ", e.message)
-        (),
-      Ok(db) =>
+        ()
+      },
+      Ok(db) => {
         let now := time.now_ms()
         let _ := ledger_init(db, robot.grant, now)
         let agent := make_agent(robot, db, log)
-        mcphttp.run_http(agent, port),
+        mcphttp.run_http(agent, port)
+      },
     },
   }
 }
