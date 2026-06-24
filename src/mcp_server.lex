@@ -1,14 +1,36 @@
 # lex-robot/mcp_server.lex — Robot skills exposed as a grant-gated MCP server.
 #
-# Pattern mirrors lex-guard/src/skill.lex: each skill handler closes over the
-# Robot (grant + sidecar URL), a SQLite DB for budget-ledger persistence, and a
-# lex-trail Log. Budget and grant checks are INSIDE the handlers — no bypass
-# path through the transport layer.
+# WHY THIS OWNS ITS OWN HTTP ENDPOINT (and does not go through lex-mcp's
+# `run_http` / lex-agent's `AgentDef`):
+#
+#   lex-agent's `Skill.handle` field is typed with a *concrete, fixed* effect
+#   row — `[io, time, crypto, random, sql, fs_read, fs_write, net, concurrent,
+#   llm, proc]`. It deliberately knows nothing about `sense`/`actuate` (it is a
+#   generic A2A/agent framework). A handler that transitively calls an actuating
+#   skill (`skills.move_to :: [net, sense, actuate]`) therefore cannot fit that
+#   field — there is no row variable to absorb the extra effects. Pushing a
+#   physical-actuation handler through the generic `Skill` would require dragging
+#   `sense`/`actuate` into lex-agent (and lex-web), weakening the DESIGN.md §4
+#   effect wall for *every* agent consumer.
+#
+#   Instead we serve MCP directly: `std.net.serve_fn` DOES admit `actuate` in its
+#   handler row, so this module declares `[..., sense, actuate]` honestly — the
+#   effect wall holds at compile time (`lex check` sees the actuation) AND at run
+#   time (`lex run` must be given `--allow-effects actuate`). We reuse lex-mcp's
+#   *pure* protocol/tool builders (`proto.*`) and lex-agent's *pure* JSON-RPC
+#   parser (`rpc.*`) for the wire format, so this is real MCP — only the dispatch
+#   step, the one place that crosses into `actuate`, lives here where the wall is.
+#
+# Grant + budget checks are INSIDE the dispatcher (gate-in-handler, lex-guard
+# pattern): the grant/clamp logic stays in `skills.lex` (every call goes through
+# `skills.move_to` etc., never a raw `client.call`), so there is no bypass path
+# and no duplicated grant logic.
 #
 # SQLite ledger table (single row, id=1):
 #   robot_mcp_ledger(id, actions_used, started_ms, action_cap, wall_cap_ms)
 # Initialized at startup from the grant; actions_used incremented on each
-# actuating call; started_ms is fixed at server-start time.
+# actuating call; started_ms is fixed at server-start time, so the wall-clock
+# budget spans the whole server lifetime.
 #
 # Skills:
 #   move_to          — actuating; grant-gated (skill + workspace); budget-supervised
@@ -17,12 +39,11 @@
 #   read_joints      — sensing only; no grant/budget gate
 #   read_camera      — sensing only; no grant/budget gate
 #
-# Entry point: `run(robot, port, trail_path)` → blocks serving MCP over HTTP.
+# Entry point: `run(robot, port, trail_path, db_path)` → blocks serving MCP HTTP.
 #
 # Run:
-#   lex run --allow-effects io,time,crypto,random,sql,fs_read,fs_write,net,concurrent,llm,proc \
-#       src/mcp_server.lex run \
-#       '{"sidecar_url":"http://localhost:8900","grant":{...}}' 8080 /tmp/robot_trail.db
+#   lex run --allow-effects io,time,crypto,random,sql,fs_read,fs_write,net,concurrent,llm,proc,sense,actuate \
+#       src/mcp_server.lex run
 
 import "std.str" as str
 
@@ -32,9 +53,13 @@ import "std.float" as flt
 
 import "std.list" as list
 
+import "std.map" as map
+
 import "std.time" as time
 
 import "std.sql" as sql
+
+import "std.net" as net
 
 import "lex-schema/schema" as sch
 
@@ -42,17 +67,11 @@ import "lex-schema/json_value" as jv
 
 import "lex-spec/capability" as cap
 
-import "lex-agent/src/server" as srv
-
-import "lex-agent/src/message" as msg
-
-import "lex-agent/src/task" as tk
-
-import "lex-agent/src/agent_card" as card
+import "lex-agent/src/protocol" as rpc
 
 import "lex-trail/log" as trail
 
-import "lex-mcp/src/http" as mcphttp
+import "lex-mcp/src/protocol" as proto
 
 import "./types" as t
 
@@ -94,17 +113,7 @@ fn ledger_write(db :: Db, led :: bud.Ledger) -> [sql] Unit {
   ()
 }
 
-# ── Arg extraction helpers ────────────────────────────────────────────────────
-
-fn extract_args(m :: msg.Message) -> jv.Json {
-  match list.head(m.parts) {
-    None => JObj([]),
-    Some(p) => match p {
-      DataPart(j) => j,
-      _ => JObj([]),
-    },
-  }
-}
+# ── Arg extraction helpers (MCP tools/call arguments arrive as a Json object) ──
 
 fn get_float(args :: jv.Json, key :: Str, dflt :: Float) -> Float {
   match jv.get_field(args, key) {
@@ -129,19 +138,7 @@ fn get_str(args :: jv.Json, key :: Str, dflt :: Str) -> Str {
   }
 }
 
-fn outcome_reply(o :: t.Outcome) -> srv.HandlerOutcome {
-  { next_state: TSCompleted, reply: Some(msg.agent_text(rtask.outcome_str(o))), artifacts: [] }
-}
-
-fn ok_reply(text :: Str) -> srv.HandlerOutcome {
-  { next_state: TSCompleted, reply: Some(msg.agent_text(text)), artifacts: [] }
-}
-
-fn err_reply(text :: Str) -> srv.HandlerOutcome {
-  { next_state: TSFailed, reply: Some(msg.agent_text(text)), artifacts: [] }
-}
-
-# ── Capability declarations ───────────────────────────────────────────────────
+# ── Capability declarations (project to MCP tool descriptors for tools/list) ──
 
 fn move_to_cap() -> cap.Capability {
   cap.inbound("move_to", "Move end-effector to a 6-DOF pose; grant-gated (skill + workspace) and budget-supervised.", {
@@ -190,10 +187,36 @@ fn read_camera_cap() -> cap.Capability {
   })
 }
 
-# ── Actuating skill handlers (budget-supervised, grant-gated) ─────────────────
+fn cap_to_tool(c :: cap.Capability) -> proto.McpTool {
+  { name: c.name, description: c.description, input_schema: sch.to_json_schema(c.params) }
+}
 
-fn do_move_to(robot :: t.Robot, db :: Db, log :: trail.Log, m :: msg.Message) -> [sql, time, net] srv.HandlerOutcome {
-  let args := extract_args(m)
+fn all_tools() -> List[proto.McpTool] {
+  list.map([move_to_cap(), grasp_cap(), connect_charger_cap(), read_joints_cap(), read_camera_cap()], cap_to_tool)
+}
+
+# ── Tool dispatch — the single place that crosses into `sense`/`actuate` ──────
+#
+# Returns the reply text for a tools/call. For actuating skills the budget
+# ledger is read from SQLite, the breach checked BEFORE the command leaves the
+# box (→ "killed: …"), the skill run through the grant-gated `skills.*` API
+# (→ "reached" / "denied: …" / "stalled: …"), and the structured SkillOutcome
+# appended to the trail. One action is charged only when the command actually
+# left the box: a grant `Denied` outcome never reaches the wire, so it is logged
+# but NOT charged (the budget mirrors the manifest's `max_commands`). Sensor
+# reads ("read_*") never charge the budget. An unknown tool name returns an
+# "error: …" string so the caller surfaces `isError: true`.
+
+# Charge one action against the ledger unless the grant refused the command
+# (a `Denied` outcome never left the box, so it costs no budget).
+fn charge_if_committed(db :: Db, led :: bud.Ledger, o :: t.Outcome) -> [sql] Unit {
+  match o {
+    Denied(_) => (),
+    _ => ledger_write(db, bud.spend(led)),
+  }
+}
+
+fn dispatch_move_to(robot :: t.Robot, db :: Db, log :: trail.Log, args :: jv.Json) -> [sql, time, net, sense, actuate] Str {
   let target := {
     pos: { x: get_float(args, "x", 0.0), y: get_float(args, "y", 0.0), z: get_float(args, "z", 0.0) },
     rx: get_float(args, "rx", 0.0), ry: get_float(args, "ry", 0.0), rz: get_float(args, "rz", 0.0)
@@ -201,148 +224,164 @@ fn do_move_to(robot :: t.Robot, db :: Db, log :: trail.Log, m :: msg.Message) ->
   let now := time.now_ms()
   let led := ledger_read(db, robot.grant, now)
   match bud.breach(led, now) {
-    Some(reason) => outcome_reply(Killed(reason)),
+    Some(reason) => rtask.outcome_str(Killed(reason)),
     None => {
       let o := skills.move_to(robot, target)
-      let spent := bud.spend(led)
-      let _ := ledger_write(db, spent)
       let _ := rtask.trail_raw(log, "mcp", "mcp.move_to", rtask.skill_payload(robot.grant, target, o))
-      outcome_reply(o)
+      let _ := charge_if_committed(db, led, o)
+      rtask.outcome_str(o)
     },
   }
 }
 
-fn do_grasp(robot :: t.Robot, db :: Db, log :: trail.Log, m :: msg.Message) -> [sql, time, net] srv.HandlerOutcome {
-  let args := extract_args(m)
+fn dispatch_grasp(robot :: t.Robot, db :: Db, log :: trail.Log, args :: jv.Json) -> [sql, time, net, sense, actuate] Str {
   let force := get_float(args, "force", 0.0)
   let now := time.now_ms()
   let led := ledger_read(db, robot.grant, now)
   match bud.breach(led, now) {
-    Some(reason) => outcome_reply(Killed(reason)),
+    Some(reason) => rtask.outcome_str(Killed(reason)),
     None => {
       let o := skills.grasp(robot, force)
-      let spent := bud.spend(led)
-      let _ := ledger_write(db, spent)
       let detail := str.join(["{\"skill\":\"grasp\",\"force\":", flt.to_str(force), ",\"outcome\":\"", rtask.outcome_str(o), "\"}"], "")
       let _ := rtask.trail_raw(log, "mcp", "mcp.grasp", detail)
-      outcome_reply(o)
+      let _ := charge_if_committed(db, led, o)
+      rtask.outcome_str(o)
     },
   }
 }
 
-fn do_connect_charger(robot :: t.Robot, db :: Db, log :: trail.Log, m :: msg.Message) -> [sql, time, net] srv.HandlerOutcome {
-  let args := extract_args(m)
+fn dispatch_connect_charger(robot :: t.Robot, db :: Db, log :: trail.Log, args :: jv.Json) -> [sql, time, net, sense, actuate] Str {
   let force := get_float(args, "force", 0.0)
   let now := time.now_ms()
   let led := ledger_read(db, robot.grant, now)
   match bud.breach(led, now) {
-    Some(reason) => outcome_reply(Killed(reason)),
+    Some(reason) => rtask.outcome_str(Killed(reason)),
     None => {
       let o := skills.connect_charger(robot, force)
-      let spent := bud.spend(led)
-      let _ := ledger_write(db, spent)
       let detail := str.join(["{\"skill\":\"connect_charger\",\"force\":", flt.to_str(force), ",\"outcome\":\"", rtask.outcome_str(o), "\"}"], "")
       let _ := rtask.trail_raw(log, "mcp", "mcp.connect_charger", detail)
-      outcome_reply(o)
+      let _ := charge_if_committed(db, led, o)
+      rtask.outcome_str(o)
     },
   }
 }
 
-# ── Sensing handlers (no budget charge, no grant gate) ────────────────────────
-
-fn do_read_joints(robot :: t.Robot, m :: msg.Message) -> [net] srv.HandlerOutcome {
-  let _ := m
-  match skills.read_joints(robot) {
-    Err(e) => err_reply(str.concat("read_joints error: ", e)),
-    Ok(s) => ok_reply(s),
+# The single tool router. Declares `sense`/`actuate` because the actuating
+# branches transitively produce them — this is the effect-wall marker that makes
+# `lex run --allow-effects` able to withhold actuation from the whole server.
+fn dispatch_skill(robot :: t.Robot, db :: Db, log :: trail.Log, name :: Str, args :: jv.Json) -> [sql, time, net, sense, actuate] Str {
+  if name == "move_to" {
+    dispatch_move_to(robot, db, log, args)
+  } else {
+    if name == "grasp" {
+      dispatch_grasp(robot, db, log, args)
+    } else {
+      if name == "connect_charger" {
+        dispatch_connect_charger(robot, db, log, args)
+      } else {
+        if name == "read_joints" {
+          match skills.read_joints(robot) {
+            Err(e) => str.concat("error: read_joints: ", e),
+            Ok(s) => s,
+          }
+        } else {
+          if name == "read_camera" {
+            match skills.read_camera(robot, get_str(args, "name", "main")) {
+              Err(e) => str.concat("error: read_camera: ", e),
+              Ok(s) => s,
+            }
+          } else {
+            str.concat("error: unknown tool: ", name)
+          }
+        }
+      }
+    }
   }
 }
 
-fn do_read_camera(robot :: t.Robot, m :: msg.Message) -> [net] srv.HandlerOutcome {
-  let args := extract_args(m)
-  let name := get_str(args, "name", "main")
-  match skills.read_camera(robot, name) {
-    Err(e) => err_reply(str.concat("read_camera error: ", e)),
-    Ok(s) => ok_reply(s),
+# ── JSON-RPC routing (reuses lex-agent rpc.* + lex-mcp proto.* — pure) ────────
+
+fn handle_tools_call(robot :: t.Robot, db :: Db, log :: trail.Log, req :: rpc.Request) -> [sql, time, net, sense, actuate] Str {
+  let name := match jv.get_field(req.params, "name") {
+    None => "",
+    Some(v) => match jv.as_str(v) { Some(s) => s, None => "" },
+  }
+  let args := match jv.get_field(req.params, "arguments") {
+    None => JObj([]),
+    Some(a) => a,
+  }
+  if str.is_empty(name) {
+    rpc.response_to_str(ResOk(req.id, proto.tools_call_error("tools/call missing required param: name")))
+  } else {
+    let text := dispatch_skill(robot, db, log, name, args)
+    let result := if str.starts_with(text, "error:") {
+      proto.tools_call_error(text)
+    } else {
+      proto.tools_call_result(text)
+    }
+    rpc.response_to_str(ResOk(req.id, result))
   }
 }
 
-# ── Skill assembly ────────────────────────────────────────────────────────────
-#
-# Each skill's handle closure carries the full effect row expected by srv.Skill
-# (effect widening: the inner `do_*` function uses fewer effects; the wrapper
-# satisfies the wider row). Pattern from lex-guard/src/skill.lex.
-
-fn make_move_to_skill(robot :: t.Robot, db :: Db, log :: trail.Log) -> srv.Skill {
-  { capability: move_to_cap(), handle: fn (m :: msg.Message) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] srv.HandlerOutcome {
-    do_move_to(robot, db, log, m)
-  } }
+fn route(robot :: t.Robot, db :: Db, log :: trail.Log, req :: rpc.Request) -> [sql, time, net, sense, actuate] Str {
+  if req.method == proto.method_initialize() {
+    rpc.response_to_str(ResOk(req.id, proto.initialize_result("lex-robot-mcp", "0.1.0")))
+  } else {
+    if req.method == proto.method_notifications_initialized() {
+      ""
+    } else {
+      if req.method == proto.method_tools_list() {
+        rpc.response_to_str(ResOk(req.id, proto.tools_list_result(all_tools())))
+      } else {
+        if req.method == proto.method_tools_call() {
+          handle_tools_call(robot, db, log, req)
+        } else {
+          rpc.response_to_str(ResErr(req.id, rpc.error(rpc.err_method_not_found(), str.concat("method not supported: ", req.method))))
+        }
+      }
+    }
+  }
 }
 
-fn make_grasp_skill(robot :: t.Robot, db :: Db, log :: trail.Log) -> srv.Skill {
-  { capability: grasp_cap(), handle: fn (m :: msg.Message) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] srv.HandlerOutcome {
-    do_grasp(robot, db, log, m)
-  } }
-}
-
-fn make_connect_charger_skill(robot :: t.Robot, db :: Db, log :: trail.Log) -> srv.Skill {
-  { capability: connect_charger_cap(), handle: fn (m :: msg.Message) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] srv.HandlerOutcome {
-    do_connect_charger(robot, db, log, m)
-  } }
-}
-
-fn make_read_joints_skill(robot :: t.Robot) -> srv.Skill {
-  { capability: read_joints_cap(), handle: fn (m :: msg.Message) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] srv.HandlerOutcome {
-    do_read_joints(robot, m)
-  } }
-}
-
-fn make_read_camera_skill(robot :: t.Robot) -> srv.Skill {
-  { capability: read_camera_cap(), handle: fn (m :: msg.Message) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] srv.HandlerOutcome {
-    do_read_camera(robot, m)
-  } }
-}
-
-# ── Agent assembly ────────────────────────────────────────────────────────────
-
-fn make_agent(robot :: t.Robot, db :: Db, log :: trail.Log) -> srv.AgentDef {
-  let c := card.make(
-    "lex-robot-mcp",
-    "Grant-gated, budget-supervised robot skills over MCP HTTP.",
-    "0.1.0",
-    "http://localhost:8080",
-    [move_to_cap(), grasp_cap(), connect_charger_cap(), read_joints_cap(), read_camera_cap()])
-  srv.make_agent_def(c, [
-    make_move_to_skill(robot, db, log),
-    make_grasp_skill(robot, db, log),
-    make_connect_charger_skill(robot, db, log),
-    make_read_joints_skill(robot),
-    make_read_camera_skill(robot)
-  ])
+# Parse one JSON-RPC body and produce its response string ("" for notifications).
+fn handle_message(robot :: t.Robot, db :: Db, log :: trail.Log, body :: Str) -> [sql, time, net, sense, actuate] Str {
+  match rpc.parse_request(body) {
+    Err(rpcerr) => rpc.response_to_str(ResErr(IdNull, rpcerr)),
+    Ok(req) => route(robot, db, log, req),
+  }
 }
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 #
-# Opens a persistent trail at `trail_path`, opens a SQLite ledger DB at
-# `db_path`, initialises the budget ledger from the grant, then starts the MCP
-# HTTP server on `port`. Blocks indefinitely.
+# Opens a persistent trail at `trail_path` and a SQLite ledger DB at `db_path`,
+# initialises the budget ledger from the grant, then serves MCP over HTTP on
+# `port` via `net.serve_fn`. Blocks indefinitely. The request handler declares
+# `sense`/`actuate`, so the whole binary requires `--allow-effects …,sense,
+# actuate` — withhold them and no command can leave the box (the runtime half of
+# the effect wall) even though the same code is reachable over the network.
 
-fn run(robot :: t.Robot, port :: Int, trail_path :: Str, db_path :: Str) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Nil {
+fn run(robot :: t.Robot, port :: Int, trail_path :: Str, db_path :: Str) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, sense, actuate] Nil {
   match trail.open(trail_path) {
-    Err(e) => {
-      let _ := str.concat("trail open failed: ", e)
-      ()
-    },
+    Err(_) => (),
     Ok(log) => match sql.open(db_path) {
-      Err(e) => {
-        let _ := str.concat("ledger db open failed: ", e.message)
-        ()
-      },
+      Err(_) => (),
       Ok(db) => {
         let now := time.now_ms()
         let _ := ledger_init(db, robot.grant, now)
-        let agent := make_agent(robot, db, log)
-        mcphttp.run_http(agent, port)
+        let hdrs := map.from_list([("content-type", "application/json")])
+        let handler := fn (req :: Request) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, sense, actuate] Response {
+          if req.method == "POST" {
+            let out := handle_message(robot, db, log, req.body)
+            if str.is_empty(out) {
+              { status: 202, body: BodyStr(""), headers: hdrs }
+            } else {
+              { status: 200, body: BodyStr(out), headers: hdrs }
+            }
+          } else {
+            { status: 405, body: BodyStr("{\"error\":\"MCP HTTP transport accepts POST only\"}"), headers: hdrs }
+          }
+        }
+        net.serve_fn(port, handler)
       },
     },
   }

@@ -1,6 +1,8 @@
 # lex-robot/tests/test_mcp_grant.lex — CI smoke tests for mcp_server.lex
 #
-# Covers the four grant/budget assertions from issue #29, without a live sidecar:
+# Drives `mcp.dispatch_skill` directly (the single tool router that crosses into
+# sense/actuate) so the four grant/budget assertions from issue #29 run without a
+# live sidecar:
 #
 #   1. Deny        — skill absent from grant → "denied:…"
 #   2. No-deny     — skill present, target in workspace → reaches sidecar
@@ -10,7 +12,7 @@
 #   4. Budget kill — budget_actions=1; second actuating call returns "killed:…"
 #
 # Run (standalone):
-#   lex run --allow-effects io,time,crypto,random,sql,fs_read,fs_write,net,concurrent,llm,proc \
+#   lex run --allow-effects io,time,crypto,random,sql,fs_read,fs_write,net,concurrent,llm,proc,sense,actuate \
 #       tests/test_mcp_grant.lex main
 
 import "std.str" as str
@@ -22,10 +24,6 @@ import "std.sql" as sql
 import "std.time" as time
 
 import "lex-schema/json_value" as jv
-
-import "lex-agent/src/message" as msg
-
-import "lex-agent/src/server" as srv
 
 import "lex-trail/log" as trail
 
@@ -52,27 +50,14 @@ fn make_robot(skill_names :: List[Str], budget_actions :: Int) -> t.Robot {
   { sidecar_url: "http://localhost:19999", grant: make_grant(skill_names, budget_actions) }
 }
 
-fn data_msg(args :: jv.Json) -> msg.Message {
-  { message_id: "t", role: RoleUser, parts: [DataPart(args)] }
-}
-
 fn move_to_args(x :: Float, y :: Float, z :: Float) -> jv.Json {
   JObj([("x", JFloat(x)), ("y", JFloat(y)), ("z", JFloat(z))])
 }
 
-fn reply_text(o :: srv.HandlerOutcome) -> Str {
-  match o.reply {
-    None => "",
-    Some(m) => list.fold(m.parts, "", fn (acc :: Str, p :: msg.Part) -> Str {
-      if str.is_empty(acc) { match p { TextPart(s) => s, _ => acc } } else { acc }
-    }),
-  }
-}
-
 # ── Tests ─────────────────────────────────────────────────────────────────────
 
-# 1. Deny: skill not in grant → handler returns "denied:…" immediately.
-fn test_deny_skill_not_in_grant() -> [sql, fs_write, time, net] Result[Unit, Str] {
+# 1. Deny: skill not in grant → dispatch returns "denied:…" immediately.
+fn test_deny_skill_not_in_grant() -> [sql, fs_write, time, net, sense, actuate] Result[Unit, Str] {
   match sql.open(":memory:") {
     Err(e) => Err(e.message),
     Ok(db) => match trail.open_memory() {
@@ -80,12 +65,11 @@ fn test_deny_skill_not_in_grant() -> [sql, fs_write, time, net] Result[Unit, Str
       Ok(log) => {
         let robot := make_robot(["grasp"], 10)
         let _ := mcp.ledger_init(db, robot.grant, time.now_ms())
-        let skill := mcp.make_move_to_skill(robot, db, log)
-        let o := skill.handle(data_msg(move_to_args(0.5, 0.5, 0.2)))
-        if str.starts_with(reply_text(o), "denied:") {
+        let text := mcp.dispatch_skill(robot, db, log, "move_to", move_to_args(0.5, 0.5, 0.2))
+        if str.starts_with(text, "denied:") {
           Ok(())
         } else {
-          Err(str.concat("expected denied, got: ", reply_text(o)))
+          Err(str.concat("expected denied, got: ", text))
         }
       },
     },
@@ -93,7 +77,7 @@ fn test_deny_skill_not_in_grant() -> [sql, fs_write, time, net] Result[Unit, Str
 }
 
 # 2. Allow: skill present, target in workspace → hits sidecar (stalled ≠ denied).
-fn test_allow_reaches_sidecar() -> [sql, fs_write, time, net] Result[Unit, Str] {
+fn test_allow_reaches_sidecar() -> [sql, fs_write, time, net, sense, actuate] Result[Unit, Str] {
   match sql.open(":memory:") {
     Err(e) => Err(e.message),
     Ok(db) => match trail.open_memory() {
@@ -101,10 +85,9 @@ fn test_allow_reaches_sidecar() -> [sql, fs_write, time, net] Result[Unit, Str] 
       Ok(log) => {
         let robot := make_robot(["move_to"], 10)
         let _ := mcp.ledger_init(db, robot.grant, time.now_ms())
-        let skill := mcp.make_move_to_skill(robot, db, log)
-        let o := skill.handle(data_msg(move_to_args(0.5, 0.5, 0.2)))
-        if str.starts_with(reply_text(o), "denied:") {
-          Err(str.concat("skill was denied but should have reached sidecar: ", reply_text(o)))
+        let text := mcp.dispatch_skill(robot, db, log, "move_to", move_to_args(0.5, 0.5, 0.2))
+        if str.starts_with(text, "denied:") {
+          Err(str.concat("skill was denied but should have reached sidecar: ", text))
         } else {
           Ok(())
         }
@@ -114,7 +97,7 @@ fn test_allow_reaches_sidecar() -> [sql, fs_write, time, net] Result[Unit, Str] 
 }
 
 # 3. Clamp: grasp force above max_grip_force is clamped, not denied.
-fn test_grasp_force_clamped_not_denied() -> [sql, fs_write, time, net] Result[Unit, Str] {
+fn test_grasp_force_clamped_not_denied() -> [sql, fs_write, time, net, sense, actuate] Result[Unit, Str] {
   match sql.open(":memory:") {
     Err(e) => Err(e.message),
     Ok(db) => match trail.open_memory() {
@@ -122,10 +105,9 @@ fn test_grasp_force_clamped_not_denied() -> [sql, fs_write, time, net] Result[Un
       Ok(log) => {
         let robot := make_robot(["grasp"], 10)
         let _ := mcp.ledger_init(db, robot.grant, time.now_ms())
-        let skill := mcp.make_grasp_skill(robot, db, log)
-        let o := skill.handle(data_msg(JObj([("force", JFloat(999.9))])))
-        if str.starts_with(reply_text(o), "denied: skill grasp") {
-          Err(str.concat("grasp was denied (should be clamped): ", reply_text(o)))
+        let text := mcp.dispatch_skill(robot, db, log, "grasp", JObj([("force", JFloat(999.9))]))
+        if str.starts_with(text, "denied: skill grasp") {
+          Err(str.concat("grasp was denied (should be clamped): ", text))
         } else {
           Ok(())
         }
@@ -135,7 +117,7 @@ fn test_grasp_force_clamped_not_denied() -> [sql, fs_write, time, net] Result[Un
 }
 
 # 4. Budget: budget_actions=1; second actuating call returns "killed:…".
-fn test_budget_exhausted_returns_killed() -> [sql, fs_write, time, net] Result[Unit, Str] {
+fn test_budget_exhausted_returns_killed() -> [sql, fs_write, time, net, sense, actuate] Result[Unit, Str] {
   match sql.open(":memory:") {
     Err(e) => Err(e.message),
     Ok(db) => match trail.open_memory() {
@@ -143,14 +125,13 @@ fn test_budget_exhausted_returns_killed() -> [sql, fs_write, time, net] Result[U
       Ok(log) => {
         let robot := make_robot(["move_to"], 1)
         let _ := mcp.ledger_init(db, robot.grant, time.now_ms())
-        let skill := mcp.make_move_to_skill(robot, db, log)
-        let m := data_msg(move_to_args(0.5, 0.5, 0.2))
-        let _first := skill.handle(m)
-        let second := skill.handle(m)
-        if str.starts_with(reply_text(second), "killed:") {
+        let args := move_to_args(0.5, 0.5, 0.2)
+        let _first := mcp.dispatch_skill(robot, db, log, "move_to", args)
+        let second := mcp.dispatch_skill(robot, db, log, "move_to", args)
+        if str.starts_with(second, "killed:") {
           Ok(())
         } else {
-          Err(str.concat("expected killed, got: ", reply_text(second)))
+          Err(str.concat("expected killed, got: ", second))
         }
       },
     },
@@ -159,7 +140,7 @@ fn test_budget_exhausted_returns_killed() -> [sql, fs_write, time, net] Result[U
 
 # ── Runner (CI: panics on any failure) ───────────────────────────────────────
 
-fn main() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Nil {
+fn main() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, sense, actuate] Nil {
   let results := [
     test_deny_skill_not_in_grant(),
     test_allow_reaches_sidecar(),

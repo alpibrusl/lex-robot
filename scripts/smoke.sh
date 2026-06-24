@@ -67,6 +67,20 @@ else
   bad "MCP grant gate: one or more assertions failed"
 fi
 
+# The MCP server serves actuation over HTTP, but the effect wall still holds at
+# RUN time: the request handler declares `sense`/`actuate`, so withholding them
+# from --allow-effects makes the server unable to drive the arm even though the
+# same code is reachable over the network. (We don't bind a port here — the run
+# is rejected before serving because the actuating skills are unreachable.)
+mcpw="$(lex run --allow-effects io,time,crypto,random,sql,fs_read,fs_write,net,concurrent,llm,proc,sense \
+          examples/mcp_server_demo.lex run 2>&1 | tr -d '\r')"
+if grep -qF "effect \`actuate\` not in --allow-effects" <<<"$mcpw"; then
+  pass "MCP server: actuate withheld → actuating tools unreachable (runtime wall holds over HTTP)"
+else
+  bad "MCP server: actuate withheld did NOT block the server"
+  echo "$mcpw" | sed 's/^/      /'
+fi
+
 # The effect wall (DESIGN.md §4): actuate/sense are real Lex effects, so the
 # judgment/authority split is type-enforced — not a runtime convention. Both
 # halves are NEGATIVE checks: the build must FAIL to actuate when it shouldn't.
