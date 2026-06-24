@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Lex Arena · Games Platform</title>
+<link href="https://fonts.googleapis.com/css2?family=VT323&family=Press+Start+2P&display=swap" rel="stylesheet">
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg:#0a1420; --bg2:#0f1f2d; --bg3:#16273a; --border:#24384a;
+  --text:#dfeaf2; --muted:#7f9bb0; --gold:#ffd166; --green:#4ade80;
+  --red:#f87171; --blue:#7fd4ff;
+}
+html, body { height: 100%; }
+body { background: var(--bg); color: var(--text); font-family: 'VT323','Courier New',monospace; font-size: 16px; display: flex; flex-direction: column; min-height: 100dvh; }
+a { color: inherit; text-decoration: none; }
+
+/* ── Header ── */
+header { background: var(--bg2); border-bottom: 1px solid var(--border); padding: 0 20px; display: flex; align-items: center; gap: 14px; height: 44px; flex-shrink: 0; }
+#h-brand { font-family: '"Press Start 2P"',monospace; font-size: 11px; color: var(--gold); letter-spacing:.06em; cursor: pointer; }
+#h-back { display: none; background: none; border: 1px solid var(--border); color: var(--muted); font-family: 'VT323',monospace; font-size: 16px; padding: 3px 10px; border-radius: 4px; cursor: pointer; }
+#h-back:hover { color: var(--text); border-color: var(--text); }
+#h-meta { flex: 1; font-size: 14px; color: var(--muted); }
+#h-dot { width: 9px; height: 9px; border-radius: 50%; background: #2a3f50; }
+#h-dot.live { background: var(--green); box-shadow: 0 0 8px var(--green); }
+
+/* ── Lobby ── */
+#lobby { padding: 28px 24px; flex: 1; }
+#lobby-head { margin-bottom: 24px; }
+#lobby-head h2 { font-family: '"Press Start 2P"',monospace; font-size: 10px; color: var(--text); margin-bottom: 8px; letter-spacing:.08em; }
+#lobby-head p { font-size: 14px; color: var(--muted); line-height: 1.5; }
+#game-grid { display: grid; grid-template-columns: repeat(auto-fill,minmax(290px,1fr)); gap: 14px; }
+.card { background: var(--bg2); border: 1px solid var(--border); border-radius: 10px; padding: 18px; cursor: pointer; transition: border-color .15s, box-shadow .15s; display: flex; flex-direction: column; gap: 10px; }
+.card:hover { border-color: var(--gold); box-shadow: 0 0 0 1px var(--gold) inset; }
+.card-icon { font-size: 30px; }
+.card-title { font-family: '"Press Start 2P"',monospace; font-size: 9px; color: var(--gold); letter-spacing:.06em; }
+.card-desc { font-size: 14px; color: var(--muted); line-height: 1.45; }
+.card-tags { display: flex; gap: 6px; flex-wrap: wrap; }
+.tag { background: var(--bg3); border: 1px solid var(--border); border-radius: 3px; font-size: 12px; color: var(--muted); padding: 1px 7px; }
+.card-play { background: var(--bg3); border: 1px solid var(--border); color: var(--text); font-family: 'VT323',monospace; font-size: 16px; padding: 7px; border-radius: 5px; cursor: pointer; margin-top: auto; }
+.card:hover .card-play { border-color: var(--gold); color: var(--gold); }
+
+/* ── A2A Docs strip ── */
+#docs { background: var(--bg2); border-top: 1px solid var(--border); padding: 20px 24px; }
+#docs summary { cursor: pointer; font-family: '"Press Start 2P"',monospace; font-size: 8px; color: var(--muted); letter-spacing:.08em; outline: none; }
+#docs summary:hover { color: var(--text); }
+.docs-grid { display: grid; grid-template-columns: repeat(auto-fill,minmax(310px,1fr)); gap: 10px; margin-top: 14px; }
+.docs-card { background: var(--bg3); border: 1px solid var(--border); border-radius: 6px; padding: 12px; }
+.docs-card h4 { font-size: 14px; color: var(--blue); margin-bottom: 6px; }
+.docs-card pre { font-size: 12px; color: var(--muted); white-space: pre; overflow-x: auto; line-height: 1.5; }
+
+/* ── Game frame view ── */
+#game-shell { display: none; flex: 1; flex-direction: column; }
+#game-shell.active { display: flex; }
+#game-frame { flex: 1; border: none; background: var(--bg); }
+</style>
+</head>
+<body>
+<header>
+  <button id="h-back" onclick="backToLobby()">← Games</button>
+  <span id="h-brand" onclick="backToLobby()">LEX ARENA</span>
+  <span id="h-meta">capability-gated · hash-chained · A2A-ready · <a href="https://lexlang.org" style="color:var(--blue)">lexlang.org</a></span>
+  <div id="h-dot"></div>
+</header>
+
+<!-- Lobby -->
+<div id="lobby">
+  <div id="lobby-head">
+    <h2>GAMES PLATFORM</h2>
+    <p>Six provably-fair turn games. Every move is capability-gated by a signed token and recorded to a hash-chained lex-trail — tamper-evident and fully replayable. Human players and A2A agents connect on equal footing.</p>
+  </div>
+  <div id="game-grid"></div>
+</div>
+
+<!-- A2A Developer Docs (collapsed by default) -->
+<details id="docs">
+  <summary>A2A INTEGRATION — connect your agent</summary>
+  <div class="docs-grid" id="docs-grid"></div>
+</details>
+
+<!-- Game shell (iframe replaces lobby) -->
+<div id="game-shell">
+  <iframe id="game-frame" allow="same-origin" title="Game"></iframe>
+</div>
+
+<script>
+'use strict';
+
+const GAMES = [
+  {
+    id: 'ttt', icon: '✕⊙', title: 'TIC-TAC-TOE',
+    desc: 'Classic 3×3 grid. First to line up three marks wins. Your capability-signed token prevents playing out of turn — the server refuses even a duplicate move attempt.',
+    tags: ['2-player', 'competitive', 'first to 3'],
+    sides: ['X','O'],
+    skillBase: 'game',
+    file: 'ttt_web.html',
+    doc: {
+      join: 'POST /skill/game_join {"side":"X"}',
+      move: 'POST /skill/game_move {"by":"X","cell":4,"token":"..."}',
+      state: 'POST /skill/game_state {}',
+      reset: 'POST /skill/game_reset {}',
+    }
+  },
+  {
+    id: 'shop', icon: '🛍', title: 'BAZAAR DRAFT',
+    desc: 'Two shoppers alternate drafting from a shared 6-item pool under a 30-credit budget. Each item has a public price but a hidden true value — highest total cart value wins.',
+    tags: ['2-player', 'competitive', 'draft', 'budget'],
+    sides: ['P1','P2'],
+    skillBase: 'shop',
+    file: 'bazaar_game_web.html',
+    doc: {
+      join: 'POST /skill/shop_join {"side":"P1"}',
+      move: 'POST /skill/shop_move {"by":"P1","item":2,"token":"..."}',
+      state: 'POST /skill/shop_state {}',
+      reset: 'POST /skill/shop_reset {}',
+    }
+  },
+  {
+    id: 'love', icon: '💘', title: 'CONSENT MATCH',
+    desc: 'Swipe right or left on 6 candidates. Only matches where the contact is genuinely interested score charm points. Detecting fake signals is the capability layer\'s job.',
+    tags: ['2-player', 'competitive', 'social'],
+    sides: ['P1','P2'],
+    skillBase: 'love',
+    file: 'tinder_game_web.html',
+    doc: {
+      join: 'POST /skill/love_join {"side":"P1"}',
+      move: 'POST /skill/love_move {"by":"P1","cand":3,"token":"..."}',
+      state: 'POST /skill/love_state {}',
+      reset: 'POST /skill/love_reset {}',
+    }
+  },
+  {
+    id: 'ev', icon: '⚡', title: 'CHARGER DUEL',
+    desc: 'Race to claim the best EV chargers before a departure deadline. Each charger costs minutes and delivers kWh. Fit the most energy into your 60-min budget — the knapsack wins.',
+    tags: ['2-player', 'competitive', 'resource race'],
+    sides: ['P1','P2'],
+    skillBase: 'ev',
+    file: 'ev_game_web.html',
+    doc: {
+      join: 'POST /skill/ev_join {"side":"P1"}',
+      move: 'POST /skill/ev_move {"by":"P1","charger":3,"token":"..."}',
+      state: 'POST /skill/ev_state {}',
+      reset: 'POST /skill/ev_reset {}',
+    }
+  },
+  {
+    id: 'hx', icon: '🔓', title: 'HEIST CO-OP',
+    desc: 'Hacker (P1) and Muscle (P2) must clear 6 locked stages in order. Each stage requires the matching role — use the wrong capability and the alarm trips. Three trips and the team is busted.',
+    tags: ['2-player', 'co-op', '6 stages', 'capability-gated'],
+    sides: ['P1 (HACK)','P2 (MUSCLE)'],
+    skillBase: 'hx',
+    file: 'heist_game_web.html',
+    doc: {
+      join: 'POST /skill/hx_join {"side":"P1"}',
+      move: 'POST /skill/hx_move {"by":"P1","token":"..."}',
+      state: 'POST /skill/hx_state {}',
+      reset: 'POST /skill/hx_reset {}',
+    }
+  },
+  {
+    id: 'fb', icon: '⚽', title: 'STRATEGY FOOTBALL',
+    desc: 'Two home players (H0, H1) work together to score past a defence of two. Set the squad strategy, coordinate via in-game signals, and find a gap before 24 turns run out.',
+    tags: ['2-player', 'co-op', '5-zone pitch', 'strategy'],
+    sides: ['H0','H1'],
+    skillBase: 'fb',
+    file: 'football_web.html',
+    doc: {
+      join: 'POST /skill/fb_join {"side":"H0"}',
+      move: 'POST /skill/fb_move {"by":"H0","action":"MOVE","arg":"fwd","token":"..."}',
+      state: 'POST /skill/fb_state {}',
+      strat: 'POST /skill/fb_strategy {"strategy":"possession"}',
+    }
+  },
+];
+
+function renderLobby() {
+  const grid = document.getElementById('game-grid');
+  grid.innerHTML = '';
+  GAMES.forEach(g => {
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.innerHTML = `
+      <div class="card-icon">${g.icon}</div>
+      <div class="card-title">${g.title}</div>
+      <div class="card-desc">${g.desc}</div>
+      <div class="card-tags">${g.tags.map(t=>`<span class="tag">${t}</span>`).join('')}</div>
+      <button class="card-play" onclick="openGame('${g.id}')">▶ Play</button>
+    `;
+    grid.appendChild(card);
+  });
+}
+
+function renderDocs() {
+  const grid = document.getElementById('docs-grid');
+  grid.innerHTML = '';
+  GAMES.forEach(g => {
+    const card = document.createElement('div');
+    card.className = 'docs-card';
+    const entries = Object.entries(g.doc).map(([k,v]) => `<span style="color:var(--blue)">${k}:</span> ${v}`).join('\n');
+    card.innerHTML = `<h4>${g.icon} ${g.title}</h4><pre>${entries}</pre>`;
+    grid.appendChild(card);
+  });
+}
+
+function openGame(id) {
+  const g = GAMES.find(x => x.id === id);
+  if (!g) return;
+  document.getElementById('lobby').style.display = 'none';
+  document.getElementById('docs').style.display = 'none';
+  document.getElementById('game-shell').classList.add('active');
+  document.getElementById('h-back').style.display = 'inline-block';
+  document.getElementById('h-meta').textContent = g.title + ' — ' + g.tags.join(' · ');
+  document.getElementById('game-frame').src = '/games/' + g.file;
+  history.pushState({ game: id }, '', '#' + id);
+}
+
+function backToLobby() {
+  document.getElementById('game-frame').src = 'about:blank';
+  document.getElementById('game-shell').classList.remove('active');
+  document.getElementById('h-back').style.display = 'none';
+  document.getElementById('h-meta').innerHTML = 'capability-gated · hash-chained · A2A-ready · <a href="https://lexlang.org" style="color:var(--blue)">lexlang.org</a>';
+  document.getElementById('lobby').style.display = '';
+  document.getElementById('docs').style.display = '';
+  history.pushState({}, '', '/');
+}
+
+// SSE status dot (for the lobby — in-game the iframe has its own dot)
+function connectSSE() {
+  const dot = document.getElementById('h-dot');
+  const es = new EventSource('/events');
+  es.onopen = () => { dot.className = 'live'; };
+  es.onerror = () => { dot.className = ''; };
+}
+
+// Handle hash on load (e.g. direct link to a game)
+function handleHash() {
+  const h = window.location.hash.slice(1);
+  if (h && GAMES.find(g => g.id === h)) openGame(h);
+}
+
+window.addEventListener('popstate', () => {
+  const h = window.location.hash.slice(1);
+  if (h && GAMES.find(g => g.id === h)) openGame(h);
+  else backToLobby();
+});
+
+renderLobby();
+renderDocs();
+connectSSE();
+handleHash();
+</script>
+</body>
+</html>
