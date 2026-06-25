@@ -44,7 +44,7 @@ import "std.http" as http
 
 import "std.net" as net
 
-import "std.proc" as proc
+import "std.process" as proc
 
 import "std.conc" as conc
 
@@ -2231,7 +2231,7 @@ fn build_router(db :: Db, stall :: Str, dash :: Str, html_path :: Str, examples_
             script, " run"
           ], "")
           let _ := conc.spawn((), fn (_ :: Unit, _ :: Unit) -> [proc, concurrent] (Unit, Unit) {
-            let _ := proc.spawn("sh", ["-c", cmd])
+            let _ := proc.run("sh", ["-c", cmd])
             ((), ())
           })
           json_resp_cors(str.join(["{\"ok\":true,\"name\":", json_str(name), "}"], ""))

@@ -9,7 +9,7 @@
 [package]
 name    = "lex-robot"
 version = "0.1.0"
-lex     = "0.9.13"
+lex     = "0.10.0"
 license = "EUPL-1.2"
 description = "lex-robot live game referee (deploy image)"
 

@@ -1,7 +1,7 @@
 [package]
 name    = "lex-robot"
 version = "0.1.0"
-lex     = "0.9.8"
+lex     = "0.10.0"
 license = "EUPL-1.2"
 description = "Effect-typed, capability-bounded control layer over LeRobot (design-stage scaffold)"
 

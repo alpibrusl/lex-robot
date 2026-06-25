@@ -5,7 +5,7 @@
 # is recorded to the hash-chained trail.
 FROM ubuntu:24.04
 
-ARG LEX_VERSION=0.9.13
+ARG LEX_VERSION=0.10.0
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl git ca-certificates tar python3 \
