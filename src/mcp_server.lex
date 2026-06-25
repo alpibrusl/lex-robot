@@ -1,25 +1,24 @@
 # lex-robot/mcp_server.lex — Robot skills exposed as a grant-gated MCP server.
 #
-# WHY THIS OWNS ITS OWN HTTP ENDPOINT (and does not go through lex-mcp's
-# `run_http` / lex-agent's `AgentDef`):
+# WHY A FUNCTION DISPATCHER (and not lex-agent's `AgentDef` / `Skill`):
 #
 #   lex-agent's `Skill.handle` field is typed with a *concrete, fixed* effect
 #   row — `[io, time, crypto, random, sql, fs_read, fs_write, net, concurrent,
 #   llm, proc]`. It deliberately knows nothing about `sense`/`actuate` (it is a
 #   generic A2A/agent framework). A handler that transitively calls an actuating
 #   skill (`skills.move_to :: [net, sense, actuate]`) therefore cannot fit that
-#   field — there is no row variable to absorb the extra effects. Pushing a
-#   physical-actuation handler through the generic `Skill` would require dragging
-#   `sense`/`actuate` into lex-agent (and lex-web), weakening the DESIGN.md §4
-#   effect wall for *every* agent consumer.
+#   field — and dragging `sense`/`actuate` into the generic `Skill` would weaken
+#   the DESIGN.md §4 effect wall for *every* agent consumer.
 #
-#   Instead we serve MCP directly: `std.net.serve_fn` DOES admit `actuate` in its
-#   handler row, so this module declares `[..., sense, actuate]` honestly — the
-#   effect wall holds at compile time (`lex check` sees the actuation) AND at run
-#   time (`lex run` must be given `--allow-effects actuate`). We reuse lex-mcp's
-#   *pure* protocol/tool builders (`proto.*`) and lex-agent's *pure* JSON-RPC
-#   parser (`rpc.*`) for the wire format, so this is real MCP — only the dispatch
-#   step, the one place that crosses into `actuate`, lives here where the wall is.
+#   So we build the JSON-RPC dispatch ourselves (`handle_message`, reusing
+#   lex-mcp's *pure* `proto.*` builders and lex-agent's *pure* `rpc.*` parser)
+#   and hand it to lex-mcp's `run_http_fn[E]` — the row-polymorphic HTTP
+#   transport (lex >= 0.10, alpibrusl/lex-agent#20). Its open effect-row tail
+#   `E` carries our dispatcher's domain effects (`sense`/`actuate`) out to the
+#   server's own row, so the effect wall holds at compile time (`lex check`
+#   sees the actuation) AND at run time (`lex run` must be given
+#   `--allow-effects sense,actuate`). The dispatch step — the one place that
+#   crosses into `actuate` — lives here; the transport loop is lex-mcp's.
 #
 # Grant + budget checks are INSIDE the dispatcher (gate-in-handler, lex-guard
 # pattern): the grant/clamp logic stays in `skills.lex` (every call goes through
@@ -53,13 +52,9 @@ import "std.float" as flt
 
 import "std.list" as list
 
-import "std.map" as map
-
 import "std.time" as time
 
 import "std.sql" as sql
-
-import "std.net" as net
 
 import "lex-schema/schema" as sch
 
@@ -72,6 +67,8 @@ import "lex-agent/src/protocol" as rpc
 import "lex-trail/log" as trail
 
 import "lex-mcp/src/protocol" as proto
+
+import "lex-mcp/src/http" as mcphttp
 
 import "./types" as t
 
@@ -355,8 +352,9 @@ fn handle_message(robot :: t.Robot, db :: Db, log :: trail.Log, body :: Str) -> 
 #
 # Opens a persistent trail at `trail_path` and a SQLite ledger DB at `db_path`,
 # initialises the budget ledger from the grant, then serves MCP over HTTP on
-# `port` via `net.serve_fn`. Blocks indefinitely. The request handler declares
-# `sense`/`actuate`, so the whole binary requires `--allow-effects …,sense,
+# `port` via lex-mcp's `run_http_fn`. Blocks indefinitely. The dispatch closure
+# declares `sense`/`actuate`, which `run_http_fn`'s open row tail `E` binds and
+# propagates here, so the whole binary requires `--allow-effects …,sense,
 # actuate` — withhold them and no command can leave the box (the runtime half of
 # the effect wall) even though the same code is reachable over the network.
 
@@ -368,20 +366,12 @@ fn run(robot :: t.Robot, port :: Int, trail_path :: Str, db_path :: Str) -> [io,
       Ok(db) => {
         let now := time.now_ms()
         let _ := ledger_init(db, robot.grant, now)
-        let hdrs := map.from_list([("content-type", "application/json")])
-        let handler := fn (req :: Request) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, sense, actuate] Response {
-          if req.method == "POST" {
-            let out := handle_message(robot, db, log, req.body)
-            if str.is_empty(out) {
-              { status: 202, body: BodyStr(""), headers: hdrs }
-            } else {
-              { status: 200, body: BodyStr(out), headers: hdrs }
-            }
-          } else {
-            { status: 405, body: BodyStr("{\"error\":\"MCP HTTP transport accepts POST only\"}"), headers: hdrs }
-          }
-        }
-        net.serve_fn(port, handler)
+        # The dispatch is a plain `(body) -> Str`; its `sense`/`actuate` effects
+        # bind `run_http_fn`'s row tail `E`. lex-mcp owns the HTTP loop; the
+        # actuating dispatch (the only `actuate` crossing) stays here.
+        mcphttp.run_http_fn(port, fn (body :: Str) -> [io, time, sql, concurrent, net, random, fs_read, fs_write, llm, proc, crypto, sense, actuate] Str {
+          handle_message(robot, db, log, body)
+        })
       },
     },
   }
