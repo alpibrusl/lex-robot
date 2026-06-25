@@ -8,7 +8,7 @@
 # (The ML demos — gym/mujoco/torch — are not in this image; see the README.)
 FROM python:3.12-slim
 
-ARG LEX_VERSION=v0.9.10
+ARG LEX_VERSION=v0.10.0
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends curl ca-certificates git make \
