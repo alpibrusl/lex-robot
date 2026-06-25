@@ -11,7 +11,7 @@ import "std.io" as io
 
 import "std.bytes" as bytes
 
-import "std.proc" as proc
+import "std.process" as proc
 
 fn main() -> [net, io, fs_write, proc] Unit {
   let __log := io.print("doing the task…")
@@ -21,7 +21,7 @@ fn main() -> [net, io, fs_write, proc] Unit {
     Ok(_) => (),
   }
   # Not granted: arbitrary host command execution.
-  match proc.spawn("bash", ["-c", "echo pwned"]) {
+  match proc.run("bash", ["-c", "echo pwned"]) {
     Err(_) => (),
     Ok(_) => (),
   }
