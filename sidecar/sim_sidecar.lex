@@ -2058,15 +2058,24 @@ fn build_router(db :: Db, stall :: Str, dash :: Str, html_path :: Str, examples_
     }
   })
 
+  # GET /api/sellers — the Magentic Bazaar seller reputation board (what
+  # lex-games' bazaar_season writes). Same empty-but-valid fallback as standings.
+  let r3e := router.route_effectful(r3d, "GET", "/api/sellers", fn (_ :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+    match io.read(str.join([examples_dir, "/sellers.json"], "")) {
+      Ok(body) => json_resp_cors(body),
+      Err(_) => json_resp_cors("{\"game\":\"bazaar\",\"sessions\":0,\"verified\":0,\"void\":0,\"sellers\":[]}"),
+    }
+  })
+
   # GET /events — SSE long-poll (dashboard only)
   let r4 := if str.is_empty(stall) {
-    router.route_stream(r3d, "GET", "/events", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] stream.StreamResponse {
+    router.route_stream(r3e, "GET", "/events", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] stream.StreamResponse {
       let last_id := parse_int_or(ctx.header_or(c, "last-event-id", "0"), 0)
       let events := list.cons("retry: 2000\n\n", poll_events(db, last_id, 10000))
       let hdrs := map.from_list([("content-type", "text/event-stream; charset=utf-8"), ("cache-control", "no-cache"), ("connection", "keep-alive"), ("access-control-allow-origin", "*")])
       { body: iter.from_list(events), status: 200, headers: hdrs }
     })
-  } else { r3d }
+  } else { r3e }
 
   # GET /stock
   let r5 := router.route_effectful(r4, "GET", "/stock", fn (_ :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {

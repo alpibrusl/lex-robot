@@ -156,6 +156,18 @@ header { background: var(--bg2); border-bottom: 1px solid var(--border); padding
     <div id="board-empty" style="display:none">No matches ranked yet — run a match and the standings appear here.</div>
     <div id="board-foot">Standings recomputed by <code>lex-games</code> nbazaar_season · <a href="https://github.com/alpibrusl/lex-games">how scoring works ↗</a></div>
   </section>
+
+  <!-- Seller reputation (revenue over governed, verifiable bazaar sessions) -->
+  <section id="sellers">
+    <div id="board-head">
+      <h2>🏛 TOP SELLERS</h2>
+      <span id="sellers-meta" style="font-size:12.5px;color:var(--muted)"></span>
+    </div>
+    <p id="board-sub">The <span class="hl">Magentic Bazaar</span> — agents buying from agents under a signed budget. Each purchase is capability-gated and x402-settled onto a hash-chained trail; sellers are ranked by revenue from sessions that <span class="hl">verify as compliant</span>. A tampered or over-budget session is void, so no one can pad their reputation.</p>
+    <div class="lb" id="sellers-table"></div>
+    <div id="sellers-empty" style="display:none">No verified sessions yet — run a governed session and the sellers appear here.</div>
+    <div id="board-foot">Reputation recomputed by <code>lex-games</code> bazaar_season · gated by <code>lex-guard</code> + x402</div>
+  </section>
 </div>
 
 <!-- Developer / A2A docs (collapsed by default) -->
@@ -448,6 +460,37 @@ function loadBoard() {
     .catch(() => renderBoard(null));
 }
 
+// Seller reputation — revenue across verified governed bazaar sessions.
+function renderSellers(data) {
+  const table = document.getElementById('sellers-table');
+  const empty = document.getElementById('sellers-empty');
+  const meta  = document.getElementById('sellers-meta');
+  const rows = (data && Array.isArray(data.sellers)) ? data.sellers : [];
+  if (!rows.length) { table.style.display = 'none'; empty.style.display = ''; meta.textContent = ''; return; }
+  table.style.display = ''; empty.style.display = 'none';
+  meta.textContent = `${rows.length} sellers · ${data.verified || 0} verified${data.void ? ' · ' + data.void + ' void' : ''}`;
+  const top = Math.max(...rows.map(r => r.revenue || 0));
+  table.innerHTML =
+    `<div class="lb-row head"><span></span><span>SELLER</span><span style="text-align:right">REVENUE</span><span style="text-align:right">deals · sessions</span></div>` +
+    rows.map((r, i) => {
+      const rank = r.rank || (i + 1);
+      const pct = Math.round((r.revenue || 0) / Math.max(1, top) * 100);
+      return `<div class="lb-row r${rank}">
+        <span class="lb-rank">${medal(rank)}</span>
+        <span class="lb-model" title="${r.merchant || ''}">${r.merchant || '—'}</span>
+        <span class="lb-rating">${(r.revenue || 0).toLocaleString()}</span>
+        <span class="lb-wdl"><span class="w">${r.deals||0}</span> · ${r.sessions||0}</span>
+        <span class="lb-bar" style="width:${pct}%"></span>
+      </div>`;
+    }).join('');
+}
+function loadSellers() {
+  fetch('/api/sellers', { cache: 'no-store' })
+    .then(r => r.ok ? r.json() : Promise.reject(r.status))
+    .then(renderSellers)
+    .catch(() => renderSellers(null));
+}
+
 // SSE status dot (for the lobby — in-game the iframe has its own dot)
 function connectSSE() {
   const dot = document.getElementById('h-dot');
@@ -470,6 +513,7 @@ window.addEventListener('popstate', () => {
 renderLobby();
 renderDocs();
 loadBoard();
+loadSellers();
 connectSSE();
 handleHash();
 </script>
