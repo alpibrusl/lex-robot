@@ -7,8 +7,13 @@
 # Native: net.serve_ws_fn_actor (connections + broadcast) + conc.spawn (referee
 # state). No external broker. (b) of the Governed Agent Bazaar epic (#45).
 #
-# Env: NB_SEATS (players to wait for, default 3), NB_PORT (default 8902)
-# Run: NB_SEATS=3 lex run --allow-effects env,net,concurrent,io examples/nplayer_bazaar.lex run
+# Every accepted move is recorded to a hash-chained lex-trail; when the match
+# ends the referee writes the trail as JSONL (the exact format lex-games'
+# nbazaar verifier replays), closing the loop: play → trail → verify → ELO-rank.
+#
+# Env: NB_SEATS (players to wait for, default 3), NB_PORT (default 8902),
+#      NB_TRAIL (match trail output path, default nbazaar_trail.jsonl)
+# Run: NB_SEATS=3 lex run --allow-effects env,net,concurrent,io,fs_write examples/nplayer_bazaar.lex run
 
 import "std.env" as env
 
@@ -26,22 +31,61 @@ import "std.conc" as conc
 
 import "std.tuple" as tup
 
+# Each accepted move is recorded as a hash-chained lex-trail event, in the exact
+# format lex-games/src/games/nbazaar.lex replays — so a finished match is a
+# verifiable, ELO-rankable submission (play → trail → verify → rank).
+import "lex-trail/event" as ev
+
+import "lex-games/src/arena/trail_file" as tf
+
 # ── shared game state (held in the referee actor) ────────────────────────────
 type Item = { price :: Int, value :: Int, owner :: Str }
 
-# owner "" = unowned
-type Game = { items :: List[Item], members :: List[Str], spent :: List[Int], turn :: Int, target :: Int, passes :: Int, started :: Bool, over :: Bool }
+# owner "" = unowned. events/head/seq accumulate the recorded move trail (head =
+# last event id, the parent of the next; seq drives a monotonic ts).
+type Game = { items :: List[Item], members :: List[Str], spent :: List[Int], turn :: Int, target :: Int, passes :: Int, started :: Bool, over :: Bool, events :: List[ev.Event], head :: Str, seq :: Int }
 
 # Pass = a seat that can't (or won't) draft yields its turn. When every seat
 # passes in a row the draft is over even if affordable-by-nobody items remain.
-type Cmd = Join(Str) | Draft((Str, Int)) | Pass(Str)
+# Trail = query: reply with the recorded match trail as JSONL (no state change).
+type Cmd = Join(Str) | Draft((Str, Int)) | Pass(Str) | Trail
 
 fn budget() -> Int {
   30
 }
 
 fn new_game(target :: Int) -> Game {
-  { items: [{ price: 10, value: 8, owner: "" }, { price: 15, value: 20, owner: "" }, { price: 8, value: 5, owner: "" }, { price: 20, value: 24, owner: "" }, { price: 12, value: 10, owner: "" }, { price: 18, value: 22, owner: "" }, { price: 6, value: 9, owner: "" }, { price: 25, value: 28, owner: "" }], members: [], spent: [], turn: 0, target: target, passes: 0, started: false, over: false }
+  { items: [{ price: 10, value: 8, owner: "" }, { price: 15, value: 20, owner: "" }, { price: 8, value: 5, owner: "" }, { price: 20, value: 24, owner: "" }, { price: 12, value: 10, owner: "" }, { price: 18, value: 22, owner: "" }, { price: 6, value: 9, owner: "" }, { price: 25, value: 28, owner: "" }], members: [], spent: [], turn: 0, target: target, passes: 0, started: false, over: false, events: [], head: "", seq: 0 }
+}
+
+# ── trail recording (accepted moves only) ────────────────────────────────────
+# Append one hash-chained event (parent = current head). Pure: ev.make hashes
+# (kind,parent,payload,ts) exactly as the verifier recomputes it. ts is a
+# monotonic counter so no `time` effect is needed and replays are deterministic.
+fn rec(g :: Game, kind :: Str, payload :: Str) -> Game {
+  let parent := if str.is_empty(g.head) {
+    None
+  } else {
+    Some(g.head)
+  }
+  let e := ev.make(kind, parent, payload, 1782000000000 + g.seq * 1000)
+  { items: g.items, members: g.members, spent: g.spent, turn: g.turn, target: g.target, passes: g.passes, started: g.started, over: g.over, events: list.concat(g.events, [e]), head: e.id, seq: g.seq + 1 }
+}
+
+fn seats_payload(n :: Int) -> Str {
+  str.join(["{\"seats\":", int.to_str(n), "}"], "")
+}
+
+fn draft_payload(seat :: Int, item :: Int) -> Str {
+  str.join(["{\"seat\":", int.to_str(seat), ",\"item\":", int.to_str(item), "}"], "")
+}
+
+fn seat_payload(seat :: Int) -> Str {
+  str.join(["{\"seat\":", int.to_str(seat), "}"], "")
+}
+
+fn trail_jsonl(g :: Game) -> Str {
+  tf.to_jsonl(list.map(g.events, tf.from_event))
 }
 
 fn seat_of(g :: Game, id :: Str) -> Int {
@@ -161,8 +205,13 @@ fn step(g :: Game, c :: Cmd) -> (Game, Str) {
       let members2 := list.concat(g.members, [id])
       let spent2 := list.concat(g.spent, [0])
       let started2 := list.len(members2) >= g.target
-      let g2 := { items: g.items, members: members2, spent: spent2, turn: 0, target: g.target, passes: 0, started: started2, over: false }
-      (g2, snapshot(g2))
+      let g2 := { items: g.items, members: members2, spent: spent2, turn: 0, target: g.target, passes: 0, started: started2, over: false, events: g.events, head: g.head, seq: g.seq }
+      let g3 := if started2 {
+        rec(g2, "match_started", seats_payload(g.target))
+      } else {
+        g2
+      }
+      (g3, snapshot(g3))
     },
     Draft(id, i) => {
       let seat := seat_of(g, id)
@@ -180,8 +229,8 @@ fn step(g :: Game, c :: Cmd) -> (Game, Str) {
           let spent2 := set_nth_int(g.spent, seat, cur_spent + it.price)
           let next := mod_int(g.turn + 1, list.len(g.members))
           let over2 := not any_unowned(items2)
-          let g2 := { items: items2, members: g.members, spent: spent2, turn: next, target: g.target, passes: 0, started: true, over: over2 }
-          (g2, snapshot(g2))
+          let g2 := { items: items2, members: g.members, spent: spent2, turn: next, target: g.target, passes: 0, started: true, over: over2, events: g.events, head: g.head, seq: g.seq }
+          (rec(g2, "draft", draft_payload(seat, i)), snapshot(g2))
         }
       }
     },
@@ -194,10 +243,11 @@ fn step(g :: Game, c :: Cmd) -> (Game, Str) {
         let next := mod_int(g.turn + 1, list.len(g.members))
         let passes := g.passes + 1
         let over2 := passes >= list.len(g.members) or not any_unowned(g.items)
-        let g2 := { items: g.items, members: g.members, spent: g.spent, turn: next, target: g.target, passes: passes, started: true, over: over2 }
-        (g2, snapshot(g2))
+        let g2 := { items: g.items, members: g.members, spent: g.spent, turn: next, target: g.target, passes: passes, started: true, over: over2, events: g.events, head: g.head, seq: g.seq }
+        (rec(g2, "pass", seat_payload(seat)), snapshot(g2))
       }
     },
+    Trail => (g, trail_jsonl(g)),
   }
 }
 
@@ -240,7 +290,7 @@ fn parse_idx(s :: Str) -> Int {
   }
 }
 
-fn run() -> [env, net, concurrent, io] Nil {
+fn run() -> [env, net, concurrent, io, fs_write] Nil {
   let seats := match env.get("NB_SEATS") {
     Some(v) => match str.to_int(v) {
       Some(n) => n,
@@ -255,11 +305,15 @@ fn run() -> [env, net, concurrent, io] Nil {
     },
     None => 8902,
   }
+  let trail_path := match env.get("NB_TRAIL") {
+    Some(v) => v,
+    None => "nbazaar_trail.jsonl",
+  }
   let ref := conc.spawn(new_game(seats), fn (g :: Game, c :: Cmd) -> (Game, Str) {
     step(g, c)
   })
-  let __lex_discard_2 := io.print(str.join(["[bazaar] N-player draft referee on :", int.to_str(port), " — waiting for ", int.to_str(seats), " seats"], ""))
-  net.serve_ws_fn_actor(port, "", member_name, fn (c :: WsConn, m :: WsMessage) -> [concurrent, io] WsAction {
+  let __lex_discard_2 := io.print(str.join(["[bazaar] N-player draft referee on :", int.to_str(port), " — waiting for ", int.to_str(seats), " seats (trail → ", trail_path, ")"], ""))
+  net.serve_ws_fn_actor(port, "", member_name, fn (c :: WsConn, m :: WsMessage) -> [concurrent, io, fs_write] WsAction {
     match m {
       WsText(s) => {
         let t := str.trim(s)
@@ -276,6 +330,14 @@ fn run() -> [env, net, concurrent, io] Nil {
         let snap := conc.ask(ref, cmd)
         let __lex_discard_3 := broadcast(snap)
         let __lex_discard_4 := io.print(str.join(["[bazaar] ", c.id, " ", s, " → ", snap], ""))
+        let __lex_discard_5 := if str.contains(snap, "over=1") {
+          let jsonl := conc.ask(ref, Trail)
+          let __w := io.write(trail_path, jsonl)
+          let __l := io.print(str.join(["[bazaar] match over → wrote trail ", trail_path], ""))
+          1
+        } else {
+          0
+        }
         if is_join {
           WsSend(str.join(["YOU ", c.id], ""))
         } else {
