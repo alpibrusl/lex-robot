@@ -22,6 +22,16 @@ import "lex-llm/src/delta"            as d
 import "lex-llm/src/providers"        as providers
 import "lex-llm/src/provider"         as prov
 import "lex-llm/src/providers/vertex" as vtx
+import "lex-llm/src/providers/openai" as oai
+
+# OpenCode Zen "Go plan" — hosted open-weights models (deepseek-v4-*, qwen3.*,
+# kimi-k2.6, glm-5.1, minimax-m3, mimo-v2-pro), OpenAI-compatible. Selected with
+# base_url == "opencode"; the key is passed via the `token` param (read from
+# OPENCODE_API_KEY by the caller, which holds the `env` effect — keeping this
+# module pure so it still fits sim_sidecar's env-less router handler row).
+fn opencode_zen_url() -> Str {
+  "https://opencode.ai/zen/go/v1/chat/completions"
+}
 
 # ── Seller personalities ──────────────────────────────────────────────────────
 
@@ -73,9 +83,10 @@ fn extract_price(text :: Str, fallback :: Int) -> Int {
 # seller on a local model via the LiteLLM proxy; otherwise Vertex is used when
 # token+project are present; otherwise we fall back to the base price.
 fn quote_price(stall :: Str, item_id :: Str, item_name :: Str, base_price :: Int, buyer_max :: Int, token :: Str, project :: Str, location :: Str, base_url :: Str, model_name :: Str) -> [net, llm, io, proc] Int {
-  let use_local  := not str.is_empty(base_url)
-  let use_vertex := str.is_empty(base_url) and not str.is_empty(token) and not str.is_empty(project)
-  if not use_local and not use_vertex {
+  let use_opencode := base_url == "opencode" and not str.is_empty(token)
+  let use_local    := not use_opencode and not str.is_empty(base_url)
+  let use_vertex   := str.is_empty(base_url) and not str.is_empty(token) and not str.is_empty(project)
+  if not use_opencode and not use_local and not use_vertex {
     base_price
   } else {
     let personality := stall_personality(stall)
@@ -92,9 +103,10 @@ fn quote_price(stall :: Str, item_id :: Str, item_name :: Str, base_price :: Int
       "What is your asking price? (Must be ≥ 1. If above the buyer's ceiling they won't buy.)\n",
       "Respond: PRICE:<integer>"
     ], "")
-    let provider := if use_local { providers.litellm_at(base_url) } else { vtx.make_provider(vtx.config_at(token, project, location)) }
-    let model    := if use_local { prov.make_model_ref("litellm", model_name) } else { vtx.gemini_35_flash() }
-    let opts     := { temperature: Some(0.7), top_p: None, max_steps: Some(1), max_tokens: Some(128) }
+    let provider := if use_opencode { oai.make_provider({ api_key: token, base_url: opencode_zen_url() }) } else { if use_local { providers.litellm_at(base_url) } else { vtx.make_provider(vtx.config_at(token, project, location)) } }
+    let model    := if use_opencode { prov.make_model_ref("opencode-go", model_name) } else { if use_local { prov.make_model_ref("litellm", model_name) } else { vtx.gemini_35_flash() } }
+    # GO models are often reasoning models — give them room or content comes back empty.
+    let opts     := { temperature: Some(0.7), top_p: None, max_steps: Some(1), max_tokens: if use_opencode { Some(2500) } else { Some(128) } }
     let agent    := llm_agent.make_agent(stall, system_msg, model, provider, [], opts)
     let steps    := iter.to_list(llm_agent.run_loop(agent, [UserMsg(user_msg)]))
     let text     := extract_text(steps)
@@ -137,9 +149,10 @@ fn extract_tagged(text_lower :: Str, tag :: Str, fallback :: Int) -> Int {
 }
 
 fn haggle_reply(stall :: Str, item_name :: Str, base :: Int, offer :: Int, token :: Str, project :: Str, location :: Str, base_url :: Str, model_name :: Str) -> [net, llm, io, proc] Str {
-  let use_local  := not str.is_empty(base_url)
-  let use_vertex := str.is_empty(base_url) and not str.is_empty(token) and not str.is_empty(project)
-  if not use_local and not use_vertex {
+  let use_opencode := base_url == "opencode" and not str.is_empty(token)
+  let use_local    := not use_opencode and not str.is_empty(base_url)
+  let use_vertex   := str.is_empty(base_url) and not str.is_empty(token) and not str.is_empty(project)
+  if not use_opencode and not use_local and not use_vertex {
     # static fallback: take any offer that clears cost, else hold at base
     if offer >= base { str.join(["{\"decision\":\"accept\",\"ask\":", int.to_str(offer), "}"], "") }
     else { str.join(["{\"decision\":\"counter\",\"ask\":", int.to_str(base), "}"], "") }
@@ -152,9 +165,9 @@ fn haggle_reply(stall :: Str, item_name :: Str, base :: Int, offer :: Int, token
       "Move your ASK down toward the offer to close; ACCEPT once the offer clears your cost."], "")
     let user_msg := str.join(["Item: \"", item_name, "\". Your base cost: ", int.to_str(base),
       ". The buyer offers ", int.to_str(offer), ". Respond ASK:<int> / ACCEPT / WALK."], "")
-    let provider := if use_local { providers.litellm_at(base_url) } else { vtx.make_provider(vtx.config_at(token, project, location)) }
-    let model    := if use_local { prov.make_model_ref("litellm", model_name) } else { vtx.gemini_35_flash() }
-    let opts     := { temperature: Some(0.6), top_p: None, max_steps: Some(1), max_tokens: Some(64) }
+    let provider := if use_opencode { oai.make_provider({ api_key: token, base_url: opencode_zen_url() }) } else { if use_local { providers.litellm_at(base_url) } else { vtx.make_provider(vtx.config_at(token, project, location)) } }
+    let model    := if use_opencode { prov.make_model_ref("opencode-go", model_name) } else { if use_local { prov.make_model_ref("litellm", model_name) } else { vtx.gemini_35_flash() } }
+    let opts     := { temperature: Some(0.6), top_p: None, max_steps: Some(1), max_tokens: if use_opencode { Some(2500) } else { Some(64) } }
     let agent    := llm_agent.make_agent(stall, system_msg, model, provider, [], opts)
     let steps    := iter.to_list(llm_agent.run_loop(agent, [UserMsg(user_msg)]))
     let reply    := pick_seller_move(extract_text(steps), base, offer)
