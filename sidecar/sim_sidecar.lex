@@ -2048,15 +2048,25 @@ fn build_router(db :: Db, stall :: Str, dash :: Str, html_path :: Str, examples_
     }
   })
 
+  # GET /api/standings — the live ELO leaderboard the lobby fetches. Served from
+  # examples/standings.json (what lex-games' nbazaar_season writes); a missing
+  # file returns an empty-but-valid board so the lobby renders cleanly day one.
+  let r3d := router.route_effectful(r3c, "GET", "/api/standings", fn (_ :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+    match io.read(str.join([examples_dir, "/standings.json"], "")) {
+      Ok(body) => json_resp_cors(body),
+      Err(_) => json_resp_cors("{\"game\":\"nbazaar\",\"matches\":0,\"players\":0,\"standings\":[]}"),
+    }
+  })
+
   # GET /events — SSE long-poll (dashboard only)
   let r4 := if str.is_empty(stall) {
-    router.route_stream(r3c, "GET", "/events", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] stream.StreamResponse {
+    router.route_stream(r3d, "GET", "/events", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] stream.StreamResponse {
       let last_id := parse_int_or(ctx.header_or(c, "last-event-id", "0"), 0)
       let events := list.cons("retry: 2000\n\n", poll_events(db, last_id, 10000))
       let hdrs := map.from_list([("content-type", "text/event-stream; charset=utf-8"), ("cache-control", "no-cache"), ("connection", "keep-alive"), ("access-control-allow-origin", "*")])
       { body: iter.from_list(events), status: 200, headers: hdrs }
     })
-  } else { r3c }
+  } else { r3d }
 
   # GET /stock
   let r5 := router.route_effectful(r4, "GET", "/stock", fn (_ :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {

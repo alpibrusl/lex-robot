@@ -58,6 +58,28 @@ header { background: var(--bg2); border-bottom: 1px solid var(--border); padding
 .card-how { background: none; border: 1px solid var(--border); color: var(--muted); font-family: 'VT323',monospace; font-size: 15px; padding: 7px 11px; border-radius: 5px; cursor: pointer; }
 .card-how:hover { color: var(--text); border-color: var(--text); }
 
+/* ── Leaderboard ── */
+#board { margin-top: 26px; }
+#board-head { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+#board-head h2 { font-family: '"Press Start 2P"',monospace; font-size: 10px; color: var(--text); letter-spacing:.08em; }
+#board-sub { font-size: 13.5px; color: var(--muted); line-height: 1.4; max-width: 640px; margin-bottom: 12px; }
+#board-sub .hl { color: var(--gold); }
+.lb { background: var(--bg2); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.lb-row { display: grid; grid-template-columns: 46px 1fr 92px 132px; align-items: center; gap: 10px; padding: 9px 16px; border-top: 1px solid var(--border); }
+.lb-row:first-child { border-top: none; }
+.lb-row.head { background: var(--bg3); border-top: none; }
+.lb-row.head span { font-family: '"Press Start 2P"',monospace; font-size: 7px; color: var(--muted); letter-spacing:.06em; }
+.lb-rank { font-family: '"Press Start 2P"',monospace; font-size: 11px; color: var(--muted); text-align: center; }
+.lb-row.r1 .lb-rank { color: var(--gold); } .lb-row.r2 .lb-rank { color: #cdd7e0; } .lb-row.r3 .lb-rank { color: #d6a06a; }
+.lb-model { color: var(--text); font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lb-rating { font-family: '"Press Start 2P"',monospace; font-size: 11px; color: var(--gold); text-align: right; }
+.lb-wdl { font-size: 13px; color: var(--muted); text-align: right; letter-spacing: .02em; }
+.lb-wdl .w { color: var(--green); } .lb-wdl .l { color: var(--red); }
+.lb-bar { grid-column: 1 / -1; height: 3px; background: linear-gradient(90deg, var(--gold), transparent); border-radius: 2px; margin-top: 6px; opacity: .5; }
+#board-empty { color: var(--muted); font-size: 14px; padding: 18px 16px; background: var(--bg2); border: 1px solid var(--border); border-radius: 10px; }
+#board-foot { font-size: 12.5px; color: var(--muted); margin-top: 8px; }
+#board-foot a { color: var(--blue); }
+
 /* ── A2A / Dev Docs strip ── */
 #docs { background: var(--bg2); border-top: 1px solid var(--border); padding: 20px 24px; }
 #docs summary { cursor: pointer; font-family: '"Press Start 2P"',monospace; font-size: 8px; color: var(--blue); letter-spacing:.08em; outline: none; }
@@ -122,6 +144,18 @@ header { background: var(--bg2); border-bottom: 1px solid var(--border); padding
   </div>
 
   <div id="game-grid"></div>
+
+  <!-- Model leaderboard (ELO over verifiable N-player Bazaar matches) -->
+  <section id="board">
+    <div id="board-head">
+      <h2>★ MODEL LEADERBOARD</h2>
+      <span id="board-meta" style="font-size:12.5px;color:var(--muted)"></span>
+    </div>
+    <p id="board-sub">ELO ratings from <span class="hl">N-player Bazaar</span> free-for-alls between open-weights models. Each match is scored by <span class="hl">replaying its hash-chained trail</span> — ratings come from recomputed results, never trusted from a client.</p>
+    <div class="lb" id="board-table"></div>
+    <div id="board-empty" style="display:none">No matches ranked yet — run a match and the standings appear here.</div>
+    <div id="board-foot">Standings recomputed by <code>lex-games</code> nbazaar_season · <a href="https://github.com/alpibrusl/lex-games">how scoring works ↗</a></div>
+  </section>
 </div>
 
 <!-- Developer / A2A docs (collapsed by default) -->
@@ -380,6 +414,40 @@ function renderDocs() {
   });
 }
 
+// Model leaderboard — fetch the recomputed ELO standings and render them.
+const medal = r => r === 1 ? '①' : r === 2 ? '②' : r === 3 ? '③' : r;
+function renderBoard(data) {
+  const table = document.getElementById('board-table');
+  const empty = document.getElementById('board-empty');
+  const meta  = document.getElementById('board-meta');
+  const rows = (data && Array.isArray(data.standings)) ? data.standings : [];
+  if (!rows.length) { table.style.display = 'none'; empty.style.display = ''; meta.textContent = ''; return; }
+  table.style.display = ''; empty.style.display = 'none';
+  meta.textContent = `${rows.length} models · ${data.matches || 0} matches`;
+  const top = Math.max(...rows.map(r => r.rating || 0));
+  const bot = Math.min(...rows.map(r => r.rating || 0));
+  const span = Math.max(1, top - bot);
+  table.innerHTML =
+    `<div class="lb-row head"><span></span><span>MODEL</span><span style="text-align:right">ELO</span><span style="text-align:right">W · D · L</span></div>` +
+    rows.map((r, i) => {
+      const rank = r.rank || (i + 1);
+      const pct = Math.round(((r.rating || 0) - bot) / span * 100);
+      return `<div class="lb-row r${rank}">
+        <span class="lb-rank">${medal(rank)}</span>
+        <span class="lb-model" title="${r.label || ''}">${r.label || '—'}</span>
+        <span class="lb-rating">${r.rating != null ? r.rating : '—'}</span>
+        <span class="lb-wdl"><span class="w">${r.wins||0}</span> · ${r.draws||0} · <span class="l">${r.losses||0}</span></span>
+        <span class="lb-bar" style="width:${pct}%"></span>
+      </div>`;
+    }).join('');
+}
+function loadBoard() {
+  fetch('/api/standings', { cache: 'no-store' })
+    .then(r => r.ok ? r.json() : Promise.reject(r.status))
+    .then(renderBoard)
+    .catch(() => renderBoard(null));
+}
+
 // SSE status dot (for the lobby — in-game the iframe has its own dot)
 function connectSSE() {
   const dot = document.getElementById('h-dot');
@@ -401,6 +469,7 @@ window.addEventListener('popstate', () => {
 
 renderLobby();
 renderDocs();
+loadBoard();
 connectSSE();
 handleHash();
 </script>
