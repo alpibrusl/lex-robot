@@ -45,7 +45,7 @@ import "lex-games/src/arena/trail_file" as tf
 type Cap = { agent_pattern :: Str, data_allow :: List[Str], data_deny :: List[Str], require_purpose :: Bool, spend_cap_total :: Int, spend_per_tx :: Int, merchants_allow :: List[Str] }
 
 fn assistant_cap() -> Cap {
-  { agent_pattern: "did:lex:agent:assistant*", data_allow: ["preferences", "professional", "calendar"], data_deny: ["health", "financial"], require_purpose: true, spend_cap_total: 3000, spend_per_tx: 2000, merchants_allow: ["pottery.bazaar", "data.bazaar"] }
+  { agent_pattern: "did:lex:agent:*", data_allow: ["preferences", "professional", "calendar"], data_deny: ["health", "financial"], require_purpose: true, spend_cap_total: 3000, spend_per_tx: 2000, merchants_allow: ["pottery.bazaar", "data.bazaar"] }
 }
 
 fn did(actor :: Str, id :: Str) -> Str {
@@ -162,7 +162,10 @@ fn run() -> [io, sql, time, net, crypto, fs_write, env] Nil {
     None => "capability_trail.jsonl",
   }
   let c := assistant_cap()
-  let agent := did("agent", "assistant-1")
+  let agent := match env.get("AGENT_DID") {
+    Some(v) => v,
+    None => did("agent", "assistant-1"),
+  }
   let __lex_discard_2 := io.print(str.join(["=== Lex capability gate — one token for ", agent, ": data AND money ===\n"], ""))
   match trail.open_memory() {
     Err(e) => io.print(str.concat("trail open failed: ", e)),
