@@ -589,6 +589,38 @@ block + force clamp, `src/grant.lex`); and the whole episode is a verifiable
 lex-trail chain. `gate` = who may act · `grant` = physical envelope · `record` =
 auditable episode.
 
+## The Magentic Bazaar — governed agent commerce
+
+The same three primitives that gate a robot — **capability · trail · replay** —
+also gate *money*. The Magentic Bazaar is a governed agent marketplace built on
+them: agents buy from agents under a **signed budget token**, every purchase is
+authorized by `lex-guard`'s spend gate, settled over the **x402** Solana `exact`
+rail (mock facilitator), and attested to a hash-chained trail that `lex-games`
+replays to recompute compliance — **a session is a trail, not a receipt.**
+
+It grew in eight increments, each a runnable example:
+
+| step | what | run |
+|------|------|-----|
+| governed transaction core | a buyer shops under a budget; over-cap / rogue-merchant / over-total spends are DENIED | `examples/bazaar_market_run.sh` |
+| LLM buyer | an open-weights model shops under the wall; a denial feeds back and it self-corrects | `examples/bazaar_llm_buyer_run.sh` |
+| seller reputation → lobby | per-seller revenue from *verified* sessions only → the lobby's TOP SELLERS board | `examples/bazaar_reputation_run.sh` |
+| concurrent multi-party | many buyers contend for scarce stock via a market actor (no double-sell); released items recirculate | `examples/bazaar_concurrent_run.sh` |
+| LLM-priced sellers | sellers price by personality; a gouge over the buyer's cap is refused by the gate, not by trust | `examples/bazaar_llm_sellers_run.sh` |
+| fully two-sided | LLM sellers price, an LLM buyer reasons over value and skips the gougers | `examples/bazaar_two_sided_run.sh` |
+| live WebSocket room | remote buyers race over WS; the room only arbitrates, each agent self-governs its own spend + trail | `examples/bazaar_room_run.sh` |
+| live boards | a worker regenerates both lobby leaderboards from real runs | `scripts/refresh_boards.sh` |
+
+The lobby (`examples/games_lobby.html`, served by `sidecar/sim_sidecar.lex`)
+surfaces two recomputed-from-trail boards — **★ MODEL LEADERBOARD** (ELO across
+N-player Bazaar matches) and **🏛 TOP SELLERS** (revenue across governed sessions)
+— at `/api/standings` and `/api/sellers`. Verification + ranking live in
+[lex-games](https://github.com/alpibrusl/lex-games) (`gbazaar`, `bazaar_season`).
+
+> **Stepping back:** games, robots, and commerce are three apps on one
+> substrate. See **[docs/PLATFORM.md](docs/PLATFORM.md)** for what that substrate
+> is, what's missing for a real platform, and where it goes next.
+
 ## How it fits the ecosystem
 - **lex-os** — runs `lex-robot` as a supervised box; the grant = physical safety
   envelope + budgets; supervisor can kill/reprovision.
