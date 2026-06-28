@@ -297,6 +297,30 @@ lex run --allow-effects env,net,sense,actuate,io examples/depot_demo.lex run   #
 
 ![Unitree G1 balancing on its own legs while plugging in the charge connector](media/depot_g1_balance.gif)
 
+### Is the grant *physically* meaningful? (measured in physics)
+
+The tiers above show the grant clamping force and bounding the workspace. But a
+clamp only matters if less force actually reaches the world, and a keep-out bound
+only matters if the end-effector actually stays out. `examples/physics/` measures
+exactly that: it runs the *same* policy intent twice in MuJoCo rigid-body physics —
+once raw, once through the Lex grant gate — and compares.
+
+| property                 | ungoverned | governed |
+|--------------------------|-----------:|---------:|
+| keep-out penetration (m) |       0.50 |     0.00 |
+| contact force (N)        |        250 |       20 |
+
+Lex governs, MuJoCo simulates: the harness hands the raw command to
+`examples/govern_commands.lex` (same semantics as `src/grant.lex`), which returns
+the governed command *and* a `robot_task` trail that replays to a clean verdict —
+so the loop is policy intent → grant gate → physics → trail → verify.
+
+```sh
+examples/grant_physics_run.sh    # creates a venv (mujoco+numpy), runs, verifies
+```
+
+Out-of-band (needs `mujoco`+`numpy`, not a CI dep). See `examples/physics/README.md`.
+
 ### Going to real hardware (the transfer seam)
 
 The sim drives the arm with a mocap-weld teleop shortcut — fine for a demo, not a
