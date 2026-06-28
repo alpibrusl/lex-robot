@@ -40,7 +40,35 @@ dependency. `govern_commands.lex` itself is plain Lex and is type-checked in CI.
   emits the episode trail.
 - `../grant_physics_run.sh` — venv setup → physics → trail verification.
 
-## Next tiers
+## Tier 3 — the same loop on the real Unitree G1 (#67)
 
-- **#67** Tier 3: a contact-rich task on a real URDF (Unitree G1) digital twin.
+`g1_validate.py` runs the identical governed loop against the **real Unitree G1
+humanoid** (MuJoCo Menagerie URDF), reusing the production G1 sidecar
+(`../../sidecar/depot_g1_sidecar.py`) for the physics. The G1's right arm reaches
+a truck charge port and seats a connector — a contact-rich insertion ending in a
+rigid weld — under the Lex grant. The same policy intent (seat at 99 N) is run
+twice:
+
+| episode            | force (N) | outcome | seated |
+|--------------------|----------:|---------|:------:|
+| ungoverned (99 N)  |        99 | stalled |   no   |
+| governed (clamped) |        20 | reached |  yes   |
+
+99 N reaches the actuator and trips the arm's firmware force floor (an unsafe
+slam on hardware); the grant clamps it to the grip ceiling *before* it is sent,
+so the connector seats cleanly and the governed episode's `robot_task` trail
+replays to a clean verdict. Governance survives contact with a real robot model.
+
+```sh
+examples/g1_physics_run.sh           # venv + sparse-checks-out the G1 model, runs, verifies
+```
+
+Needs the G1 model (`LEX_G1_DIR` → a `mujoco_menagerie/unitree_g1` checkout); the
+run script fetches it. Still out-of-band — not a CI dependency.
+
+- `g1_validate.py` — the Tier 3 validator (reuses `DepotG1` for real kinematics).
+- `../g1_physics_run.sh` — venv + G1 model checkout → physics → trail verification.
+
+## Next tier
+
 - **#68** hardware-gated sim-to-real + certification (the only piece needing a robot).

@@ -321,6 +321,16 @@ examples/grant_physics_run.sh    # creates a venv (mujoco+numpy), runs, verifies
 
 Out-of-band (needs `mujoco`+`numpy`, not a CI dep). See `examples/physics/README.md`.
 
+The same governed loop runs on the **real Unitree G1** kinematics, too
+(`examples/physics/g1_validate.py`, reusing `sidecar/depot_g1_sidecar.py`): the
+arm seats the connector at a clamped 20 N and welds it, while the ungoverned 99 N
+stalls on the firmware floor — and the governed episode's `robot_task` trail
+verifies. Governance survives contact with a real robot model.
+
+```sh
+examples/g1_physics_run.sh       # venv + sparse-checks-out the G1 model, runs, verifies
+```
+
 ### Going to real hardware (the transfer seam)
 
 The sim drives the arm with a mocap-weld teleop shortcut — fine for a demo, not a
