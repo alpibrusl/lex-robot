@@ -497,8 +497,11 @@ It mediates each command against the grant, tags reversibility, enforces the
 budget (kill), reprovisions, and emits a verified hash-chained audit log. See
 [`box/README.md`](box/README.md) for the full three-layer flow.
 
-The only piece that needs **Linux+KVM** is running the robot task itself inside
-an unbypassable Firecracker microVM as a lex-os guest agent (lex-robot#1).
+The robot task also runs inside an unbypassable **Firecracker microVM** as a
+lex-os guest agent (lex-robot#1, done): `sudo ./box/run_in_vm.sh` on a
+Linux+KVM host — in-grant run completes with a verified audit chain, an
+out-of-grant move is `command_denied` at the perimeter, and the kernel egress
+wall drops non-allowlisted hosts. See [`box/README.md`](box/README.md) §4b.
 
 ## Agentic interactions: agents that meet, negotiate, and consent
 
@@ -669,7 +672,7 @@ N-player Bazaar matches) and **🏛 TOP SELLERS** (revenue across governed sessi
 ## Known gaps (intentional / next)
 - JSON is hand-built with `std.str`; could swap to `lex-schema/json_value`.
 - No WebSocket streaming of sensor/state yet (HTTP request/response only).
-- The robot task doesn't yet run *inside* a Firecracker microVM as a lex-os
-  guest agent (needs Linux+KVM — issue #1). The static effect-wall + simulated
-  runtime supervisor already work on macOS.
+- The Firecracker microVM run (issue #1, done — `box/README.md` §4b) needs a
+  Linux+KVM host and is exercised manually, not in CI. CI-gating it (GitHub's
+  Linux runners expose `/dev/kvm`) is the next hardening step.
 - `record_episode` writes frames to `.npz`; full LeRobotDataset export is a follow-up.
