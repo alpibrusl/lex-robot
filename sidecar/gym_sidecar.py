@@ -21,8 +21,9 @@ Run:
 Verified locally on macOS / Python 3.14 with gym-pusht 0.1.6 (read_joints,
 read_camera, move_to, record_episode work end-to-end). IMPORTANT: pin
 `pymunk<7` — gym-pusht 0.1.6 uses the pymunk 6.x collision-handler API and
-pymunk 7 breaks the env. `run_policy`'s rollout loop is the one remaining TODO
-(LeRobot version-specific — see run_policy below).
+pymunk 7 breaks the env. `run_policy` runs the full pretrained-policy rollout
+asynchronously (see the job-state note below); solve *quality* is tracked in
+lex-robot#2.
 """
 
 import base64
