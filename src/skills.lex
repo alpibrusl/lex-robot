@@ -255,3 +255,76 @@ fn actuate_tool(r :: t.Robot, power :: Float, target :: t.Pose,
     Denied("skill actuate_tool not in grant")
   }
 }
+
+# ── XLeRobot skills (dual SO-101 arms + holonomic base) ──────────────────────
+# A mobile dual-arm robot has TWO capability envelopes, not one: the arm's
+# reach box (metres, robot frame) and the base's permitted floor area (metres,
+# world frame). Rather than widen the Grant type, an XLeRobot program carries
+# two Grant instances — an arm grant and a base grant — both pointing at the
+# same sidecar (examples/xlerobot_demo.lex). Same primitives, per actuator group.
+
+# Move one arm ("left" | "right") to a pose in the arm frame. Gated exactly
+# like move_to: skill allowed + target inside the arm grant's workspace box.
+fn move_arm(r :: t.Robot, arm :: Str, target :: t.Pose) -> [net, sense, actuate] t.Outcome {
+  if grant.skill_allowed(r.grant, "move_arm") {
+    if grant.in_workspace(r.grant, target.pos) {
+      let body := str.join([
+        "{\"arm\":\"", arm,
+        "\",\"x\":", f(target.pos.x), ",\"y\":", f(target.pos.y), ",\"z\":", f(target.pos.z),
+        ",\"rx\":", f(target.rx), ",\"ry\":", f(target.ry), ",\"rz\":", f(target.rz), "}"
+      ], "")
+      match client.call(r.sidecar_url, "move_arm", body) {
+        Err(e) => Stalled(e),
+        Ok(resp) => parse_outcome(resp),
+      }
+    } else {
+      Denied(str.concat(arm, " arm target outside granted workspace"))
+    }
+  } else {
+    Denied("skill move_arm not in grant")
+  }
+}
+
+# Close one arm's gripper; force clamped to the arm grant's grip ceiling
+# before the command is sent (the sidecar's firmware floor caps it again).
+fn grasp_arm(r :: t.Robot, arm :: Str, force :: Float) -> [net, sense, actuate] t.Outcome {
+  if grant.skill_allowed(r.grant, "grasp_arm") {
+    let clamped := grant.clamp_grip(r.grant, force)
+    let body := str.join(["{\"arm\":\"", arm, "\",\"force\":", f(clamped), "}"], "")
+    match client.call(r.sidecar_url, "grasp_arm", body) {
+      Err(e) => Stalled(e),
+      Ok(resp) => parse_outcome(resp),
+    }
+  } else {
+    Denied("skill grasp_arm not in grant")
+  }
+}
+
+# Drive the holonomic base to (x, y) on the floor (z ignored, kept 0). Gated by
+# the BASE grant: target inside the permitted floor area, speed clamped to the
+# granted ceiling (never amplified) before the command leaves the box.
+fn move_base(r :: t.Robot, target :: t.Vec3, speed :: Float) -> [net, sense, actuate] t.Outcome {
+  if grant.skill_allowed(r.grant, "move_base") {
+    let flat := { x: target.x, y: target.y, z: 0.0 }
+    if grant.in_workspace(r.grant, flat) {
+      let v := grant.clamp_velocity(r.grant, speed)
+      let body := str.join(["{\"x\":", f(flat.x), ",\"y\":", f(flat.y), ",\"speed\":", f(v), "}"], "")
+      match client.call(r.sidecar_url, "move_base", body) {
+        Err(e) => Stalled(e),
+        Ok(resp) => parse_outcome(resp),
+      }
+    } else {
+      Denied("base target outside granted floor area")
+    }
+  } else {
+    Denied("skill move_base not in grant")
+  }
+}
+
+# Read the base's current floor pose (x, y, heading in detail JSON).
+fn read_base(r :: t.Robot) -> [net, sense] Result[t.Vec3, Str] {
+  match client.call(r.sidecar_url, "read_base", "{}") {
+    Err(e) => Err(e),
+    Ok(s) => Ok({ x: jfloat(s, "\"x\":", 0.0), y: jfloat(s, "\"y\":", 0.0), z: 0.0 }),
+  }
+}

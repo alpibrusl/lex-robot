@@ -2,7 +2,7 @@
 # python3 (no pip). The ML demos (keep-out / MuJoCo / learned policy) need the
 # Python deps in sidecar/requirements.txt — see the README dependency matrix.
 
-.PHONY: help check smoke demo grant task budget depot keepout dynamic_keepout tool_fire mcp-grant deps clean
+.PHONY: help check smoke demo grant task budget depot xlerobot xlerobot-sim keepout dynamic_keepout tool_fire mcp-grant deps clean
 
 help: ## Show this help
 	@grep -hE '^[a-z-]+:.*##' $(MAKEFILE_LIST) | sed -E 's/:.*## /\t/' | sort
@@ -27,6 +27,14 @@ budget: ## Budget supervisor: a zero-action grant kills the run (no ML deps)
 
 depot: ## OCPP-gated depot connect demo, stub sidecar (no ML deps)
 	@bash scripts/demo.sh depot
+
+xlerobot: ## XLeRobot dual-arm + base governance demo, stub sidecar (no ML deps)
+	@bash scripts/demo.sh xlerobot
+
+xlerobot-sim: ## Same demo against real MuJoCo physics (NEEDS: pip install mujoco numpy)
+	@python3 sidecar/xlerobot_mujoco_sidecar.py & echo $$! > /tmp/lex-robot-xle.pid; sleep 2; \
+	 lex run --allow-effects net,sense,actuate,io examples/xlerobot_demo.lex run; \
+	 kill `cat /tmp/lex-robot-xle.pid` 2>/dev/null || true
 
 deps: ## Install the Python deps for the ML demos (gym / mujoco / torch)
 	pip install -r sidecar/requirements.txt

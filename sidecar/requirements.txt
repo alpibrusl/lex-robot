@@ -14,6 +14,9 @@ numpy
 # and serves the pre-signed blobs pushed by register_cards (a2a_server.lex).
 
 # depot_mujoco_sidecar.py (Tier-2 MuJoCo depot scene)
+# xlerobot_mujoco_sidecar.py + gym_env/xlerobot_env.py (XLeRobot room scene;
+# the gym env additionally uses gymnasium, listed above).
+# xlerobot_sidecar.py (Tier-1 stub) needs nothing -- Python stdlib only.
 mujoco
 
 # depot_g1_sidecar.py (Tier-3: real Unitree G1 humanoid) also needs the G1 model
