@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
-"""XLeRobot sidecar (dual SO-101 arms + holonomic base) for lex-robot.
+"""XLeRobot 0.4.0 sidecar (dual SO-101 arms + wheeled base) for lex-robot.
 
-Target hardware: the XLeRobot (WowRobo kit / Vector-Wangel/XLeRobot) — two
-5-DOF SO-101 arms (STS3215 servos, ~40 cm reach, ~0.6–1 kg payload per arm)
-on a 3-omni-wheel holonomic base. Everything LeRobot-native, so the hardware
-leg goes through LeRobot exactly like the depot seam (depot_hw_sidecar.py).
+Target hardware: the XLeRobot **0.4.0** (WowRobo kit / Vector-Wangel/
+XLeRobot) — two 5-DOF SO-101 arms (STS3215 servos, ~40 cm reach, ~0.6–1 kg
+payload per arm; 0.4.0's optional soft finray TPU fingers make the firmware
+grip floor doubly appropriate) on 0.4.0's dual-wheel differential base, with
+a head RGB camera (webcam / RealSense / hand-cam variants). Everything
+LeRobot-native, so the hardware leg goes through LeRobot exactly like the
+depot seam (depot_hw_sidecar.py). move_base is a goal-point command, so the
+skill surface and grants are identical for the older 3-omni holonomic base.
 
 This is the **transfer point** for that robot: the standard lex-robot sidecar
 protocol (SIDECAR.md), plus three XLeRobot skills:
@@ -129,9 +133,10 @@ class XLeRobot:
     def move_base(self, x, y, speed):
         # Independent firmware speed floor behind the Lex grant's velocity clamp.
         v = min(speed, HARD_SPEED_MPS)
-        # REAL: holonomic drive to (x,y) — command wheel velocities from the
-        # omni-wheel kinematics at speed v, stop on arrival or obstacle:
-        #   self.robot.send_action({"base_vx": ..., "base_vy": ..., "base_omega": ...})
+        # REAL: drive to (x,y) — 0.4.0's dual-wheel differential base: turn
+        # toward the target, then (v, omega) → left/right wheel speeds; stop on
+        # arrival or obstacle. (The older omni base takes vx/vy directly.)
+        #   self.robot.send_action({"base_v": ..., "base_omega": ...})
         # The base grant already guaranteed (x,y) is inside the permitted floor area.
         dx, dy = x - self.base["x"], y - self.base["y"]
         dist = math.hypot(dx, dy)

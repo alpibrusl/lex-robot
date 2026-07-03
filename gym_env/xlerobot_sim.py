@@ -1,7 +1,9 @@
 """XLeRobot MuJoCo scene + sim core — shared by the Tier-2 sidecar and the gym env.
 
-A physics model of the XLeRobot's shape: a holonomic cart (slide-x / slide-y,
-velocity-actuated, so the base genuinely *drives* through contacts) carrying two
+A physics model of the XLeRobot 0.4.0's shape: a wheeled cart (slide-x/slide-y,
+velocity-actuated so the base genuinely *drives* through contacts; kinematics
+follow LEX_XLE_BASE — the 0.4.0 dual-wheel differential by default, the older
+3-omni holonomic as an option) carrying two
 arm end-effectors (mocap-teleoperated spheres at SO-101-ish mounting offsets —
 the Cartesian-teleop shortcut the depot G1 sidecar uses, fine for governance
 demos, not a real controller). The room has a counter and a cup: the cup is a
@@ -20,6 +22,7 @@ the cart, so the Lex grant and demo stay frame-stable while the base roams.
 from __future__ import annotations
 
 import math
+import os
 
 import mujoco
 import numpy as np
@@ -70,6 +73,11 @@ XML = """
 ARM_MOUNT = {"left": np.array([0.25, 0.15, 0.40]), "right": np.array([0.25, -0.15, 0.40])}
 GRASP_TOL = 0.08   # m — EE-to-cup distance that counts as "in hand"
 ARRIVE_TOL = 0.03  # m — base arrival threshold
+
+# XLeRobot 0.4.0 ships a dual-wheel DIFFERENTIAL base (no strafing); the
+# 0.3.0-era kit was a 3-omni-wheel holonomic base. Default matches 0.4.0.
+BASE_MODE = os.environ.get("LEX_XLE_BASE", "diff")  # "diff" | "omni"
+YAW_RATE = 2.0  # rad/s — in-place turn rate for the differential base
 
 
 class XLeSim:
@@ -127,9 +135,16 @@ class XLeSim:
         }
 
     # ---- actuation ------------------------------------------------------------
-    def drive(self, x, y, speed, max_steps=4000):
-        """Velocity-actuated holonomic drive to (x, y): real contacts en route."""
-        start = self.base_xy()
+    def drive(self, x, y, speed, max_steps=6000):
+        """Velocity-actuated drive to (x, y): real contacts en route.
+
+        Base kinematics follow LEX_XLE_BASE: "diff" (default — XLeRobot 0.4.0's
+        dual-wheel differential base: turn in place toward the target, then the
+        commanded velocity is constrained to the current heading, no strafing)
+        or "omni" (the 0.3.0-era 3-omni-wheel holonomic base: velocity straight
+        at the target). A skill-level kinematic constraint, not a wheel-torque
+        model — the skill surface and the grant are identical either way.
+        """
         target = np.array([x, y])
         steps = 0
         while steps < max_steps:
@@ -138,20 +153,31 @@ class XLeSim:
             dist = float(np.linalg.norm(err))
             if dist < ARRIVE_TOL:
                 break
-            v = err / max(dist, 1e-9) * min(speed, dist * 4.0)
+            bearing = math.atan2(float(err[1]), float(err[0]))
+            if BASE_MODE == "diff":
+                # turn in place first (bounded yaw rate), drive only along heading
+                turn = (bearing - self.heading + math.pi) % (2 * math.pi) - math.pi
+                if abs(turn) > 0.05:
+                    self.heading += math.copysign(min(abs(turn), YAW_RATE * self.m.opt.timestep), turn)
+                    v = np.zeros(2)
+                else:
+                    self.heading = bearing
+                    fwd = np.array([math.cos(self.heading), math.sin(self.heading)])
+                    v = fwd * min(speed, dist * 4.0)
+            else:
+                self.heading = bearing
+                v = err / max(dist, 1e-9) * min(speed, dist * 4.0)
             self.d.ctrl[0], self.d.ctrl[1] = float(v[0]), float(v[1])
             self._ride_arms()
             mujoco.mj_step(self.m, self.d)
             steps += 1
         self.d.ctrl[:] = 0.0
         b = self.base_xy()
-        leg = target - start
-        if float(np.linalg.norm(leg)) > 1e-9:
-            self.heading = math.atan2(float(leg[1]), float(leg[0]))
         if float(np.linalg.norm(target - b)) >= ARRIVE_TOL * 3:
             return {"outcome": "stalled",
                     "detail": f"base stopped at ({b[0]:.2f},{b[1]:.2f}) short of ({x:.2f},{y:.2f})"}
-        return {"outcome": "reached", "detail": f"base at ({b[0]:.2f},{b[1]:.2f}) in {steps} physics steps"}
+        return {"outcome": "reached",
+                "detail": f"base at ({b[0]:.2f},{b[1]:.2f}) in {steps} physics steps ({BASE_MODE} drive)"}
 
     def _ride_arms(self):
         """EEs hold their world height but track the cart's mount in x/y drift."""

@@ -379,9 +379,10 @@ trained on teleop episodes — which is exactly what `depot_hw_sidecar.py` plugs
 
 ## XLeRobot: govern your own dual-arm mobile robot
 
-The [XLeRobot](https://github.com/Vector-Wangel/XLeRobot) (WowRobo kit: two
-5-DOF SO-101 arms on a 3-omni-wheel holonomic base, LeRobot-native) is the
-first *owned-hardware* target. A mobile dual-arm robot has **two capability
+The [XLeRobot 0.4.0](https://github.com/Vector-Wangel/XLeRobot) (WowRobo kit:
+two 5-DOF SO-101 arms — optionally with 0.4.0's soft finray TPU fingers — on
+a dual-wheel differential base, head RGB cam, LeRobot-native) is the first
+*owned-hardware* target. A mobile dual-arm robot has **two capability
 envelopes**, so the demo carries **two grants** against one sidecar — the
 arms' ~40 cm reach box + grip cap, and the base's permitted floor area +
 speed cap. Same primitives, per actuator group; no new grant machinery.
@@ -404,8 +405,9 @@ Three tiers behind one protocol, like the depot:
   speed `LEX_XLE_HARD_SPEED_MPS`). The `== xlerobot ==` smoke checks run
   against this in CI.
 - **Tier 2 — MuJoCo** (`sidecar/xlerobot_mujoco_sidecar.py`, `pip install
-  mujoco numpy`): a real physics room (velocity-actuated holonomic cart,
-  counter, a 200 g cup) — `make xlerobot-sim` runs the *same demo unchanged*;
+  mujoco numpy`): a real physics room (velocity-actuated cart — 0.4.0's
+  differential drive by default, `LEX_XLE_BASE=omni` for the older holonomic
+  base — counter, a 200 g cup) — `make xlerobot-sim` runs the *same demo unchanged*;
   every `reached` is physical. The grasp is a weld that only takes if the EE
   is actually at the cup, and the carry drags real mass across the room.
 - **Tier 3 — hardware** (`LEX_ROBOT_HW=1`, fill the `# REAL:` seams): the
