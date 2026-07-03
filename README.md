@@ -424,6 +424,29 @@ or script a policy here, then roll it out through the grant gate step-wise
 `robot_task` referee — a scripted expert solves it in ~340 steps, so the
 task is verified learnable. lex-os grant: `manifests/xlerobot.capsule.json`.
 
+**The first game — Fetch the Cup, verified** (`make xlerobot-task`): the
+mission runs as a competition entry. Every actuation is recorded to a
+hash-chained trail as a structured SkillOutcome — a base drive is a `move_to`
+under the BASE grant (the floor area), an arm reach a `move_to` under the ARM
+grant (the reach box), the grasp checked against `max_grip` — and the trail is
+the submission. The lex-games `robot_task` referee replays it live, next to a
+forged entry that shows why that matters:
+
+```sh
+make xlerobot-task
+#   #1  governed_fetch   verified=yes legal=yes goal=yes score=142
+#   #2  forged_sprint    verified=no  legal=no  goal=yes score=148   <- DISQUALIFIED
+#   submission written: /tmp/xlerobot_fetch.jsonl
+```
+
+The forged run's raw score (148) *beats* the honest one — and the referee
+disqualifies it anyway, because its out-of-floor-area drive claims `reached`
+and legality is **re-derived from the recorded grant, never trusted**
+(`legal_checked:4` on the honest entry). The JSONL file verifies anywhere:
+`lex-games/cli/games verify robot_task /tmp/xlerobot_fetch.jsonl`. The same
+program against the MuJoCo sidecar produces a physically-earned trail with
+the identical verdict, and the smoke checks gate all of this in CI.
+
 ## Evidence-gated task graph (the lex-loom pattern)
 
 `src/task.lex` runs **Perceive → Plan → Execute → Verify** with a hard gate at
