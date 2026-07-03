@@ -35,7 +35,9 @@ xlerobot-task: ## Fetch-the-Cup as a VERIFIED robot_task: trail -> referee -> ra
 	@bash scripts/demo.sh xlerobot_task
 
 xlerobot-sim: ## Same demo against real MuJoCo physics (NEEDS: pip install mujoco numpy)
-	@python3 sidecar/xlerobot_mujoco_sidecar.py & echo $$! > /tmp/lex-robot-xle.pid; sleep 2; \
+	@python3 sidecar/xlerobot_mujoco_sidecar.py & echo $$! > /tmp/lex-robot-xle.pid; \
+	 for i in $$(seq 1 100); do curl -sf http://127.0.0.1:8900/health >/dev/null 2>&1 && break; \
+	   kill -0 `cat /tmp/lex-robot-xle.pid` 2>/dev/null || { echo "sidecar died (pip install mujoco numpy?)"; exit 1; }; sleep 0.2; done; \
 	 lex run --allow-effects net,sense,actuate,io examples/xlerobot_demo.lex run; \
 	 kill `cat /tmp/lex-robot-xle.pid` 2>/dev/null || true
 

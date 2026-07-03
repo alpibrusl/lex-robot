@@ -321,10 +321,23 @@ fn move_base(r :: t.Robot, target :: t.Vec3, speed :: Float) -> [net, sense, act
   }
 }
 
-# Read the base's current floor pose (x, y, heading in detail JSON).
+# Read the base's current floor pose (x, y, heading in detail JSON). A response
+# without an "x" field (e.g. {"error":"unknown skill"} from the wrong sidecar on
+# the shared port) is an Err — never silently decoded as a pose at the origin,
+# because this reading may be recorded into a verified trail.
 fn read_base(r :: t.Robot) -> [net, sense] Result[t.Vec3, Str] {
   match client.call(r.sidecar_url, "read_base", "{}") {
     Err(e) => Err(e),
-    Ok(s) => Ok({ x: jfloat(s, "\"x\":", 0.0), y: jfloat(s, "\"y\":", 0.0), z: 0.0 }),
+    Ok(s) => {
+      if str.contains(s, "\"error\"") {
+        Err(str.concat("read_base: ", s))
+      } else {
+        if str.contains(s, "\"x\"") {
+          Ok({ x: jfloat(s, "\"x\":", 0.0), y: jfloat(s, "\"y\":", 0.0), z: 0.0 })
+        } else {
+          Err(str.concat("read_base: no pose in response: ", s))
+        }
+      }
+    },
   }
 }

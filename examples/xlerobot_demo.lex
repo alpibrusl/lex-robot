@@ -1,6 +1,6 @@
 # lex-robot/examples/xlerobot_demo.lex — governance for a dual-arm mobile robot.
 #
-# The XLeRobot (two SO-101 arms on a holonomic base) has TWO capability
+# The XLeRobot 0.4.0 (two SO-101 arms on a dual-wheel differential base) has TWO
 # envelopes, so this demo carries TWO grants against one sidecar:
 #   • base grant — the permitted floor area (a room-scale box) + a speed cap
 #   • arm grant  — the arms' reach box (≈40 cm SO-101 envelope) + grip cap
@@ -68,7 +68,10 @@ fn run() -> [net, sense, actuate, io] Unit {
   let base := { sidecar_url: "http://localhost:8900", grant: base_grant() }
   let arms := { sidecar_url: "http://localhost:8900", grant: arm_grant() }
 
-  # Drive to the counter — inside the granted floor area, allowed.
+  # Drive to the counter via a staging point, so the differential base's final
+  # approach leg faces the counter (the arm frame follows the cart's nose).
+  let staging := { x: 1.0, y: 0.85, z: 0.0 }
+  let __0 := io.print(str.concat("base → staging (1.0,0.85)      → ", outcome_str(skills.move_base(base, staging, 0.4))))
   let counter := { x: 2.55, y: 0.85, z: 0.0 }
   let __1 := io.print(str.concat("base → counter (2.55,0.85)     → ", outcome_str(skills.move_base(base, counter, 0.3))))
 

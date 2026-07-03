@@ -26,34 +26,22 @@ import "./policy" as policy
 
 import "./budget" as budget
 
+import "./wire" as wire
+
 type StepLog = { phase :: Str, ok :: Bool, detail :: Str }
 
 # killed = the supervisor stopped the run on a budget breach (see budget.lex),
 # as opposed to success=false from exhausting retries.
 type TaskResult = { success :: Bool, attempts :: Int, killed :: Bool, last_event :: Str }
 
-fn outcome_str(o :: t.Outcome) -> Str {
-  match o {
-    Reached => "reached",
-    Stalled(m) => str.concat("stalled: ", m),
-    Denied(m) => str.concat("denied: ", m),
-    Killed(m) => str.concat("killed: ", m),
-    Timeout => "timeout",
-  }
-}
+# The outcome/payload/milli-unit encoders live in ./wire (pure — one source of
+# truth for the referee wire contract); thin delegates keep this module's
+# public names stable for mcp_server.lex and the examples.
+fn outcome_str(o :: t.Outcome) -> Str { wire.outcome_str(o) }
 
-fn is_reached(o :: t.Outcome) -> Bool {
-  match o {
-    Reached => true,
-    _ => false,
-  }
-}
+fn is_reached(o :: t.Outcome) -> Bool { wire.is_reached(o) }
 
-# Sanitize a detail string into a JSON payload (drops quotes/newlines).
-fn payload(detail :: Str) -> Str {
-  let clean := str.replace(str.replace(detail, "\"", "'"), "\n", " ")
-  str.join(["{\"detail\":\"", clean, "\"}"], "")
-}
+fn payload(detail :: Str) -> Str { wire.payload(detail) }
 
 # Append one event chained to `parent`; return the new event id (or `parent`
 # unchanged on failure, so the chain never breaks the run).
@@ -73,31 +61,10 @@ fn trail_raw(log :: tlog.Log, parent :: Str, kind :: Str, payload_json :: Str) -
   }
 }
 
-# ── Structured SkillOutcome payload (the lex-os SkillOutcome shape) ───────────
-# Integer milli-units on the wire: metres→mm, newtons→mN. This is what the
-# lex-games `robot_task` verifier re-checks for grant legality — a move_to must
-# land inside ws_min..ws_max, a grasp must stay under max_grip. Keeping it
-# integral avoids whole-valued floats serializing without a decimal (and decoding
-# back as Int). Grant force caps should be ISO/TS 15066-derived in production.
-fn milli(x :: Float) -> Str { int.to_str(flt.to_int(x * 1000.0)) }
+fn milli(x :: Float) -> Str { wire.milli(x) }
 
-fn grant_json(g :: t.Grant) -> Str {
-  str.join([
-    "\"grant\":{\"ws_min\":{\"x\":", milli(g.ws_min.x), ",\"y\":", milli(g.ws_min.y), ",\"z\":", milli(g.ws_min.z),
-    "},\"ws_max\":{\"x\":", milli(g.ws_max.x), ",\"y\":", milli(g.ws_max.y), ",\"z\":", milli(g.ws_max.z),
-    "},\"max_force\":", milli(g.max_force), ",\"max_grip\":", milli(g.max_grip_force), "}"
-  ], "")
-}
-
-# A structured move_to execute payload: the actuation + the grant it ran under +
-# the outcome, so a verifier can re-derive that the move respected its authority.
 fn skill_payload(g :: t.Grant, target :: t.Pose, o :: t.Outcome) -> Str {
-  let oc := str.replace(outcome_str(o), "\"", "'")
-  str.join([
-    "{\"skill\":\"move_to\",\"args\":{\"x\":", milli(target.pos.x), ",\"y\":", milli(target.pos.y),
-    ",\"z\":", milli(target.pos.z), ",\"force\":0},", grant_json(g),
-    ",\"outcome\":\"", oc, "\"}"
-  ], "")
+  wire.skill_payload_for("move_to", g, target.pos.x, target.pos.y, target.pos.z, 0.0, o)
 }
 
 # ── Phases ───────────────────────────────────────────────────────────────────

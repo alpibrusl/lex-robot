@@ -130,6 +130,16 @@ class XLeRobot:
         a["positions"][5] = 1.0
         return {"outcome": "reached", "detail": f"{arm} gripper closed at {force:.1f}N (firmware-capped)"}
 
+    def release_arm(self, arm):
+        a = self.arms.get(arm)
+        if a is None:
+            return {"outcome": "stalled", "detail": f"unknown arm '{arm}' (use left|right)"}
+        # REAL: open the gripper.
+        was = a["holding"]
+        a["holding"] = False
+        a["positions"][5] = 0.0
+        return {"outcome": "reached", "detail": f"{arm} released (was_holding={was})"}
+
     def move_base(self, x, y, speed):
         # Independent firmware speed floor behind the Lex grant's velocity clamp.
         v = min(speed, HARD_SPEED_MPS)
@@ -165,6 +175,8 @@ def handle_skill(name, args):
                               float(args.get("y", 0.0)), float(args.get("z", 0.2)))
     if name == "grasp_arm":
         return ROBOT.grasp_arm(args.get("arm", "left"), float(args.get("force", 10.0)))
+    if name == "release_arm":
+        return ROBOT.release_arm(args.get("arm", "left"))
     if name == "move_base":
         return ROBOT.move_base(float(args.get("x", 0.0)), float(args.get("y", 0.0)),
                                float(args.get("speed", 0.3)))

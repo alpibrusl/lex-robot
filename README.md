@@ -104,7 +104,7 @@ sidecar/
   sim_sidecar.py    stdlib stub for the robot governance demos
   gym_sidecar.py    real gym-pusht physics + a LeRobot policy
   depot_*.py        depot backends: stub → MuJoCo → Unitree G1 → hardware seam
-  xlerobot_*.py     XLeRobot (dual SO-101 + holonomic base): stub → MuJoCo room → hardware seam
+  xlerobot_*.py     XLeRobot 0.4.0 (dual SO-101 + diff-wheel base): stub → MuJoCo room → hardware seam
 manifests/       lex-os grant for the task (pick_place.capsule.json)
 box/             lex-os agent programs + the three-layer enforcement guide
 ```
@@ -389,6 +389,7 @@ speed cap. Same primitives, per actuator group; no new grant machinery.
 
 ```sh
 make xlerobot          # stub sidecar — lex + python3 only, CI-gated
+#   base → staging (1.0,0.85)      → reached          ← the diff base approaches nose-first
 #   base → counter (2.55,0.85)     → reached
 #   left arm → cup (0.35,0,0.45)   → reached
 #   left grasp 99N (clamped→15N)   → reached          ← grant ceiling, then a 25N firmware floor
@@ -422,19 +423,22 @@ base velocity + left-EE displacement, reward = approach + a lift bonus. Train
 or script a policy here, then roll it out through the grant gate step-wise
 (the `safe_rollout` pattern) and submit the episode trail to the lex-games
 `robot_task` referee — a scripted expert solves it in ~340 steps, so the
-task is verified learnable. lex-os grant: `manifests/xlerobot.capsule.json`.
+task is verified learnable. lex-os grant: `manifests/xlerobot.capsule.json`
+(honest caveat: lex-os's supervisor does not yet mediate the XLeRobot skill
+names or the capsule's `base` block — in-box enforcement is the Lex grant
+today; see the tracking issue for supervisor mediation).
 
 **The first game — Fetch the Cup, verified** (`make xlerobot-task`): the
 mission runs as a competition entry. Every actuation is recorded to a
-hash-chained trail as a structured SkillOutcome — a base drive is a `move_to`
-under the BASE grant (the floor area), an arm reach a `move_to` under the ARM
-grant (the reach box), the grasp checked against `max_grip` — and the trail is
-the submission. The lex-games `robot_task` referee replays it live, next to a
+hash-chained trail as a structured SkillOutcome — a base drive is a
+`move_base` under the BASE grant (the floor area), an arm reach a `move_to`
+under the ARM grant (the reach box), the grasp checked against `max_grip` —
+and the trail is the submission (the shared encoders live in `src/wire.lex`). The lex-games `robot_task` referee replays it live, next to a
 forged entry that shows why that matters:
 
 ```sh
 make xlerobot-task
-#   #1  governed_fetch   verified=yes legal=yes goal=yes score=142
+#   #1  governed_fetch   verified=yes legal=yes goal=yes score=140
 #   #2  forged_sprint    verified=no  legal=no  goal=yes score=148   <- DISQUALIFIED
 #   submission written: /tmp/xlerobot_fetch.jsonl
 ```
@@ -442,7 +446,9 @@ make xlerobot-task
 The forged run's raw score (148) *beats* the honest one — and the referee
 disqualifies it anyway, because its out-of-floor-area drive claims `reached`
 and legality is **re-derived from the recorded grant, never trusted**
-(`legal_checked:4` on the honest entry). The JSONL file verifies anywhere:
+(`legal_checked:5` on the honest entry — base drives as `move_base`, arm
+reaches as `move_to`, the grasp against `max_grip`, per the referee's strict
+vocabulary). The JSONL file verifies anywhere:
 `lex-games/cli/games verify robot_task /tmp/xlerobot_fetch.jsonl`. The same
 program against the MuJoCo sidecar produces a physically-earned trail with
 the identical verdict, and the smoke checks gate all of this in CI.

@@ -2,10 +2,10 @@
 
 A physics model of the XLeRobot 0.4.0's shape: a wheeled cart (slide-x/slide-y,
 velocity-actuated so the base genuinely *drives* through contacts; kinematics
-follow LEX_XLE_BASE — the 0.4.0 dual-wheel differential by default, the older
-3-omni holonomic as an option) carrying two
-arm end-effectors (mocap-teleoperated spheres at SO-101-ish mounting offsets —
-the Cartesian-teleop shortcut the depot G1 sidecar uses, fine for governance
+follow base_mode — the 0.4.0 dual-wheel differential by default, the older
+3-omni holonomic as an option) carrying two arm end-effectors
+(mocap-teleoperated spheres at SO-101-ish mounting offsets — the
+Cartesian-teleop shortcut the depot G1 sidecar uses, fine for governance
 demos, not a real controller). The room has a counter and a cup: the cup is a
 free body with mass; a grasp within tolerance activates a weld equality — a real
 mechanical join, the same trick as the G1 connector seat.
@@ -14,9 +14,12 @@ Consumers:
   sidecar/xlerobot_mujoco_sidecar.py — lex-robot sidecar protocol over this sim
   gym_env/xlerobot_env.py            — Gymnasium Env over the same scene
 
-Units are metres in the world frame; arm targets arrive in the ARM frame
-(the grant's ~40 cm SO-101 reach box) and are mapped onto the world relative to
-the cart, so the Lex grant and demo stay frame-stable while the base roams.
+Frames: world coordinates are metres; arm targets arrive in the ARM frame
+(x forward, y lateral, z above the arm base plate — the grant's ~40 cm SO-101
+reach box) and are mapped onto the world by rotating the mount by the base's
+current heading, so "forward" genuinely follows the cart's nose on the
+differential base and each arm keeps its last commanded arm-frame offset while
+the base drives (no snap-back).
 """
 
 from __future__ import annotations
@@ -28,7 +31,7 @@ import mujoco
 import numpy as np
 
 # Room: 4m x 3m floor (matches the demo's base grant), counter along the +x
-# wall, a cup on the counter's front edge — reachable once the cart is close.
+# wall, a cup on the counter — reachable once the cart is close.
 XML = """
 <mujoco model="xlerobot_room">
   <option timestep="0.005"/>
@@ -68,9 +71,10 @@ XML = """
 </mujoco>
 """
 
-# Where each arm's frame sits on the cart: forward of center, left/right of the
-# midline, at counter height. Arm-frame (x fwd, y lateral, z up) → world.
+# Where each arm's frame sits on the cart (cart frame: x nose-forward): forward
+# of center, left/right of the midline, at the arm base plate height.
 ARM_MOUNT = {"left": np.array([0.25, 0.15, 0.40]), "right": np.array([0.25, -0.15, 0.40])}
+HOME_OFF = np.array([0.0, 0.0, 0.15])  # parked EE offset in the arm frame
 GRASP_TOL = 0.08   # m — EE-to-cup distance that counts as "in hand"
 ARRIVE_TOL = 0.03  # m — base arrival threshold
 
@@ -83,7 +87,8 @@ YAW_RATE = 2.0  # rad/s — in-place turn rate for the differential base
 class XLeSim:
     """Physics core: drive(), reach(), grasp(), release(), observations."""
 
-    def __init__(self):
+    def __init__(self, base_mode=None):
+        self.base_mode = base_mode or BASE_MODE
         self.m = mujoco.MjModel.from_xml_string(XML)
         self.d = mujoco.MjData(self.m)
         self.mocap = {a: self.m.body(f"ee_{a}").mocapid[0] for a in ("left", "right")}
@@ -93,6 +98,7 @@ class XLeSim:
         self.jy = self.m.joint("cart_y").qposadr[0]
         self.cup = self.m.body("cup").id
         self.heading = 0.0
+        self.arm_off = {}
         self.reset()
 
     def reset(self):
@@ -100,9 +106,9 @@ class XLeSim:
         self.d.eq_active[self.weld["left"]] = 0
         self.d.eq_active[self.weld["right"]] = 0
         self.heading = 0.0
-        # park each EE at its mount point before the first step
+        self.arm_off = {a: HOME_OFF.copy() for a in ("left", "right")}
         for a in ("left", "right"):
-            self.d.mocap_pos[self.mocap[a]] = self._arm_origin(a)
+            self.d.mocap_pos[self.mocap[a]] = self.world_of(a, self.arm_off[a])
         mujoco.mj_forward(self.m, self.d)
         return self.observe()
 
@@ -110,17 +116,14 @@ class XLeSim:
     def base_xy(self):
         return np.array([0.5 + self.d.qpos[self.jx], 1.5 + self.d.qpos[self.jy]])
 
-    def _arm_origin(self, arm):
+    def world_of(self, arm, off):
+        """Arm-frame offset (x fwd, y lateral, z above the arm base plate) →
+        world position: rotate mount + offset by the base heading, translate."""
         b = self.base_xy()
-        off = ARM_MOUNT[arm]
-        return np.array([b[0] + off[0], b[1] + off[1], off[2]])
-
-    def arm_world(self, arm, x, y, z):
-        """Arm-frame target (x fwd, y lateral, z above the arm base plate —
-        the grant's reach box) → world position relative to the cart's mount."""
-        b = self.base_xy()
-        off = ARM_MOUNT[arm]
-        return np.array([b[0] + off[0] + x, b[1] + off[1] + y, off[2] + z])
+        mx, my, mz = ARM_MOUNT[arm]
+        lx, ly = mx + off[0], my + off[1]
+        c, s = math.cos(self.heading), math.sin(self.heading)
+        return np.array([b[0] + c * lx - s * ly, b[1] + s * lx + c * ly, mz + off[2]])
 
     def cup_pos(self):
         return self.d.xpos[self.cup].copy()
@@ -135,17 +138,27 @@ class XLeSim:
         }
 
     # ---- actuation ------------------------------------------------------------
-    def drive(self, x, y, speed, max_steps=6000):
+    def drive(self, x, y, speed, max_steps=None):
         """Velocity-actuated drive to (x, y): real contacts en route.
 
-        Base kinematics follow LEX_XLE_BASE: "diff" (default — XLeRobot 0.4.0's
-        dual-wheel differential base: turn in place toward the target, then the
-        commanded velocity is constrained to the current heading, no strafing)
-        or "omni" (the 0.3.0-era 3-omni-wheel holonomic base: velocity straight
-        at the target). A skill-level kinematic constraint, not a wheel-torque
-        model — the skill surface and the grant are identical either way.
+        Base kinematics follow self.base_mode: "diff" (default — XLeRobot
+        0.4.0's dual-wheel differential base: turn in place toward the target
+        at a bounded yaw rate, then the commanded velocity is constrained to
+        the current heading, no strafing) or "omni" (the 0.3.0-era
+        3-omni-wheel holonomic base: velocity straight at the target). A
+        skill-level kinematic constraint, not a wheel-torque model — the skill
+        surface and the grant are identical either way.
+
+        The step budget is derived from the leg length (with turn + settle
+        margin) unless max_steps is given; "reached" is reported only when the
+        base actually arrived within ARRIVE_TOL — an obstructed cart that runs
+        out of steps short of the target reports "stalled".
         """
         target = np.array([x, y])
+        dt = self.m.opt.timestep
+        if max_steps is None:
+            legs = float(np.linalg.norm(target - self.base_xy()))
+            max_steps = int(legs / max(speed, 1e-6) / dt * 3) + 1200  # drive + turn + settle margin
         steps = 0
         while steps < max_steps:
             b = self.base_xy()
@@ -154,11 +167,11 @@ class XLeSim:
             if dist < ARRIVE_TOL:
                 break
             bearing = math.atan2(float(err[1]), float(err[0]))
-            if BASE_MODE == "diff":
+            if self.base_mode == "diff":
                 # turn in place first (bounded yaw rate), drive only along heading
                 turn = (bearing - self.heading + math.pi) % (2 * math.pi) - math.pi
                 if abs(turn) > 0.05:
-                    self.heading += math.copysign(min(abs(turn), YAW_RATE * self.m.opt.timestep), turn)
+                    self.heading += math.copysign(min(abs(turn), YAW_RATE * dt), turn)
                     v = np.zeros(2)
                 else:
                     self.heading = bearing
@@ -173,22 +186,22 @@ class XLeSim:
             steps += 1
         self.d.ctrl[:] = 0.0
         b = self.base_xy()
-        if float(np.linalg.norm(target - b)) >= ARRIVE_TOL * 3:
+        if float(np.linalg.norm(target - b)) >= ARRIVE_TOL:
             return {"outcome": "stalled",
                     "detail": f"base stopped at ({b[0]:.2f},{b[1]:.2f}) short of ({x:.2f},{y:.2f})"}
         return {"outcome": "reached",
-                "detail": f"base at ({b[0]:.2f},{b[1]:.2f}) in {steps} physics steps ({BASE_MODE} drive)"}
+                "detail": f"base at ({b[0]:.2f},{b[1]:.2f}) in {steps} physics steps ({self.base_mode} drive)"}
 
     def _ride_arms(self):
-        """EEs hold their world height but track the cart's mount in x/y drift."""
+        """Each EE keeps its commanded arm-frame offset while the base moves —
+        it rides the (possibly turning) cart instead of snapping to the mount."""
         for a in ("left", "right"):
-            org = self._arm_origin(a)
-            cur = self.d.mocap_pos[self.mocap[a]]
-            self.d.mocap_pos[self.mocap[a]] = np.array([org[0], org[1], cur[2]])
+            self.d.mocap_pos[self.mocap[a]] = self.world_of(a, self.arm_off[a])
 
     def reach(self, arm, x, y, z, steps=200):
         """Teleop the EE toward an arm-frame target; physics steps interpolate."""
-        target = self.arm_world(arm, x, y, z)
+        self.arm_off[arm] = np.array([x, y, z], dtype=np.float64)
+        target = self.world_of(arm, self.arm_off[arm])
         for _ in range(steps):
             cur = self.d.mocap_pos[self.mocap[arm]]
             self.d.mocap_pos[self.mocap[arm]] = cur + 0.08 * (target - cur)
