@@ -423,10 +423,12 @@ base velocity + left-EE displacement, reward = approach + a lift bonus. Train
 or script a policy here, then roll it out through the grant gate step-wise
 (the `safe_rollout` pattern) and submit the episode trail to the lex-games
 `robot_task` referee — a scripted expert solves it in ~340 steps, so the
-task is verified learnable. lex-os grant: `manifests/xlerobot.capsule.json`
-(honest caveat: lex-os's supervisor does not yet mediate the XLeRobot skill
-names or the capsule's `base` block — in-box enforcement is the Lex grant
-today; see the tracking issue for supervisor mediation).
+task is verified learnable. lex-os grant: `manifests/xlerobot.capsule.json` —
+the supervisor mediates the XLeRobot skills too (lex-robot#77 / lex-os#49):
+`move_arm`/`grasp_arm` against the arm/gripper caps, `move_base` against the
+capsule's `base` block (floor area + speed), and a granted skill with no
+mediation rule is refused, never admitted by fallthrough. See
+[`box/README.md`](box/README.md) §5 for the XLeRobot-in-the-box run.
 
 **The first game — Fetch the Cup, verified** (`make xlerobot-task`): the
 mission runs as a competition entry. Every actuation is recorded to a

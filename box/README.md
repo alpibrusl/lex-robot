@@ -88,3 +88,24 @@ that wall.
 > The policy **solve quality** — `run_policy` actually solving PushT at high
 > reward — is tracked in issue #2 and demonstrated on a CUDA box. This run proves
 > mediation + execution + audit + reconcile, not a learned solve.
+
+## 5. XLeRobot in the box — the dual-envelope capsule, supervisor-enforced
+
+`manifests/xlerobot.capsule.json` grants the XLeRobot skills and the mobile
+base's floor area; since lex-os#49 the supervisor mediates all of them
+(refuse-don't-downgrade: a granted skill with no mediation rule is refused).
+With the XLeRobot stub sidecar running (`python3 sidecar/xlerobot_sidecar.py`):
+
+```sh
+M=manifests/xlerobot.capsule.json
+G=../lex-os/target/debug/lex-os-guest
+LEX_ROBOT_SIDECAR=http://127.0.0.1:8900 $LEXOS run --manifest $M --agent robot   --guest-script xlerobot-demo --guest-bin $G --simulated --audit-out /tmp/xle-audit.json
+#   outcome: "GoalMet"   audit_verified: true
+#   move_base → move_arm → grasp_arm each command_requested → command_allowed → skill_outcome
+
+LEX_ROBOT_SIDECAR=http://127.0.0.1:8900 $LEXOS run --manifest $M --agent robot   --guest-script xlerobot-violation --guest-bin $G --simulated --audit-out /tmp/xle-viol.json
+#   command_denied: "x=9 outside floor area [0,4]"   ← the capsule's base block, enforced
+```
+
+The same two scripts run in the real Firecracker box via `box/run_in_vm.sh`
+on a KVM host (pass the script name, as with `robot-violation` above).
