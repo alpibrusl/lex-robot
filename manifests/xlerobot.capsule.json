@@ -1,0 +1,39 @@
+{
+  "goal": {
+    "description": "Fetch the cup from the kitchen counter to the table (XLeRobot: dual SO-101 arms on a holonomic base)",
+    "done_signal": null
+  },
+  "grant": {
+    "filesystem": "ReadWrite",
+    "network": "Allowlist",
+    "exec": "None"
+  },
+  "budget": {
+    "wall_clock_secs": 300,
+    "max_commands": 100,
+    "max_money_cents": 0,
+    "max_api_calls": 100
+  },
+  "isolation_floor": "Namespace",
+  "egress": ["169.254.42.1:8900"],
+  "actuation": {
+    "skills": ["read_joints", "read_base", "read_camera", "move_arm", "grasp_arm", "move_base"],
+    "arm": {
+      "workspace_m": [
+        {"min": 0.05, "max": 0.45},
+        {"min": -0.35, "max": 0.35},
+        {"min": 0.0, "max": 0.5}
+      ],
+      "max_velocity_mps": 0.25,
+      "max_force_n": 15.0
+    },
+    "gripper": {"max_grip_force_n": 15.0},
+    "base": {
+      "floor_area_m": [
+        {"min": 0.0, "max": 4.0},
+        {"min": 0.0, "max": 3.0}
+      ],
+      "max_speed_mps": 0.5
+    }
+  }
+}

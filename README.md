@@ -60,6 +60,8 @@ is public and fetched automatically on first run.
 | demo | command | needs |
 |---|---|---|
 | LLM planner / grant / task / budget / depot | `make demo` / `grant` / `task` / `budget` / `depot` | **`lex` + `python3` only** (stdlib sidecars) |
+| XLeRobot dual-arm + base governance | `make xlerobot` | **`lex` + `python3` only** (stub sidecar) |
+| XLeRobot in MuJoCo physics (+ gym env) | `make xlerobot-sim` | + `pip install mujoco numpy` (`gymnasium` for the env) |
 | keep-out (learned policy vs. grant) | `make keepout` | + `pip install -r sidecar/requirements.txt` (gym-pusht, lerobot) |
 | MuJoCo depot (Tier-2 / Tier-3 G1) | `python3 sidecar/depot_mujoco_sidecar.py` · `depot_g1_sidecar.py` | + `mujoco` (+ G1 model via `LEX_G1_DIR`) |
 | learned reach policy (behaviour cloning) | `python3 sidecar/g1_bc_reach.py` | + `torch` (+ G1 model) |
@@ -102,6 +104,7 @@ sidecar/
   sim_sidecar.py    stdlib stub for the robot governance demos
   gym_sidecar.py    real gym-pusht physics + a LeRobot policy
   depot_*.py        depot backends: stub → MuJoCo → Unitree G1 → hardware seam
+  xlerobot_*.py     XLeRobot 0.4.0 (dual SO-101 + diff-wheel base): stub → MuJoCo room → hardware seam
 manifests/       lex-os grant for the task (pick_place.capsule.json)
 box/             lex-os agent programs + the three-layer enforcement guide
 ```
@@ -373,6 +376,82 @@ fraction of held-out goals still miss, and the un-actuated free base throws
 transient "unstable" warnings (it's hard-pinned each step; the run stays finite).
 A real autonomous version would swap this MLP for a vision-based LeRobot policy
 trained on teleop episodes — which is exactly what `depot_hw_sidecar.py` plugs in.
+
+## XLeRobot: govern your own dual-arm mobile robot
+
+The [XLeRobot 0.4.0](https://github.com/Vector-Wangel/XLeRobot) (WowRobo kit:
+two 5-DOF SO-101 arms — optionally with 0.4.0's soft finray TPU fingers — on
+a dual-wheel differential base, head RGB cam, LeRobot-native) is the first
+*owned-hardware* target. A mobile dual-arm robot has **two capability
+envelopes**, so the demo carries **two grants** against one sidecar — the
+arms' ~40 cm reach box + grip cap, and the base's permitted floor area +
+speed cap. Same primitives, per actuator group; no new grant machinery.
+
+```sh
+make xlerobot          # stub sidecar — lex + python3 only, CI-gated
+#   base → staging (1.0,0.85)      → reached          ← the diff base approaches nose-first
+#   base → counter (2.55,0.85)     → reached
+#   left arm → cup (0.35,0,0.45)   → reached
+#   left grasp 99N (clamped→15N)   → reached          ← grant ceiling, then a 25N firmware floor
+#   base → kitchen (4.5,1.5)       → denied: base target outside granted floor area
+#   right arm → behind (0.90,0.0)  → denied: right arm target outside granted workspace
+#   move_base under ARM grant      → denied: skill move_base not in grant   ← cross-envelope refusal
+#   base → table, 2 m/s (clamped)  → reached          ← speed clamped to the 0.5 m/s grant
+```
+
+Three tiers behind one protocol, like the depot:
+
+- **Tier 1 — stub** (`sidecar/xlerobot_sidecar.py`, stdlib only): kinematic
+  base + arm state, independent firmware floors (grip `LEX_XLE_HARD_GRIP_N`,
+  speed `LEX_XLE_HARD_SPEED_MPS`). The `== xlerobot ==` smoke checks run
+  against this in CI.
+- **Tier 2 — MuJoCo** (`sidecar/xlerobot_mujoco_sidecar.py`, `pip install
+  mujoco numpy`): a real physics room (velocity-actuated cart — 0.4.0's
+  differential drive by default, `LEX_XLE_BASE=omni` for the older holonomic
+  base — counter, a 200 g cup) — `make xlerobot-sim` runs the *same demo unchanged*;
+  every `reached` is physical. The grasp is a weld that only takes if the EE
+  is actually at the cup, and the carry drags real mass across the room.
+- **Tier 3 — hardware** (`LEX_ROBOT_HW=1`, fill the `# REAL:` seams): the
+  stub's handler bodies are shaped for LeRobot's SO-101 buses + base drive;
+  the Lex side doesn't change a line. Before trusting it near the real kit:
+  firmware joint/torque limits + the e-stop are the safety floor, not the
+  grant (DESIGN.md §8).
+
+**The gym** (`gym_env/xlerobot_env.py`, Gymnasium `LexXLeRobotFetch-v0`)
+wraps the *same* MuJoCo scene as Tier 2: obs = base/EE/cup state, action =
+base velocity + left-EE displacement, reward = approach + a lift bonus. Train
+or script a policy here, then roll it out through the grant gate step-wise
+(the `safe_rollout` pattern) and submit the episode trail to the lex-games
+`robot_task` referee — a scripted expert solves it in ~340 steps, so the
+task is verified learnable. lex-os grant: `manifests/xlerobot.capsule.json`
+(honest caveat: lex-os's supervisor does not yet mediate the XLeRobot skill
+names or the capsule's `base` block — in-box enforcement is the Lex grant
+today; see the tracking issue for supervisor mediation).
+
+**The first game — Fetch the Cup, verified** (`make xlerobot-task`): the
+mission runs as a competition entry. Every actuation is recorded to a
+hash-chained trail as a structured SkillOutcome — a base drive is a
+`move_base` under the BASE grant (the floor area), an arm reach a `move_to`
+under the ARM grant (the reach box), the grasp checked against `max_grip` —
+and the trail is the submission (the shared encoders live in `src/wire.lex`). The lex-games `robot_task` referee replays it live, next to a
+forged entry that shows why that matters:
+
+```sh
+make xlerobot-task
+#   #1  governed_fetch   verified=yes legal=yes goal=yes score=140
+#   #2  forged_sprint    verified=no  legal=no  goal=yes score=148   <- DISQUALIFIED
+#   submission written: /tmp/xlerobot_fetch.jsonl
+```
+
+The forged run's raw score (148) *beats* the honest one — and the referee
+disqualifies it anyway, because its out-of-floor-area drive claims `reached`
+and legality is **re-derived from the recorded grant, never trusted**
+(`legal_checked:5` on the honest entry — base drives as `move_base`, arm
+reaches as `move_to`, the grasp against `max_grip`, per the referee's strict
+vocabulary). The JSONL file verifies anywhere:
+`lex-games/cli/games verify robot_task /tmp/xlerobot_fetch.jsonl`. The same
+program against the MuJoCo sidecar produces a physically-earned trail with
+the identical verdict, and the smoke checks gate all of this in CI.
 
 ## Evidence-gated task graph (the lex-loom pattern)
 

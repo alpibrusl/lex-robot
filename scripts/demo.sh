@@ -21,8 +21,10 @@ case "$DEMO" in
   depot)       SIDECAR=depot_sidecar; FILE=examples/depot_demo.lex;          EFF="env,net,sense,actuate,io" ;;
   dynamic_keepout) SIDECAR=sim_sidecar; FILE=examples/dynamic_keepout.lex;   EFF="net,sense,actuate,io,sql,fs_write,time" ;;
   tool_fire)       SIDECAR=sim_sidecar; FILE=examples/tool_fire_demo.lex;    EFF="net,sense,actuate,io,sql,fs_write,time" ;;
+  xlerobot)    SIDECAR=xlerobot_sidecar; FILE=examples/xlerobot_demo.lex;    EFF="net,sense,actuate,io" ;;
+  xlerobot_task) SIDECAR=xlerobot_sidecar; FILE=examples/xlerobot_task.lex;  EFF="actuate,fs_write,io,net,sense,time" ;;
   mcp_grant)   NO_SIDECAR=1;          FILE=tests/test_mcp_grant.lex;         EFF="io,time,crypto,random,sql,fs_read,fs_write,net,concurrent,llm,proc,sense,actuate" ;;
-  *) echo "unknown demo '$DEMO' (use: grant | llm | task | budget | depot | dynamic_keepout | tool_fire | mcp_grant)" >&2; exit 2 ;;
+  *) echo "unknown demo '$DEMO' (use: grant | llm | task | budget | depot | xlerobot | xlerobot_task | dynamic_keepout | tool_fire | mcp_grant)" >&2; exit 2 ;;
 esac
 
 command -v lex >/dev/null || { echo "error: 'lex' not on PATH — see README Install" >&2; exit 1; }
