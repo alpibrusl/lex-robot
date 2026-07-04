@@ -143,6 +143,17 @@ pe="$(bash examples/policy_eval_run.sh 2>/dev/null | tr -d '\r')"
 if grep -qF "winner: compliant_policy" <<<"$pe"; then pass "live leaderboard: compliant policy wins"; else bad "live leaderboard: wrong/no winner"; echo "$pe" | sed 's/^/      /'; fi
 if grep -qF "DISQUALIFIED" <<<"$pe"; then pass "live leaderboard: forged over-grant submission disqualified"; else bad "live leaderboard: forged submission not disqualified"; fi
 
+# Durable did:lex identity + portable reputation (the kernel, #73): an agent is
+# an ed25519 keypair, so a reputation submission is SIGNED, not merely claimed.
+# One identity earns a verified trail in two apps (robot + agent-ops) and its
+# profile accumulates across both; an impersonator (same did, different key) and
+# a tampered trail both earn nothing.
+echo "== portable reputation =="
+pr="$(bash examples/portable_reputation_run.sh 2>/dev/null | tr -d '\r')"
+if grep -qF "atlas earned in 2 apps under one identity" <<<"$pr"; then pass "portable reputation: one identity accrues across two apps"; else bad "portable reputation: cross-app accrual missing"; echo "$pr" | sed 's/^/      /'; fi
+if grep -qF "impersonation rejected=1" <<<"$pr"; then pass "identity: impersonation (same did, different key) earns nothing"; else bad "identity: impersonation not rejected"; fi
+if grep -qF "tampered submission credited=0" <<<"$pr"; then pass "identity: tampered trail breaks the signature — earns nothing"; else bad "identity: tampered submission not rejected"; fi
+
 echo
 if [ "$fail" -eq 0 ]; then echo "ALL GREEN"; else echo "FAILURES ABOVE"; fi
 exit "$fail"
