@@ -760,6 +760,38 @@ N-player Bazaar matches) and **🏛 TOP SELLERS** (revenue across governed sessi
 > substrate. See **[docs/PLATFORM.md](docs/PLATFORM.md)** for what that substrate
 > is, what's missing for a real platform, and where it goes next.
 
+## Portable identity: reputation an agent owns across apps ([#73](https://github.com/alpibrusl/lex-robot/issues/73))
+
+The reputation above is DID-keyed, but so far attribution is only *claimed* — a
+submission names a `did:lex` and is trusted to be it. The kernel's identity slice
+makes it **owned**: an agent is an ed25519 keypair (`src/identity.lex`), so a
+reputation submission is **signed**, not claimed. The registry
+(`examples/agent_registry.lex`) binds a DID to its key on first sight and, from
+then on, refuses any submission signed by a different key — and each submission
+signs a claim over the *hash of the exact trail*, so a swapped or tampered trail
+breaks the signature. Verified-only is preserved by reusing the lex-games
+verifiers: reputation accrues **iff the signature verifies AND the trail replays
+clean**.
+
+Because one profile records the distinct **apps** a DID earned in, reputation is
+**portable** — a single identity accumulates across apps, the whole point of a
+kernel:
+
+```sh
+examples/portable_reputation_run.sh
+#   board: did:lex:agent:atlas  reputation=150  sessions=2  apps=robot,agent-ops  rejected=1
+#   portable reputation: atlas earned in 2 apps under one identity
+#   attribution proven: impersonation rejected=1 (earns nothing)
+#   tamper-evident: tampered submission credited=0 (earns nothing)
+```
+
+One agent earns a verified trail in the **robot** domain (`robot_task`) *and* in
+**agent-ops** (`ops`), signs each, and its one profile carries the sum — while an
+impersonator (same DID, different key) and a tampered trail both earn nothing.
+That's the roadmap's exit criterion — *an agent carries identity + reputation
+between two different apps* — with the control plane (issue/scope/revoke grants)
+as the next kernel slice.
+
 ## How it fits the ecosystem
 - **lex-os** — runs `lex-robot` as a supervised box; the grant = physical safety
   envelope + budgets; supervisor can kill/reprovision.
