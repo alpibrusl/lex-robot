@@ -476,6 +476,39 @@ vocabulary). The JSONL file verifies anywhere:
 program against the MuJoCo sidecar produces a physically-earned trail with
 the identical verdict, and the smoke checks gate all of this in CI.
 
+**The safe-RL/eval loop, closed** (`examples/xlerobot_policy_run.sh`): the
+mission above is a fixed, hand-written script. This closes the loop the gym
+env (`gym_env/xlerobot_env.py`, `LexXLeRobotFetch-v0`) was built for — **train,
+roll out through the grant gate, verify, earn reputation**:
+
+```sh
+examples/xlerobot_policy_run.sh /path/to/venv/bin/python   # or no arg: replays the committed fixture
+#   [replay] move_base(2.61,1.10) reached
+#   [replay] move_arm(0.33,-0.15,0.46) reached
+#   [replay] grasp(15N) reached
+#   [replay] move_base(0.5,1.5) reached
+#   [verify] {"verified":true,"legal":true,"goal_met":true,"score":142}
+#   reputation: did:lex:agent:xlerobot-reach-greedy  score=142  apps=['robot']  (credited=1, rejected=0)
+```
+
+`gym_env/xlerobot_policy_eval.py` runs a **closed-loop** policy — a reactive
+geometric controller today, but state-in/action-out exactly like a trained one
+would be — against the same physics core the gym wraps: it *observes* the
+cup's position and the base's actual post-drive pose (a differential-drive
+base doesn't land on a fixed heading), then *computes* the arm-reach target
+from that observation, rather than replaying memorized waypoints. Its rollout
+— the skill calls it chose, in the same units/frame the governed skills expect
+— is then **replayed through the actual grant gate**
+(`examples/xlerobot_policy_rollout.lex`, reusing `skills.move_base` /
+`move_arm` / `grasp_arm`): the policy doesn't get a bypass — an out-of-grant
+arm target in the rollout is denied at the capability layer exactly as it
+would be for the fixed mission. The resulting trail is verified by the same
+`robot_task` referee, and a verified run is **signed and folded into the
+durable `did:lex` reputation registry** (`examples/agent_registry.lex`,
+the identity + control-plane kernel — see below). Any future policy, hand-coded
+or trained, earns reputation the same way: by producing a rollout that
+survives the grant gate and replays clean.
+
 ## Evidence-gated task graph (the lex-loom pattern)
 
 `src/task.lex` runs **Perceive → Plan → Execute → Verify** with a hard gate at

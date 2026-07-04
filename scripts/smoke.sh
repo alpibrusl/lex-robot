@@ -54,6 +54,15 @@ expect xlerobot_task "DISQUALIFIED" "xlerobot task: forged over-grant entry is d
 expect xlerobot_task "submission written" "xlerobot task: portable JSONL submission is written"
 expect xlerobot_voice "voice goal: fetch the cup to the table" "xlerobot voice: spoken transcript becomes the human goal"
 expect xlerobot_voice "denied: skill listen not in grant" "xlerobot voice: mic-less grant refuses listen at the capability layer"
+
+# The safe-RL/eval loop, closed: a policy's rollout (here, the committed fixture
+# — regenerating it needs a mujoco venv, out-of-band) is replayed through the
+# ACTUAL grant gate (not re-scripted), verified by the robot_task referee, and
+# folded into the did:lex reputation registry (the kernel, #73).
+echo "== xlerobot policy rollout =="
+xpr="$(bash examples/xlerobot_policy_run.sh 2>/dev/null | tr -d '\r')"
+if grep -qF '"verified":true' <<<"$xpr" && grep -qF '"legal":true' <<<"$xpr" && grep -qF '"goal_met":true' <<<"$xpr"; then pass "xlerobot policy: rollout replayed through the grant gate verifies"; else bad "xlerobot policy: rollout did not verify"; echo "$xpr" | sed 's/^/      /'; fi
+if grep -qF "reputation: did:lex:agent:xlerobot-reach-greedy" <<<"$xpr" && grep -qF "credited=1, rejected=0" <<<"$xpr"; then pass "xlerobot policy: verified rollout signs into the did:lex reputation registry"; else bad "xlerobot policy: reputation fold missing/wrong"; fi
 expect tool_fire "BLOCKED: target outside tool firing zone" "tool fire: out-of-zone attempts blocked"
 expect tool_fire "BLOCKED: workpiece not clamped" "tool fire: pre-clamp attempt blocked"
 expect tool_fire "→ FIRED" "tool fire: valid fire after clamp verify"
