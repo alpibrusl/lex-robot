@@ -154,6 +154,21 @@ if grep -qF "atlas earned in 2 apps under one identity" <<<"$pr"; then pass "por
 if grep -qF "impersonation rejected=1" <<<"$pr"; then pass "identity: impersonation (same did, different key) earns nothing"; else bad "identity: impersonation not rejected"; fi
 if grep -qF "tampered submission credited=0" <<<"$pr"; then pass "identity: tampered trail breaks the signature — earns nothing"; else bad "identity: tampered submission not rejected"; fi
 
+# The control plane (the kernel, #73): issue / scope / revoke capability tokens,
+# with a reviewable trail. A valid, unexpired, unrevoked token is admitted and
+# its embedded Grant still gates concrete commands through grant.lex's own
+# checks (the control plane doesn't bypass the physical layer); a token
+# presented by the wrong subject, a revoked token, an expired token, and a
+# forged token are all refused, and every decision lands on the trail.
+echo "== control plane =="
+cpo="$(lex run --allow-effects io,sql,time,fs_write,crypto examples/control_plane_demo.lex run 2>/dev/null | tr -d '\r')"
+if grep -qF "1. valid, right subject] ADMITTED" <<<"$cpo" && grep -qF "denied — control plane doesn't bypass the physical layer" <<<"$cpo"; then pass "control plane: valid token admitted, out-of-workspace still refused by grant.lex"; else bad "control plane: valid-token admission or composability check failed"; echo "$cpo" | sed 's/^/      /'; fi
+if grep -qF "3. wrong subject presents it] REFUSED — token not issued to this subject" <<<"$cpo"; then pass "control plane: token refused for the wrong subject"; else bad "control plane: wrong-subject refusal missing"; fi
+if grep -qF "4. revoked] REFUSED — token revoked" <<<"$cpo"; then pass "control plane: revoked token id is refused"; else bad "control plane: revocation not enforced"; fi
+if grep -qF "5. expired] REFUSED — token expired" <<<"$cpo"; then pass "control plane: expired token is refused"; else bad "control plane: expiry not enforced"; fi
+if grep -qF "6. forged (attacker's key)] REFUSED — signature invalid" <<<"$cpo"; then pass "control plane: forged token (attacker's key) is refused"; else bad "control plane: forged token not rejected"; fi
+if grep -qF "review trail: 1 issued, 1 admitted, 4 refused, 1 revoked" <<<"$cpo"; then pass "control plane: every issue/admit/refuse/revoke decision is on the reviewable trail"; else bad "control plane: review trail counts wrong"; fi
+
 echo
 if [ "$fail" -eq 0 ]; then echo "ALL GREEN"; else echo "FAILURES ABOVE"; fi
 exit "$fail"

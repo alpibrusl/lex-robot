@@ -792,6 +792,36 @@ That's the roadmap's exit criterion — *an agent carries identity + reputation
 between two different apps* — with the control plane (issue/scope/revoke grants)
 as the next kernel slice.
 
+## The control plane: issue, scope, and revoke grants ([#73](https://github.com/alpibrusl/lex-robot/issues/73))
+
+Every Grant so far has been a **literal hardcoded** into whichever demo
+constructs it — no record of who authorized it, for how long, or how to take it
+back. The control plane (`src/control_plane.lex`) adds that missing verb set: an
+**issuer** (a `did:lex`, holding a signing key) issues a scoped, time-boxed,
+**revocable token** to a **subject** `did:lex`. The token carries the actual
+Grant unchanged — nothing about capability *checking* changes; the control
+plane governs how a Grant came to exist, not what it permits:
+
+```sh
+lex run --allow-effects io,sql,time,fs_write,crypto examples/control_plane_demo.lex run
+#   [1. valid, right subject] ADMITTED — in-workspace move: permitted; out-of-workspace
+#       move: denied — control plane doesn't bypass the physical layer; 99N grasp clamped to 20N
+#   [3. wrong subject presents it] REFUSED — token not issued to this subject
+#   [4. revoked]                   REFUSED — token revoked
+#   [5. expired]                   REFUSED — token expired
+#   [6. forged (attacker's key)]   REFUSED — signature invalid
+#   review trail: 1 issued, 1 admitted, 4 refused, 1 revoked — every decision is on the record
+```
+
+A validly-issued token still composes with every existing physical check —
+`grant.in_workspace`/`clamp_grip` still refuse an out-of-bounds command under an
+admitted token, the same as any hardcoded Grant. What's new is that possessing
+the token's bytes isn't possessing the authority: a token presented by the wrong
+subject, a revoked token id, an expired token, and a token forged by a different
+signing key are all refused — and every issue/admit/refuse/revoke decision is
+written to a lex-trail log, so the control plane is **reviewable**, not just
+enforced.
+
 ## How it fits the ecosystem
 - **lex-os** — runs `lex-robot` as a supervised box; the grant = physical safety
   envelope + budgets; supervisor can kill/reprovision.
