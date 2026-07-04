@@ -36,6 +36,7 @@ XML = """
 <mujoco model="xlerobot_room">
   <option timestep="0.005"/>
   <worldbody>
+    <light pos="2 1.5 3" dir="0 0 -1" diffuse="0.9 0.9 0.9"/>
     <geom name="floor" type="plane" size="4 3 0.1" pos="2 1.5 0" rgba="0.25 0.27 0.25 1"/>
     <body name="counter" pos="3.4 1.0 0.4">
       <geom type="box" size="0.3 0.6 0.4" rgba="0.5 0.42 0.3 1"/>
@@ -50,6 +51,7 @@ XML = """
       <joint name="cart_y" type="slide" axis="0 1 0" damping="8"/>
       <geom type="box" size="0.22 0.18 0.15" mass="8" rgba="0.2 0.35 0.55 1"/>
       <site name="cart_center" pos="0 0 0" size="0.02" rgba="0.4 0.8 1 1"/>
+      <camera name="head" pos="0.1 0 0.45" xyaxes="0 -1 0 0 0 1"/>
     </body>
     <body name="ee_left" mocap="true" pos="0.75 1.65 0.55">
       <geom type="sphere" size="0.03" contype="0" conaffinity="0" rgba="0.3 0.9 0.5 1"/>
@@ -227,6 +229,22 @@ class XLeSim:
         self.d.eq_active[eid] = 1
         mujoco.mj_forward(self.m, self.d)
         return {"outcome": "reached", "detail": f"{arm} gripper welded the cup (dist {dist:.3f}m)"}
+
+    def render_camera(self, name="head", width=320, height=240):
+        """Offscreen render of a scene camera (the 0.4.0 head cam analogue).
+        Returns an HxWx3 uint8 array, or None when no GL backend is available
+        (headless CI without EGL/osmesa) — callers degrade to an explicit
+        error rather than fake pixels."""
+        try:
+            if not hasattr(self, "_renderer"):
+                self._renderer = mujoco.Renderer(self.m, height, width)
+            self._renderer.update_scene(self.d, camera=name)
+            img = self._renderer.render()
+            # A silently-black frame means the software GL stack is broken —
+            # treat it the same as no renderer (honesty over fake imagery).
+            return img if img.any() else None
+        except Exception:
+            return None
 
     def release(self, arm):
         was = bool(self.d.eq_active[self.weld[arm]])

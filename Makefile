@@ -2,7 +2,7 @@
 # python3 (no pip). The ML demos (keep-out / MuJoCo / learned policy) need the
 # Python deps in sidecar/requirements.txt — see the README dependency matrix.
 
-.PHONY: help check smoke demo grant task budget depot xlerobot xlerobot-task xlerobot-sim keepout dynamic_keepout tool_fire mcp-grant deps clean
+.PHONY: help check smoke demo grant task budget depot xlerobot xlerobot-task xlerobot-voice xlerobot-sim keepout dynamic_keepout tool_fire mcp-grant deps clean
 
 help: ## Show this help
 	@grep -hE '^[a-z-]+:.*##' $(MAKEFILE_LIST) | sed -E 's/:.*## /\t/' | sort
@@ -33,6 +33,9 @@ xlerobot: ## XLeRobot dual-arm + base governance demo, stub sidecar (no ML deps)
 
 xlerobot-task: ## Fetch-the-Cup as a VERIFIED robot_task: trail -> referee -> ranked (no ML deps)
 	@bash scripts/demo.sh xlerobot_task
+
+xlerobot-voice: ## Voice goal + camera + mic-refusal: sensors as granted capabilities (no ML deps)
+	@bash scripts/demo.sh xlerobot_voice
 
 xlerobot-sim: ## Same demo against real MuJoCo physics (NEEDS: pip install mujoco numpy)
 	@python3 sidecar/xlerobot_mujoco_sidecar.py & echo $$! > /tmp/lex-robot-xle.pid; \

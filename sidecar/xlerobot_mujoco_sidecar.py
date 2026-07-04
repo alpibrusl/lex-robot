@@ -29,6 +29,7 @@ HOST = "127.0.0.1"
 PORT = int(os.environ.get("LEX_ROBOT_SIDECAR_PORT", "8900"))
 HARD_GRIP_N = float(os.environ.get("LEX_XLE_HARD_GRIP_N", "25"))
 HARD_SPEED_MPS = float(os.environ.get("LEX_XLE_HARD_SPEED_MPS", "1.0"))
+CANNED_TRANSCRIPT = os.environ.get("LEX_XLE_TRANSCRIPT", "fetch the cup to the table")
 
 _LOCK = threading.Lock()
 SIM = XLeSim()
@@ -64,6 +65,27 @@ def handle_skill(name, args):
         return {"names": [f"{arm}_{j}" for j in ARM_JOINTS],
                 "positions": [*obs["ee"][arm], 0.0, 0.0, grip],
                 "velocities": [0.0] * 6}
+    if name == "read_camera":
+        # Offscreen render of the scene's head camera — the sim analogue of the
+        # 0.4.0 head cam. On hosts without a GL backend the render is
+        # unavailable and we say so explicitly rather than returning fake pixels.
+        img = SIM.render_camera(args.get("name", "head"))
+        if img is None:
+            return {"width": 0, "height": 0, "jpeg_b64": "",
+                    "error": "render unavailable (no GL backend on this host)"}
+        import base64
+        import io as _io
+
+        from PIL import Image
+        buf = _io.BytesIO()
+        Image.fromarray(img).save(buf, format="JPEG", quality=80)
+        return {"width": int(img.shape[1]), "height": int(img.shape[0]),
+                "jpeg_b64": base64.b64encode(buf.getvalue()).decode()}
+    if name == "listen":
+        # No audio in the physics sim — same canned-transcript stub as Tier 1,
+        # so the voice-goal flow runs against either tier unchanged.
+        return {"transcript": CANNED_TRANSCRIPT, "confidence": 1.0,
+                "seconds": int(args.get("seconds", 3))}
     if name == "move_base":
         speed = min(float(args.get("speed", 0.3)), HARD_SPEED_MPS)  # firmware floor
         return SIM.drive(float(args.get("x", 0.0)), float(args.get("y", 0.0)), speed)

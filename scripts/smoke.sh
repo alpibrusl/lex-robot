@@ -52,6 +52,8 @@ expect xlerobot "denied: skill move_base not in grant" "xlerobot: arm grant hold
 expect xlerobot_task "governed_fetch   verified=yes legal=yes goal=yes" "xlerobot task: governed fetch verifies through the robot_task referee"
 expect xlerobot_task "DISQUALIFIED" "xlerobot task: forged over-grant entry is disqualified"
 expect xlerobot_task "submission written" "xlerobot task: portable JSONL submission is written"
+expect xlerobot_voice "voice goal: fetch the cup to the table" "xlerobot voice: spoken transcript becomes the human goal"
+expect xlerobot_voice "denied: skill listen not in grant" "xlerobot voice: mic-less grant refuses listen at the capability layer"
 expect tool_fire "BLOCKED: target outside tool firing zone" "tool fire: out-of-zone attempts blocked"
 expect tool_fire "BLOCKED: workpiece not clamped" "tool fire: pre-clamp attempt blocked"
 expect tool_fire "→ FIRED" "tool fire: valid fire after clamp verify"

@@ -430,6 +430,27 @@ capsule's `base` block (floor area + speed), and a granted skill with no
 mediation rule is refused, never admitted by fallthrough. See
 [`box/README.md`](box/README.md) §5 for the XLeRobot-in-the-box run.
 
+**Camera + microphone — sensors as granted capabilities** (`make
+xlerobot-voice`): the 0.4.0's head camera and mic are governed like actuation.
+`read_camera` and the new `listen` skill live in `src/sense.lex` — a
+`[net, sense]`-only module, so a sensing program never inherits `[actuate]`
+surface — and the mic is explicitly grant-gated ("can this program hear the
+room?" is a typed, refusable question). The demo closes the human_goal loop by
+voice: the spoken transcript becomes the run's goal (the sidecar transcribes
+locally — raw audio never crosses into Lex or the trail), the head camera
+returns a frame under the same grant, and a mic-less grant is refused at the
+capability layer before any request is sent. The MuJoCo tier renders the head
+camera offscreen (real pixels on hosts with a GL backend; an explicit error,
+never fake imagery, on headless boxes). On hardware, the `# REAL:` seams are
+a LeRobot camera grab and mic capture + local Whisper.
+
+```sh
+make xlerobot-voice
+#   voice goal: fetch the cup to the table        ← the human goal, spoken
+#   head camera frame: {"width": 640, ...}
+#   muted robot → denied: skill listen not in grant   ← NEVER SENT
+```
+
 **The first game — Fetch the Cup, verified** (`make xlerobot-task`): the
 mission runs as a competition entry. Every actuation is recorded to a
 hash-chained trail as a structured SkillOutcome — a base drive is a

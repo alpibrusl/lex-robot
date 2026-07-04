@@ -50,6 +50,8 @@ PORT = int(os.environ.get("LEX_ROBOT_SIDECAR_PORT", "8900"))
 HARD_GRIP_N = float(os.environ.get("LEX_XLE_HARD_GRIP_N", "25"))
 HARD_SPEED_MPS = float(os.environ.get("LEX_XLE_HARD_SPEED_MPS", "1.0"))
 USE_HW = os.environ.get("LEX_ROBOT_HW", "0") == "1"
+# Stub transcript for the mic (override to script voice demos offline).
+CANNED_TRANSCRIPT = os.environ.get("LEX_XLE_TRANSCRIPT", "fetch the cup to the table")
 
 ARM_JOINTS = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"]
 
@@ -102,8 +104,18 @@ class XLeRobot:
         return dict(self.base)
 
     def read_camera(self, name):
-        # REAL: grab a frame from the head / wrist camera and JPEG-encode it.
+        # REAL: grab a frame from the head / wrist camera and JPEG-encode it
+        # (0.4.0 head cam is a UVC webcam or RealSense — both stock LeRobot
+        # camera configs; the SO-101 wrist cams ride the arms).
         return {"width": 640, "height": 480, "jpeg_b64": ""}
+
+    def listen(self, seconds):
+        # REAL: capture `seconds` of audio from the head cam's mic (e.g.
+        # sounddevice/arecord) and transcribe LOCALLY (e.g. faster-whisper).
+        # Only the transcript leaves this process — raw audio never crosses
+        # into Lex or the trail. The stub returns a canned transcript so the
+        # voice-goal demo runs offline.
+        return {"transcript": CANNED_TRANSCRIPT, "confidence": 1.0, "seconds": seconds}
 
     # ---- actuation -----------------------------------------------------------
     def move_arm(self, arm, x, y, z):
@@ -170,6 +182,8 @@ def handle_skill(name, args):
         return ROBOT.read_base()
     if name == "read_camera":
         return ROBOT.read_camera(args.get("name", "head"))
+    if name == "listen":
+        return ROBOT.listen(int(args.get("seconds", 3)))
     if name == "move_arm":
         return ROBOT.move_arm(args.get("arm", "left"), float(args.get("x", 0.2)),
                               float(args.get("y", 0.0)), float(args.get("z", 0.2)))

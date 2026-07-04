@@ -22,6 +22,7 @@ only caller; it adds effect typing, grant enforcement, and the audit trail.
 | `run_policy` | `{ "name","goal","budget_ms" }` | `{ "status": "started" }` (async — see below) |
 | `policy_status` | `{}` | `{ "status": "running" }` or `{ "status": "done", "outcome": "...", "detail": "" }` |
 | `record_episode` | `{ "task": "..." }` | `{ "episode_id": "...", "frames": N, "path": "..." }` |
+| `listen` | `{ "seconds": N }` | `{ "transcript": "...", "confidence": 0.9 }` — mic capture + LOCAL transcription; raw audio never leaves the sidecar |
 
 ### `run_policy` is asynchronous
 A full closed-loop rollout runs tens of seconds — longer than the Lex `std.http`
