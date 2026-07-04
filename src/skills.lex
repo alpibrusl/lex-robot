@@ -16,6 +16,8 @@
 
 import "std.str" as str
 
+import "std.int" as int
+
 import "std.float" as flt
 
 import "std.list" as list
@@ -25,6 +27,8 @@ import "./types" as t
 import "./grant" as grant
 
 import "./client" as client
+
+import "./sense" as sense
 
 # ── JSON helpers (manual; scaffold avoids a json dep) ────────────────────────
 fn f(x :: Float) -> Str {
@@ -51,24 +55,10 @@ fn parse_outcome(resp :: Str) -> t.Outcome {
   }
 }
 
-# ── Tiny flat-JSON float extractor (scaffold; avoids a json dep) ─────────────
-fn nth1(xs :: List[Str]) -> Str {
-  match list.head(list.tail(xs)) { Some(v) => v, None => "" }
-}
-
-fn head_or(xs :: List[Str], dflt :: Str) -> Str {
-  match list.head(xs) { Some(v) => v, None => dflt }
-}
-
-# Extract a numeric field from a flat JSON object. key e.g. "\"x\":".
-fn jfloat(json :: Str, key :: Str, dflt :: Float) -> Float {
-  let seg := nth1(str.split(json, key))
-  let tok := head_or(str.split(head_or(str.split(seg, ","), seg), "}"), seg)
-  match str.to_float(str.trim(tok)) {
-    Some(v) => v,
-    None => dflt,
-  }
-}
+# ── Tiny flat-JSON float extractor ───────────────────────────────────────────
+# Lives in ./sense (the [net, sense]-only module); a thin delegate keeps the
+# local name for this module's parsers.
+fn jfloat(json :: Str, key :: Str, dflt :: Float) -> Float { sense.jfloat(json, key, dflt) }
 
 # ── Step-wise control (lets the Lex grant vet each policy command) ───────────
 fn reset_episode(r :: t.Robot, name :: Str) -> [net] Result[Str, Str] {
@@ -134,13 +124,12 @@ fn disconnect_charger(r :: t.Robot) -> [net, sense, actuate] t.Outcome {
 }
 
 # ── Sensing ──────────────────────────────────────────────────────────────────
-fn read_joints(r :: t.Robot) -> [net, sense] Result[Str, Str] {
-  client.call(r.sidecar_url, "read_joints", "{}")
-}
+# The sensing half of the surface lives in ./sense ([net, sense] only), so a
+# sensing-only program can import it without inheriting this module's
+# [actuate] surface; delegates keep the public names for actuating programs.
+fn read_joints(r :: t.Robot) -> [net, sense] Result[Str, Str] { sense.read_joints(r) }
 
-fn read_camera(r :: t.Robot, name :: Str) -> [net, sense] Result[Str, Str] {
-  client.call(r.sidecar_url, "read_camera", str.join(["{\"name\":\"", name, "\"}"], ""))
-}
+fn read_camera(r :: t.Robot, name :: Str) -> [net, sense] Result[Str, Str] { sense.read_camera(r, name) }
 
 # Current position of the bystander/person in the workspace (normalized [0,1]).
 # Used by the dynamic keep-out demo to compute a live exclusion box each step.
@@ -321,23 +310,8 @@ fn move_base(r :: t.Robot, target :: t.Vec3, speed :: Float) -> [net, sense, act
   }
 }
 
-# Read the base's current floor pose (x, y, heading in detail JSON). A response
-# without an "x" field (e.g. {"error":"unknown skill"} from the wrong sidecar on
-# the shared port) is an Err — never silently decoded as a pose at the origin,
-# because this reading may be recorded into a verified trail.
-fn read_base(r :: t.Robot) -> [net, sense] Result[t.Vec3, Str] {
-  match client.call(r.sidecar_url, "read_base", "{}") {
-    Err(e) => Err(e),
-    Ok(s) => {
-      if str.contains(s, "\"error\"") {
-        Err(str.concat("read_base: ", s))
-      } else {
-        if str.contains(s, "\"x\"") {
-          Ok({ x: jfloat(s, "\"x\":", 0.0), y: jfloat(s, "\"y\":", 0.0), z: 0.0 })
-        } else {
-          Err(str.concat("read_base: no pose in response: ", s))
-        }
-      }
-    },
-  }
-}
+# Microphone (grant-gated, privacy-sensitive) — see sense.listen.
+fn listen(r :: t.Robot, seconds :: Int) -> [net, sense] Result[Str, Str] { sense.listen(r, seconds) }
+
+# Base floor pose (refuses unparseable responses) — see sense.read_base.
+fn read_base(r :: t.Robot) -> [net, sense] Result[t.Vec3, Str] { sense.read_base(r) }
