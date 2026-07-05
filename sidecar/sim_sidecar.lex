@@ -53,6 +53,7 @@ import "std.iter" as iter
 import "lex-schema/json_value" as jv
 
 import "../src/seller_llm" as sllm
+import "../src/notary_npc" as npc
 
 import "lex-games/src/lex_games" as game
 
@@ -1316,6 +1317,117 @@ fn stock_list_json(db :: Db, stall :: Str) -> [sql] Str {
   }
 }
 
+# ── lex-games: Stamp of Destiny — a Junior Notary's capability-gated stamp ─────
+# A comedic point-and-click case: shipwrecked salesman Milo Quill was mistaken
+# for the incoming Notary and handed the Guild Stamp. Whatever he notarizes
+# becomes real — but his license (a capability grant wearing a costume) only
+# covers a fixed set of chit CATEGORIES. An out-of-scope category is refused
+# before it ever reaches the stamp (⛔ capability denied, not "bad luck"); an
+# in-scope chit can still be stamped upside-down, which is legal but reverses
+# the claim (subject ↔ predicate) — legal, just useless. Only the right
+# category in the right orientation actually solves Bosun Kettle's case. Every
+# legal stamp is hash-chained; lex-games/src/games/notary.lex independently
+# re-derives legality from the recorded category — it never trusts a stamp's
+# own "legal" claim, so a forged out-of-license stamp is still caught even if
+# its hashes are intact.
+fn notary_license_allow_json() -> Str { "[\"goods_certification\",\"harbor_permit\",\"minor_identity\"]" }
+fn notary_license_deny_json()  -> Str { "[\"species_declaration\",\"title_of_nobility\",\"death_declaration\"]" }
+fn notary_permitted(category :: Str) -> Bool {
+  (category == "goods_certification" or category == "harbor_permit" or category == "minor_identity")
+    and not (category == "species_declaration" or category == "title_of_nobility" or category == "death_declaration")
+}
+fn notary_max_stamps() -> Int { 5 }
+
+# The case's two candidate chits. Option 0 is the tempting shortcut Bosun keeps
+# pushing for (outside a Junior Notary's authority); option 1 is the one that's
+# actually in scope, and only its right-side-up orientation solves the case.
+fn notary_category(option :: Int) -> Str { if option == 0 { "species_declaration" } else { "goods_certification" } }
+fn notary_claim(option :: Int, orientation :: Str) -> Str {
+  if option == 0 { "These eels are hereby a protected species (exempt from tax)" } else {
+    if orientation == "reversed" { "Haddock is hereby declared eels" } else { "This barrel is hereby 100% haddock, filleted" }
+  }
+}
+fn notary_options_json() -> Str {
+  str.join(["[{\"option\":0,\"category\":\"", notary_category(0), "\",\"claim\":\"", notary_claim(0, "normal"),
+            "\"},{\"option\":1,\"category\":\"", notary_category(1), "\",\"claim_normal\":\"", notary_claim(1, "normal"),
+            "\",\"claim_reversed\":\"", notary_claim(1, "reversed"), "\"}]"], "")
+}
+
+fn notary_secret() -> Bytes { bytes.from_str("lexgames-notary-secret-seed-0000") }
+fn notary_pubkey() -> [crypto] Str { match crypto.ed25519_public_key(notary_secret()) { Ok(pk) => crypto.base64url_encode(pk), Err(_) => "" } }
+
+fn notary_stamps_used(db :: Db) -> [sql] Int { get_state_int(db, "notary_stamps_used") }
+fn notary_solved(db :: Db) -> [sql] Bool { get_state(db, "notary_solved") == "1" }
+fn notary_over(db :: Db) -> [sql] Bool { get_state(db, "notary_over") == "1" }
+fn notary_talked(db :: Db) -> [sql] Bool { get_state(db, "notary_talked") == "1" }
+
+fn notary_state(db :: Db) -> [sql] Str {
+  str.join(["{\"stamps_used\":", int.to_str(notary_stamps_used(db)), ",\"max_stamps\":", int.to_str(notary_max_stamps()),
+            ",\"solved\":", (if notary_solved(db) { "true" } else { "false" }), ",\"over\":", (if notary_over(db) { "true" } else { "false" }),
+            ",\"talked\":", (if notary_talked(db) { "true" } else { "false" }),
+            ",\"license\":{\"allow\":", notary_license_allow_json(), ",\"deny\":", notary_license_deny_json(), "}",
+            ",\"options\":", notary_options_json(), "}"], "")
+}
+fn notary_reset(db :: Db) -> [sql, time] Str {
+  let _ := set_state(db, "notary_stamps_used", "0")
+  let _ := set_state(db, "notary_solved", "0")
+  let _ := set_state(db, "notary_over", "0")
+  let _ := set_state(db, "notary_talked", "0")
+  let _ := set_state(db, "notary_chain", "")
+  let _ := insert_event(db, "{\"kind\":\"notary_start\"}")
+  "{\"status\":\"reset\"}"
+}
+fn notary_join(db :: Db, side :: Str) -> [sql, crypto, time] Str {
+  if side != "MILO" { "{\"error\":\"bad side\"}" } else {
+    let key := "notary_taken_MILO"
+    if get_state(db, key) == "1" { "{\"error\":\"side taken\",\"side\":\"MILO\"}" } else {
+      let _ := set_state(db, key, "1")
+      let _ := insert_event(db, "{\"kind\":\"notary_joined\"}")
+      str.join(["{\"side\":\"MILO\",\"token\":\"", game.issue_match_token(notary_secret(), "MILO", g_match(db, "notary"), time.now_ms() + 3600000), "\"}"], "")
+    }
+  }
+}
+fn notary_notarize(db :: Db, option :: Int, orientation :: Str, token :: Str) -> [sql, time, crypto, fs_write] Str {
+  if notary_over(db) { "{\"status\":\"over\"}" } else {
+    match game.gate(game.match_token_side(notary_pubkey(), token, g_match(db, "notary"), time.now_ms()), "MILO", "MILO") {
+      MoveReject(why) => str.join(["{\"status\":\"refused\",\"reason\":\"", why, "\"}"], ""),
+      MoveOk => {
+        let category := notary_category(option)
+        let claim := notary_claim(option, orientation)
+        let used := notary_stamps_used(db) + 1
+        let _ := set_state(db, "notary_stamps_used", int.to_str(used))
+        if not notary_permitted(category) {
+          let _ := insert_event(db, str.join(["{\"kind\":\"notary_denied\",\"category\":\"", category, "\",\"reason\":\"outside a Junior Notary's jurisdiction\",\"stamps_used\":", int.to_str(used), "}"], ""))
+          if used >= notary_max_stamps() {
+            let _ := set_state(db, "notary_over", "1")
+            let _ := insert_event(db, "{\"kind\":\"notary_out_of_stamps\"}")
+            "{\"status\":\"out_of_stamps\"}"
+          } else {
+            "{\"status\":\"denied\",\"reason\":\"outside jurisdiction\"}"
+          }
+        } else {
+          let payload := str.join(["{\"option\":", int.to_str(option), ",\"category\":\"", category, "\",\"orientation\":\"", orientation, "\",\"claim\":\"", claim, "\",\"legal\":true}"], "")
+          let prev := get_state(db, "notary_chain")
+          let head := str.slice(crypto.base64url_encode(crypto.blake2b(bytes.from_str(str.concat(prev, payload)))), 0, 10)
+          let _ := set_state(db, "notary_chain", head)
+          let _ := g_record(db, "notary", payload)
+          let solved := option == 1 and orientation == "normal"
+          let _ := if solved { set_state(db, "notary_solved", "1") } else { () }
+          let _ := if solved { set_state(db, "notary_over", "1") } else { () }
+          let _ := insert_event(db, str.join(["{\"kind\":\"notary_stamped\",\"category\":\"", category, "\",\"claim\":\"", claim, "\",\"solved\":", (if solved { "true" } else { "false" }), ",\"chain\":\"", head, "\"}"], ""))
+          str.join(["{\"status\":\"stamped\",\"claim\":\"", claim, "\",\"solved\":", (if solved { "true" } else { "false" }), "}"], "")
+        }
+      },
+    }
+  }
+}
+fn notary_dispatch(db :: Db, name :: Str, args :: jv.Json) -> [sql, time, crypto, fs_write] Str {
+  if name == "notary_join" { notary_join(db, jv_str_or(args, "side", "")) } else {
+  if name == "notary_reset" { notary_reset(db) } else {
+  if name == "notary_notarize" { notary_notarize(db, jv_int_or(args, "option", -1), jv_str_or(args, "orientation", "normal"), jv_str_or(args, "token", "")) } else {
+  notary_state(db) }}}
+}
+
 # ── Demo state (key/value store) ──────────────────────────────────────────────
 
 fn get_state(db :: Db, key :: Str) -> [sql] Str {
@@ -1649,6 +1761,19 @@ fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :
   } else {
   if name == "hx_join" or name == "hx_reset" or name == "hx_move" or name == "hx_state" {
     hx_dispatch(db, name, args)
+  } else {
+  if name == "notary_join" or name == "notary_reset" or name == "notary_notarize" or name == "notary_state" {
+    notary_dispatch(db, name, args)
+  } else {
+  if name == "notary_talk" {
+    let plea := if seller_on {
+      npc.plea("Bosun Kettle, a gruff ex-smuggler who owes the eel-catchers guild money and needs this barrel of live eels turned into cash fast", "You corner Milo Quill, the new Notary, hoping he doesn't know his own rulebook. You'd love the eels declared a protected species (tax-exempt), but you'd settle for having them certified as haddock.", seller_token, seller_project, seller_location, seller_base, seller_model)
+    } else {
+      "Look, friend — new Notary, right? Slow week, I bet. I've got a barrel here that just needs... the RIGHT paperwork. Say, a protected-species exemption? Or if that's above your stamp, I'll take a plain goods certificate. Filleted haddock. That's all I'm asking."
+    }
+    let _ := set_state(db, "notary_talked", "1")
+    let _ := insert_event(db, str.join(["{\"kind\":\"notary_dialogue\",\"line\":", json_str(plea), "}"], ""))
+    str.join(["{\"line\":", json_str(plea), "}"], "")
   } else {
   if name == "game_verify" { g_verify(db, jv_str_or(args, "game", "")) } else {
   if name == "fb_join" or name == "fb_reset" or name == "fb_strategy" or name == "fb_signal" or name == "fb_move" or name == "fb_verify" or name == "fb_state" {
@@ -1992,7 +2117,7 @@ fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :
     str.join(["{\"status\":\"dispatched\",\"callsign\":\"RESCUE-7\",\"eta_min\":8,\"capacity\":12}"], "")
   } else {
     str.join(["{\"error\":\"unknown skill: ", sq(name), "\"}"], "")
-  }}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}
+  }}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}
 }
 
 # ── Router ────────────────────────────────────────────────────────────────────
