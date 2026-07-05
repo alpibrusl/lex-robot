@@ -101,6 +101,14 @@ fn cfg_repo_root() -> [env] Str {
   match env.get("LEX_ROBOT_REPO_ROOT") { None => ".", Some(v) => v }
 }
 
+# The built React SPA's output dir (Vite's outDir), if this deploy has one —
+# e.g. "examples-dist". Empty (the default) means: serve the legacy static
+# dashboards exactly as before. Opt-in only, so every existing demo that never
+# sets this is completely unaffected.
+fn cfg_spa_dir() -> [env] Str {
+  match env.get("LEX_ARENA_SPA_DIR") { None => "", Some(v) => v }
+}
+
 fn db_path(port :: Int) -> Str {
   str.concat("/tmp/lex-sidecar-", str.concat(int.to_str(port), ".db"))
 }
@@ -1997,7 +2005,7 @@ fn json_resp_cors(body :: Str) -> resp.Response {
   cors_resp(resp.json(body))
 }
 
-fn build_router(db :: Db, stall :: Str, dash :: Str, html_path :: Str, examples_dir :: Str, physics_url :: Str, seller_on :: Bool, seller_token :: Str, seller_project :: Str, seller_location :: Str, seller_base :: Str, seller_model :: Str) -> router.Router {
+fn build_router(db :: Db, stall :: Str, dash :: Str, html_path :: Str, examples_dir :: Str, spa_dir :: Str, physics_url :: Str, seller_on :: Bool, seller_token :: Str, seller_project :: Str, seller_location :: Str, seller_base :: Str, seller_model :: Str) -> router.Router {
   # Shared wide-effect handler type required by route_effectful / route_stream.
   # Each closure captures db / stall / dash from the outer scope.
   let r0 := router.new()
@@ -2010,9 +2018,10 @@ fn build_router(db :: Db, stall :: Str, dash :: Str, html_path :: Str, examples_
     json_resp_cors("{\"ok\":true}")
   })
 
-  # GET / — serve dashboard HTML
+  # GET / — serve the built React SPA's index.html when LEX_ARENA_SPA_DIR is
+  # set (spa_dir non-empty); otherwise the legacy dashboard HTML, unchanged.
   let r3 := router.route_effectful(r2, "GET", "/", fn (_ :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
-    let full := str.join([examples_dir, "/", html_path], "")
+    let full := if str.is_empty(spa_dir) { str.join([examples_dir, "/", html_path], "") } else { str.join([spa_dir, "/index.html"], "") }
     match io.read(full) {
       Err(_) => resp.not_found(),
       Ok(body) => { body: body, status: 200, headers: map.from_list([("content-type", "text/html; charset=utf-8")]) },
@@ -2260,7 +2269,42 @@ fn build_router(db :: Db, stall :: Str, dash :: Str, html_path :: Str, examples_
     })
   } else { r16 }
 
-  r17
+  # GET /assets/:file — the SPA's hashed JS/CSS bundle (Vite's build output).
+  # Only meaningful when spa_dir is set; harmless 404 otherwise (no existing
+  # demo serves a top-level /assets/* path).
+  let r18 := router.route_effectful(r17, "GET", "/assets/:file", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+    if str.is_empty(spa_dir) { resp.not_found() } else {
+      match ctx.path_param(c, "file") {
+        None => resp.not_found(),
+        Some(f) => {
+          let safe := (str.ends_with(f, ".js") or str.ends_with(f, ".css")) and not str.contains(f, "..")
+          if not safe { resp.not_found() } else {
+            match io.read(str.join([spa_dir, "/assets/", f], "")) {
+              Err(_) => resp.not_found(),
+              Ok(body) => {
+                let ct := if str.ends_with(f, ".js") { "application/javascript; charset=utf-8" } else { "text/css; charset=utf-8" }
+                { body: body, status: 200, headers: map.from_list([("content-type", ct), ("cache-control", "public, max-age=31536000, immutable")]) }
+              },
+            }
+          }
+        },
+      }
+    }
+  })
+
+  # GET /play/:game — a client-side SPA route (React Router). Serve the same
+  # index.html; the SPA reads the URL and renders the right game. Only active
+  # when spa_dir is set.
+  let r19 := router.route_effectful(r18, "GET", "/play/:game", fn (_ :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+    if str.is_empty(spa_dir) { resp.not_found() } else {
+      match io.read(str.join([spa_dir, "/index.html"], "")) {
+        Err(_) => resp.not_found(),
+        Ok(body) => { body: body, status: 200, headers: map.from_list([("content-type", "text/html; charset=utf-8")]) },
+      }
+    }
+  })
+
+  r19
 }
 
 # ── Entry point ───────────────────────────────────────────────────────────────
@@ -2272,6 +2316,7 @@ fn run() -> [env, io, sql, net, time, proc, concurrent, crypto, random, fs_read,
   let html    := cfg_html()
   let root    := cfg_repo_root()
   let ex_dir  := str.concat(root, "/examples")
+  let spa_dir := if str.is_empty(cfg_spa_dir()) { "" } else { str.concat(root, str.concat("/", cfg_spa_dir())) }
   let db_file := db_path(port)
 
   let physics_url    := match env.get("PHYSICS_URL") { None => "", Some(v) => v }
@@ -2297,7 +2342,7 @@ fn run() -> [env, io, sql, net, time, proc, concurrent, crypto, random, fs_read,
         let a2a_now := time.now_ms()
         init_stall_a2a(db, stall, port, dash, a2a_now)
       } else { () }
-      let r := build_router(db, stall, dash, html, ex_dir, physics_url, seller_on, seller_token, seller_project, seller_location, seller_base, seller_model)
+      let r := build_router(db, stall, dash, html, ex_dir, spa_dir, physics_url, seller_on, seller_token, seller_project, seller_location, seller_base, seller_model)
       let handler := fn (req :: Request) -> [env, io, sql, net, time, proc, concurrent, crypto, random, fs_read, fs_write, llm] Response {
         let raw := { body: req.body, method: req.method, path: req.path, query: req.query, headers: req.headers }
         match router.dispatch_outcome(r, raw) {
