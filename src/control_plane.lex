@@ -40,11 +40,12 @@ import "./identity" as id
 # Grant, unchanged); everything else is the control plane's own bookkeeping.
 type Token = { token_id :: Str, subject_did :: Str, issuer_did :: Str, grant :: t.Grant, expires_at_ms :: Int, sig :: Str }
 
-# The canonical bytes the issuer signs — every field the verifier re-checks is
-# IN the claim, so a token can't be replayed for a different subject, issuer,
-# grant, or expiry without invalidating the signature.
+# The canonical claims JSON the issuer signs (identity.sign_claim mints it as a
+# real JWT) — every field the verifier re-checks is IN the claim, so a token
+# can't be replayed for a different subject, issuer, grant, or expiry without
+# invalidating the signature.
 fn claim_of(token_id :: Str, subject_did :: Str, issuer_did :: Str, grant :: t.Grant, expires_at_ms :: Int) -> Str {
-  str.join([token_id, "|", subject_did, "|", issuer_did, "|", json.stringify(grant), "|", int.to_str(expires_at_ms)], "")
+  str.join(["{\"token_id\":\"", token_id, "\",\"subject_did\":\"", subject_did, "\",\"issuer_did\":\"", issuer_did, "\",\"grant\":", json.stringify(grant), ",\"expires_at_ms\":", int.to_str(expires_at_ms), "}"], "")
 }
 
 # Issue a token: the issuer signs a claim binding {token_id, subject, grant,

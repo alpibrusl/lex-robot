@@ -728,13 +728,17 @@ auditable episode.
 The reputation above is DID-keyed, but so far attribution is only *claimed* — a
 submission names a `did:lex` and is trusted to be it. The kernel's identity slice
 makes it **owned**: an agent is an ed25519 keypair (`src/identity.lex`), so a
-reputation submission is **signed**, not claimed. The registry
+reputation submission is **signed**, not claimed — as a real
+[lex-jose](https://github.com/alpibrusl/lex-jose) **JWT** (EdDSA), not a
+hand-rolled detached signature: `{"alg":"EdDSA","typ":"JWT"}` over a JSON claims
+document, decodable by any JOSE-aware tool. The registry
 (`examples/agent_registry.lex`) binds a DID to its key on first sight and, from
 then on, refuses any submission signed by a different key — and each submission
 signs a claim over the *hash of the exact trail*, so a swapped or tampered trail
-breaks the signature. Verified-only is preserved by reusing the lex-games
-verifiers: reputation accrues **iff the signature verifies AND the trail replays
-clean**.
+breaks the signature (JWT decode also re-checks the header's `alg`, closing off
+algorithm-substitution attacks as part of the standard). Verified-only is
+preserved by reusing the lex-games verifiers: reputation accrues **iff the
+signature verifies AND the trail replays clean**.
 
 Because one profile records the distinct **apps** a DID earned in, reputation is
 **portable** — a single identity accumulates across apps, the whole point of a
@@ -761,9 +765,10 @@ Every Grant so far has been a **literal hardcoded** into whichever demo
 constructs it — no record of who authorized it, for how long, or how to take it
 back. The control plane (`src/control_plane.lex`) adds that missing verb set: an
 **issuer** (a `did:lex`, holding a signing key) issues a scoped, time-boxed,
-**revocable token** to a **subject** `did:lex`. The token carries the actual
-Grant unchanged — nothing about capability *checking* changes; the control
-plane governs how a Grant came to exist, not what it permits:
+**revocable token** to a **subject** `did:lex`, as a real lex-jose JWT (the same
+signing path as identity above). The token carries the actual Grant unchanged —
+nothing about capability *checking* changes; the control plane governs how a
+Grant came to exist, not what it permits:
 
 ```sh
 lex run --allow-effects io,sql,time,fs_write,crypto examples/control_plane_demo.lex run
