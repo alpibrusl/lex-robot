@@ -1,10 +1,12 @@
 # From game to platform — the Lex agent substrate
 
 This repo started as a handful of capability-gated games and a governed robot.
-It has quietly become something more general: a **substrate for verifiable,
-capability-bounded multi-agent activity**, with three apps already running on it.
-This note names that substrate, inventories what exists, what's missing, and
-where it goes next. It is a map, not a spec — see the linked code for the truth.
+It quietly became something more general: a **substrate for verifiable,
+capability-bounded multi-agent activity** — and has since split into three
+repos along that substrate/app boundary (see [#75](https://github.com/alpibrusl/lex-robot/issues/75)).
+This note names the substrate, inventories the three layers, what the kernel
+now delivers, and what's still missing. It is a map, not a spec — see the
+linked code for the truth.
 
 ## The substrate — three primitives
 
@@ -24,60 +26,82 @@ Together they turn any multi-agent activity into something **provable**: you can
 hand a third party a trail and a budget/grant, and they can re-derive exactly
 what happened and how well, without trusting you.
 
-## The apps (three, today)
+## The three layers (now three repos)
 
-| app | what it governs | key pieces |
-|-----|-----------------|------------|
-| **Games** | skill, fair play | 6 capability-gated turn games · N-player multi-model arena · ELO seasons (`lex-games` nbazaar / nbazaar_season; `examples/nplayer_bazaar*`) |
-| **Robots** | physical control | grant gate + clamps · episode trails · `robot_task` verifier (lex-os robot-in-box; `examples/task.lex`, `policy_eval`) |
-| **Commerce** | money | the **Magentic Bazaar**: `gate.spend` + x402 · LLM buyers/sellers · concurrent + live WS contention · seller reputation · live lobby boards (`examples/bazaar_*`) |
+| repo | role |
+|---|---|
+| **[lex-robot](https://github.com/alpibrusl/lex-robot)** (here) | robot governance (grant gate + clamps · episode trails · `robot_task` verifier) + the shared A2A/bazaar/haggle mechanics + the platform kernel (identity, reputation, control plane) |
+| **[lex-arena](https://github.com/alpibrusl/lex-arena)** | where games are played and hosted: the lobby, six capability-gated turn games, N-player Bazaar (ELO seasons), the BYO-key AI-agent arena, and the **Magentic Bazaar** (`gate.spend` + x402, LLM buyers/sellers, live WS contention, seller reputation) |
+| **[lex-games](https://github.com/alpibrusl/lex-games)** | the lean, trusted verifier both of the above depend on to replay a trail and recompute a verdict — kept small (std + lex-trail only) so the hosted verify-worker image stays minimal |
 
-The **Magentic Bazaar** is the most developed second app — eight increments from
-a single governed transaction to a live WebSocket market of remote agents with a
-self-refreshing reputation board. See [the Magentic Bazaar section of the
-README](../README.md) and `examples/bazaar_*`.
+lex-arena depends on lex-robot for the A2A core, the bazaar/haggle/seller-LLM
+mechanics, and the Lex-native play host (`sidecar/sim_sidecar.lex`) — those
+are also used by lex-robot's own robot-flavored A2A demos (`peer_meet`,
+`ev_fleet`, `trading`, `triage`, `station`, `heist`, `logistics`), so keeping
+them here (rather than duplicating, or fragmenting further) keeps one cohesive
+module graph. See lex-robot#75 for the full extraction reasoning and what
+moved where.
 
-## What's missing — the platform kernel
+## The platform kernel — delivered
 
-To go from "three demos on a substrate" to "a platform others build on":
+The kernel work identified below as "missing" is now built, in this repo:
 
-1. **Durable agent identity + portable reputation.** Reputation is recomputed
-   per-manifest today, not *owned* by an agent that carries it across sessions
-   and apps. There is no agent registry.
-2. **A control plane.** Capability/budget tokens and policies are hardcoded in
-   examples. There's no UI/API to issue, scope, revoke them, or to review trails.
-3. **Real settlement.** x402 is mocked (the real Solana `exact` leg exists in
-   `lex-guard`; it isn't wired live).
-4. **Hosted verify-as-a-service + trust anchoring.** Verification runs locally;
+1. **Durable `did:lex` identity + portable reputation** (`src/identity.lex`,
+   `examples/agent_registry.lex` — [#80](https://github.com/alpibrusl/lex-robot/pull/80)).
+   An agent is an ed25519 keypair; a reputation submission is **signed**, not
+   claimed. The registry binds a DID to its key on first sight and refuses a
+   later submission signed by a different key (impersonation earns nothing);
+   verified-only accrual is preserved by reusing `lex-games`' replay. One
+   identity now accumulates reputation **across apps** — proven live earning
+   in both the robot domain and agent-ops under one profile.
+2. **A control plane** (`src/control_plane.lex`,
+   `examples/control_plane_demo.lex` — [#81](https://github.com/alpibrusl/lex-robot/pull/81)).
+   An issuer signs a scoped, time-boxed, revocable Token to a subject `did:lex`;
+   `verify()` re-derives whether it's currently authoritative (right subject,
+   not revoked, not expired, valid signature) before the embedded Grant becomes
+   usable — composing with, not replacing, every existing physical check.
+
+Together these deliver the roadmap's exit criterion: *an agent carries
+identity + reputation between two different apps, and its authority is
+issued/scoped/revoked through a control plane rather than hardcoded.*
+
+## What's still missing
+
+1. **Real settlement.** x402 is mocked (the real Solana `exact` leg exists in
+   `lex-guard`; it isn't wired live) — lex-robot#24, #45.
+2. **Identity / signing primitives at the protocol level.** `lex-jose` (JWT /
+   SD-JWT) for portable, standards-based signed reputation and mandates —
+   lex-robot#23.
+3. **Hosted verify-as-a-service + trust anchoring.** Verification runs locally;
    a platform would offer hosted replay + anchor trail roots so third parties
    trust a score without re-running it.
-5. **SDK / onboarding.** A2A endpoints are documented, but there's no packaged
+4. **SDK / onboarding.** A2A endpoints are documented, but there's no packaged
    "bring your agent in 5 minutes" SDK or agent template.
-6. **Accounts / multi-tenancy** and **federation/discovery** (lex-slim is parked).
+5. **Accounts / multi-tenancy** and **federation/discovery** (lex-slim is parked).
 
 ## Roadmap — game → platform
 
-**Kernel first** (cross-cutting, unblocks every app): agent identity + persistent
-verifiable reputation + a minimal control plane (issue/scope/revoke tokens,
-browse trails).
-
-**Then lead with an app.** Candidates, in rough build-cost order:
+**Kernel: done** (see above). **Then lead with an app.** Candidates, in rough
+build-cost order:
 
 - **A — Verifiable agent eval / benchmark-as-a-service.** Submit a trail → a
   replay-verified score + ELO. Market: labs that need cheat-proof agent evals
   (most benchmarks are gameable; ours replays). Lowest new build — it *is* the
-  arena, hosted. **Recommended lead.**
+  arena, hosted. The robot-policy benchmark (lex-robot#65) and the XLeRobot
+  safe-RL/eval loop are early instances of exactly this. **Recommended lead.**
 - **B — Governed commerce, made real.** The bazaar with real x402 settlement,
-  agent identity, and a token-issuing control plane. The differentiated bet:
-  governed agent payments is hot (x402/AP2/ACP) and unsolved on the trust side.
+  now backed by durable identity and a token-issuing control plane. The
+  differentiated bet: governed agent payments is hot (x402/AP2/ACP) and
+  unsolved on the trust side.
 - **C — Auditable agent operations.** The governance + trail applied to
   enterprise agents doing real actions (spend, API calls, robot/finance ops) —
   audit-ready agent ops. Reuses robots + `lex-finance`/`lex-oms` + `lex-guard`.
-- **D — Agent reputation / trust network.** The kernel itself, productized: a
-  portable, recomputable reputation that travels across apps — a "credit score
-  for agents."
+- **D — lex-loom adoption.** The roadmap's recommended external wedge
+  (lex-lang#708): loom standing on this kernel turns it from a self-audited
+  sprint engine into a governed, independently-verifiable orchestrator whose
+  agents earn portable reputation.
 
 The unifying thesis: **agents earn portable, replay-verifiable reputation by
 doing capability-bounded work — playing, trading, operating — and consumers
-trust the scores because they can re-derive them.** Games proved it; the bazaar
-made it transact; the platform makes it durable.
+trust the scores because they can re-derive them.** Games proved it; the
+bazaar made it transact; the kernel makes it durable and portable.

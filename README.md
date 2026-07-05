@@ -92,13 +92,11 @@ src/
 examples/
   demo / task / budget / depot / safe_rollout / llm_planner   the robot governance demos
   policy_eval                                                 live policy-eval leaderboard (real rollouts → lex-games robot_task referee → ranked; forged over-grant run is disqualified)
-  auto_bazaar / seller_pricing_demo                           LLM marketplace — seller stalls + customer negotiate on LOCAL models (LITELLM_BASE_URL) or Vertex
-  haggle_demo                                                 multi-round buyer↔seller price haggling (offer/counter-offer to a deal) on local models
-  haggle_a2a_demo                                             DISTRIBUTED haggle — buyer here ↔ seller LLM in a stall sidecar, over A2A/HTTP (the `haggle` skill auto_bazaar uses)
-  bazaar / peer_meet / ev_fleet / logistics / tinder /
+  peer_meet / ev_fleet / logistics /
   trading / station / triage / heist                          agentic interaction demos (+ *_web.html, *_run.sh)
-  ttt / bazaar_game / tinder_game / ev_duel / heist_coop /
-  football / arena_demo                                       lex-games (+ *_bot.lex A2A opponents; arena = games→robots)
+  arena_demo                                                  robot control-authority arbitration (unrelated in name to lex-arena)
+  (games, the Magentic Bazaar, tinder, auto_bazaar, haggle*, seller_pricing_demo
+   now live in the lex-arena repo — a git dependency)
 sidecar/
   sim_sidecar.lex   pure-Lex dashboard + A2A peer + skill host (agentic demos & games)
   sim_sidecar.py    stdlib stub for the robot governance demos
@@ -657,20 +655,16 @@ What Lex enforces across them:
 - **lex-trail provenance** — `logistics` writes each supplier delivery as a
   hash-chained, tamper-evident log.
 - **Human-defined goals** — the goal is provided by a person at run time, not
-  hardcoded (`src/human_goal.lex`): the bazaar shopping list, the fleet budget,
-  and the triage evacuation order all wait on a human answer.
-- **Consent + selective disclosure** — `tinder` matches agents only on mutual
-  opt-in, and reveals the signed private card only after a match.
+  hardcoded (`src/human_goal.lex`): the fleet budget and the triage evacuation
+  order both wait on a human answer.
 - **LLM on the rails** — `trading`, `station`, `triage`, and `heist` let an LLM
   drive the decisions while the A2A grant layer gates every interaction.
 
 | demo | run | the interaction |
 |---|---|---|
-| Robot bazaar | `examples/auto_bazaar_run.sh` | an autonomous shopper navigates real physics to stalls and buys a human-given list across stops |
 | Peer meet | `examples/peer_meet_run.sh` | two robots that never met handshake via a QR bootstrap, then buy charge — payment gated by lex-guard |
 | EV fleet | `examples/ev_fleet_run.sh` | vehicles charge under a shared fleet budget token |
 | Logistics | `examples/logistics_run.sh` | supplier agents restock the bazaar with a hash-chained provenance trail |
-| Tinder | `examples/tinder_run.sh` | matchmaking by mutual consent; private cards revealed only on a match |
 | Trading floor | `examples/trading_run.sh` | LLM traders quote / bid / sell across commodity exchanges, tier-gated |
 | Space station | `examples/station_run.sh` | module robots answer a hull-breach emergency over A2A sessions |
 | Disaster triage | `examples/triage_run.sh` | sensor robots report casualties; evacuation needs human approval |
@@ -679,72 +673,32 @@ What Lex enforces across them:
 These pull the repo's Lex deps (lex-guard, lex-llm, lex-schema, lex-web, lex-jobs);
 the LLM-driven ones additionally need a lex-llm provider configured.
 
-## lex-games: capability-gated, verifiable, agent-playable games
+> The bazaar-shopping and matchmaking-style A2A demos (an autonomous shopper,
+> consent-based matchmaking) moved to
+> **[lex-arena](https://github.com/alpibrusl/lex-arena)** along with the games
+> and the Magentic Bazaar — see below.
 
-The [lex-games](https://github.com/alpibrusl/lex-games) package (`lex_games.lex`)
-is a tiny harness that makes a turn game **cheat-resistant by construction** and
-**verifiable** — the same way the robot grant does for actuation:
+## Games and commerce moved to lex-arena
 
-- `gate()` — a connection holds a signed Ed25519 token for exactly one side; it
-  **cannot** submit a move as another side, nor out of turn. The illegal call is
-  refused before any game logic runs (anti-cheat by construction).
-- `issue_match_token` / `match_token_side` — tokens are **match-bound and expiring**
-  (signed `game:<side>:<match>:<expiry>`), so a token from one match (or after it
-  ended) can't be replayed against another — the not_before/expires_at discipline
-  of [lex-guard](#how-it-fits-the-ecosystem), applied to a game side.
-- `record()` / `verify_log` — every applied move is appended to a hash-chained
-  lex-trail log; verify replays the match and re-checks every content-addressed id,
-  so editing any recorded move flips the verdict to invalid. Each game's web client
-  has a **Verify chain** button that surfaces this; it is demonstrated, not asserted.
+The capability-gated turn games (tic-tac-toe, Bazaar Draft, Consent Match,
+Charger Duel, Co-op Infiltration, Strategy Football, N-player Bazaar), the
+BYO-key AI-agent arena, and the **Magentic Bazaar** (governed agent commerce —
+`gate.spend` + x402, LLM buyers/sellers, concurrent + live WS contention,
+seller reputation, the lobby) all now live in
+**[lex-arena](https://github.com/alpibrusl/lex-arena)** — see
+[lex-robot#75](https://github.com/alpibrusl/lex-robot/issues/75) for why. The
+A2A core, the bazaar/haggle/seller-LLM mechanics, and the Lex-native play host
+(`sidecar/sim_sidecar.lex`) stay here — they're shared with this repo's own
+robot-flavored A2A demos above — so lex-arena depends on this repo for them.
 
-Each game runs on the Lex sidecar, ships a clickable retro web client (you are
-P1), and a `*_bot.lex` opponent that plays the other side **independently over
-real A2A** — proving the gate holds against an outside agent, not just the UI.
+### The Robot Arena
 
-| game | run | shape |
-|---|---|---|
-| Tic-tac-toe | `examples/ttt_run.sh` | the reference game — human X vs an A2A O-bot |
-| Bazaar Draft | `examples/bazaar_game_run.sh` | competitive: draft items under a budget; highest cart value wins |
-| Consent Match | `examples/tinder_game_run.sh` | double opt-in swipes; signed private card revealed only on a match |
-| Charger Duel | `examples/ev_duel_run.sh` | a knapsack race for chargers before a deadline; most kWh wins |
-| Co-op Infiltration | `examples/heist_coop_run.sh` | **cooperative**: two roles, only the right capability clears each stage; 3 wrong-role trips = busted |
-| Strategy Football | `examples/football_run.sh` | **you set the strategy**, a 2-agent squad coordinates over A2A (give-and-go) to score; match-bound tokens + Verify-chain |
-
-In every game a "play as the other side" cheat is refused at the capability layer
-and each move is hash-chained — the same properties, across six very different
-games.
-
-### lex-arena: a verifiable, BYO-key AI-agent arena
-
-`examples/arena_web.html` turns Bazaar Draft into a competition between **AI
-agents you configure**: paste a system prompt, pick a model, and bring your own
-API key (it stays in your browser — it never touches the server). Your LLM plays
-the contestant side (P1) against a server-internal "house" bot (P2); every
-contestant move still goes through the gated, signed, hash-chained path, so the
-result is **provably fair** — the match replays and verifies, and the score posts
-to a global leaderboard. Money/compute buys *attempts*, prompt+model quality buys
-*score*.
-
-```sh
-examples/arena_run.sh   # open http://localhost:8900
-```
-
-MVP scope: one game (Bazaar Draft), browser-side agent runner, BYO-key, no
-billing. The server adds `arena_new` (fresh match id + token + trail),
-`shop_house_move` (the house opponent), a `leaderboard`, and — crucially —
-**`shop_replay` / `arena_submit`**: the score is **recomputed server-side by
-replaying the recorded trail through the rules** (`game.all_events` + a
-deterministic re-run), never trusted from the client. Replay is rules-only — no
-LLM, CPU-cents — the "a submission is a trail, not a score" model (see the finance
-arena in loom-cloud/lex-oms-agent for the hosted version).
-
-### …and back to robots: the Robot Arena
-
-The same two primitives map straight onto robot governance: `gate()` is
-**control-authority arbitration** (which controller may drive the arm right now —
-teleop handoff / lockout), and `record()` is a **replayable, tamper-evident
-episode**. `examples/arena_demo.lex` shows it: one arm shared by a human
-TELEoperator and an LLM PLANner, each with a signed match-bound control token.
+The still-here robot demo is unrelated in name only to the moved games above:
+`gate()` here is **control-authority arbitration** (which controller may drive
+the arm right now — teleop handoff / lockout), and `record()` is a
+**replayable, tamper-evident episode**. `examples/arena_demo.lex` shows it: one
+arm shared by a human TELEoperator and an LLM PLANner, each with a signed
+match-bound control token.
 
 ```sh
 lex run --allow-effects crypto,fs_write,io,sql,time examples/arena_demo.lex run
@@ -761,37 +715,13 @@ block + force clamp, `src/grant.lex`); and the whole episode is a verifiable
 lex-trail chain. `gate` = who may act · `grant` = physical envelope · `record` =
 auditable episode.
 
-## The Magentic Bazaar — governed agent commerce
-
-The same three primitives that gate a robot — **capability · trail · replay** —
-also gate *money*. The Magentic Bazaar is a governed agent marketplace built on
-them: agents buy from agents under a **signed budget token**, every purchase is
-authorized by `lex-guard`'s spend gate, settled over the **x402** Solana `exact`
-rail (mock facilitator), and attested to a hash-chained trail that `lex-games`
-replays to recompute compliance — **a session is a trail, not a receipt.**
-
-It grew in eight increments, each a runnable example:
-
-| step | what | run |
-|------|------|-----|
-| governed transaction core | a buyer shops under a budget; over-cap / rogue-merchant / over-total spends are DENIED | `examples/bazaar_market_run.sh` |
-| LLM buyer | an open-weights model shops under the wall; a denial feeds back and it self-corrects | `examples/bazaar_llm_buyer_run.sh` |
-| seller reputation → lobby | per-seller revenue from *verified* sessions only → the lobby's TOP SELLERS board | `examples/bazaar_reputation_run.sh` |
-| concurrent multi-party | many buyers contend for scarce stock via a market actor (no double-sell); released items recirculate | `examples/bazaar_concurrent_run.sh` |
-| LLM-priced sellers | sellers price by personality; a gouge over the buyer's cap is refused by the gate, not by trust | `examples/bazaar_llm_sellers_run.sh` |
-| fully two-sided | LLM sellers price, an LLM buyer reasons over value and skips the gougers | `examples/bazaar_two_sided_run.sh` |
-| live WebSocket room | remote buyers race over WS; the room only arbitrates, each agent self-governs its own spend + trail | `examples/bazaar_room_run.sh` |
-| live boards | a worker regenerates both lobby leaderboards from real runs | `scripts/refresh_boards.sh` |
-
-The lobby (`examples/games_lobby.html`, served by `sidecar/sim_sidecar.lex`)
-surfaces two recomputed-from-trail boards — **★ MODEL LEADERBOARD** (ELO across
-N-player Bazaar matches) and **🏛 TOP SELLERS** (revenue across governed sessions)
-— at `/api/standings` and `/api/sellers`. Verification + ranking live in
-[lex-games](https://github.com/alpibrusl/lex-games) (`gbazaar`, `bazaar_season`).
-
 > **Stepping back:** games, robots, and commerce are three apps on one
-> substrate. See **[docs/PLATFORM.md](docs/PLATFORM.md)** for what that substrate
-> is, what's missing for a real platform, and where it goes next.
+> substrate, now split across three repos: this one (robots + the shared A2A/
+> commerce mechanics + the kernel), **[lex-arena](https://github.com/alpibrusl/lex-arena)**
+> (where games and the Magentic Bazaar are played and hosted), and
+> **[lex-games](https://github.com/alpibrusl/lex-games)** (the lean, trusted
+> verifier both depend on). See **[docs/PLATFORM.md](docs/PLATFORM.md)** for
+> the full substrate story.
 
 ## Portable identity: reputation an agent owns across apps ([#73](https://github.com/alpibrusl/lex-robot/issues/73))
 
@@ -822,8 +752,8 @@ One agent earns a verified trail in the **robot** domain (`robot_task`) *and* in
 **agent-ops** (`ops`), signs each, and its one profile carries the sum — while an
 impersonator (same DID, different key) and a tampered trail both earn nothing.
 That's the roadmap's exit criterion — *an agent carries identity + reputation
-between two different apps* — with the control plane (issue/scope/revoke grants)
-as the next kernel slice.
+between two different apps* — together with the control plane below
+(issue/scope/revoke grants).
 
 ## The control plane: issue, scope, and revoke grants ([#73](https://github.com/alpibrusl/lex-robot/issues/73))
 
@@ -856,6 +786,11 @@ written to a lex-trail log, so the control plane is **reviewable**, not just
 enforced.
 
 ## How it fits the ecosystem
+- **[lex-arena](https://github.com/alpibrusl/lex-arena)** — where games are
+  played and hosted, and the Magentic Bazaar; depends on this repo for the
+  shared A2A/bazaar core and the play host (`sidecar/sim_sidecar.lex`).
+- **[lex-games](https://github.com/alpibrusl/lex-games)** — the lean, trusted
+  verifier both this repo and lex-arena depend on to replay-verify a trail.
 - **lex-os** — runs `lex-robot` as a supervised box; the grant = physical safety
   envelope + budgets; supervisor can kill/reprovision.
 - **lex-loom** — task orchestration as an evidence-gated graph:
