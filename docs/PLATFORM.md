@@ -60,6 +60,12 @@ The kernel work identified below as "missing" is now built, in this repo:
    `verify()` re-derives whether it's currently authoritative (right subject,
    not revoked, not expired, valid signature) before the embedded Grant becomes
    usable — composing with, not replacing, every existing physical check.
+3. **Standards-based signing.** Both of the above sign as real
+   [lex-jose](https://github.com/alpibrusl/lex-jose) JWTs (EdDSA) rather than a
+   hand-rolled detached signature — a reputation claim or a capability token is
+   a genuine RFC 7519 token any JOSE-aware tool can decode, and verification
+   re-checks the protected header's `alg` (algorithm-substitution defense) as
+   part of the standard.
 
 Together these deliver the roadmap's exit criterion: *an agent carries
 identity + reputation between two different apps, and its authority is
@@ -69,8 +75,10 @@ issued/scoped/revoked through a control plane rather than hardcoded.*
 
 1. **Real settlement.** x402 is mocked (the real Solana `exact` leg exists in
    `lex-guard`; it isn't wired live) — lex-robot#24, #45.
-2. **Identity / signing primitives at the protocol level.** `lex-jose` (JWT /
-   SD-JWT) for portable, standards-based signed reputation and mandates —
+2. **SD-JWT + AP2 mandate types.** `lex-jose` has the core JWT/JWS/JWK stack
+   (HS256/HS512/EdDSA; ES256 pending a toolchain primitive) and this repo now
+   signs on it, but selective-disclosure (`sd_jwt.lex`) and the AP2
+   `CheckoutMandate`/`PaymentMandate` types are still on lex-jose's roadmap —
    lex-robot#23.
 3. **Hosted verify-as-a-service + trust anchoring.** Verification runs locally;
    a platform would offer hosted replay + anchor trail roots so third parties

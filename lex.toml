@@ -24,3 +24,6 @@ lex-games  = { git = "https://github.com/alpibrusl/lex-games" }
 lex-web    = { git = "https://github.com/alpibrusl/lex-web" }
 lex-jobs   = { git = "https://github.com/alpibrusl/lex-jobs" }
 lex-guard  = { git = "https://github.com/alpibrusl/lex-guard" }
+# src/identity.lex signs did:lex claims + control-plane tokens as real JWTs
+# (EdDSA) instead of a hand-rolled detached signature.
+lex-jose   = { git = "https://github.com/alpibrusl/lex-jose" }
