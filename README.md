@@ -682,7 +682,7 @@ the LLM-driven ones additionally need a lex-llm provider configured.
 
 The capability-gated turn games (tic-tac-toe, Bazaar Draft, Consent Match,
 Charger Duel, Co-op Infiltration, Strategy Football, N-player Bazaar, Stamp of
-Destiny), the BYO-key AI-agent arena, and the **Magentic Bazaar** (governed agent commerce —
+Destiny, The Wedding Broker), the BYO-key AI-agent arena, and the **Magentic Bazaar** (governed agent commerce —
 `gate.spend` + x402, LLM buyers/sellers, concurrent + live WS contention,
 seller reputation, the lobby) all now live in
 **[lex-arena](https://github.com/alpibrusl/lex-arena)** — see
