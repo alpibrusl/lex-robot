@@ -1380,12 +1380,13 @@ fn notary_reset(db :: Db) -> [sql, time] Str {
 }
 fn notary_join(db :: Db, side :: Str) -> [sql, crypto, time] Str {
   if side != "MILO" { "{\"error\":\"bad side\"}" } else {
-    let key := "notary_taken_MILO"
-    if get_state(db, key) == "1" { "{\"error\":\"side taken\",\"side\":\"MILO\"}" } else {
-      let _ := set_state(db, key, "1")
-      let _ := insert_event(db, "{\"kind\":\"notary_joined\"}")
-      str.join(["{\"side\":\"MILO\",\"token\":\"", game.issue_match_token(notary_secret(), "MILO", g_match(db, "notary"), time.now_ms() + 3600000), "\"}"], "")
-    }
+    # Single-player: Milo is the only side, so a re-join (e.g. a browser reload)
+    # always reclaims it and gets a fresh token — the capability is the
+    # Ed25519-signed token itself, and there is no opponent side to protect
+    # against. (A "side taken" lock only matters in the 2-player games.)
+    let _ := set_state(db, "notary_taken_MILO", "1")
+    let _ := insert_event(db, "{\"kind\":\"notary_joined\"}")
+    str.join(["{\"side\":\"MILO\",\"token\":\"", game.issue_match_token(notary_secret(), "MILO", g_match(db, "notary"), time.now_ms() + 3600000), "\"}"], "")
   }
 }
 fn notary_notarize(db :: Db, option :: Int, orientation :: Str, token :: Str) -> [sql, time, crypto, fs_write] Str {
@@ -1503,12 +1504,13 @@ fn wedding_reset(db :: Db) -> [sql, time] Str {
 }
 fn wedding_join(db :: Db, side :: Str) -> [sql, crypto, time] Str {
   if side != "PLANNER" { "{\"error\":\"bad side\"}" } else {
-    let key := "wedding_taken_PLANNER"
-    if get_state(db, key) == "1" { "{\"error\":\"side taken\",\"side\":\"PLANNER\"}" } else {
-      let _ := set_state(db, key, "1")
-      let _ := insert_event(db, "{\"kind\":\"wedding_joined\"}")
-      str.join(["{\"side\":\"PLANNER\",\"token\":\"", game.issue_match_token(wedding_secret(), "PLANNER", g_match(db, "wedding"), time.now_ms() + 3600000), "\"}"], "")
-    }
+    # Single-player: the planner is the only side, so a re-join (e.g. a browser
+    # reload) always reclaims it and gets a fresh token — the capability is the
+    # Ed25519-signed token itself, and there is no opponent side to protect
+    # against. (A "side taken" lock only matters in the 2-player games.)
+    let _ := set_state(db, "wedding_taken_PLANNER", "1")
+    let _ := insert_event(db, "{\"kind\":\"wedding_joined\"}")
+    str.join(["{\"side\":\"PLANNER\",\"token\":\"", game.issue_match_token(wedding_secret(), "PLANNER", g_match(db, "wedding"), time.now_ms() + 3600000), "\"}"], "")
   }
 }
 fn wedding_rule(db :: Db, guest :: Str, decision :: Str, token :: Str) -> [sql, time, crypto, fs_write] Str {
