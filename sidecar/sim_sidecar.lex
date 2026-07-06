@@ -1453,8 +1453,6 @@ fn wedding_guest_request(id :: Str) -> Str {
 }
 fn wedding_guest_cost_budget(id :: Str) -> Int { if id == "deb" { 150 } else { if id == "jonah" { 50 } else { 0 } } }
 fn wedding_guest_cost_slots(id :: Str) -> Int { 1 }
-fn wedding_budget_cap() -> Int { 200 }
-fn wedding_slots_cap() -> Int { 2 }
 
 fn wedding_secret() -> Bytes { bytes.from_str("lexgames-wedding-secret-seed-000") }
 fn wedding_pubkey() -> [crypto] Str { match crypto.ed25519_public_key(wedding_secret()) { Ok(pk) => crypto.base64url_encode(pk), Err(_) => "" } }
@@ -1487,9 +1485,39 @@ fn wedding_grudge_of(guest :: Str) -> Str {
   if guest == "jonah" { "shut down my toast" } else { "let me down" }}}
 }
 
+# ── P2: venue tiers, driven by standing ───────────────────────────────────────
+# Your reputation picks the wedding you get, and harder venues give you LESS
+# room, so more guests go home unhappy and the memory system bites faster.
+# Tiers only ever TIGHTEN the caps (slots <= 2), so recorded rulings still
+# verify against lex-games/wedding.lex's fixed ceiling — no verifier change.
+fn wedding_tier(rep :: Int) -> Int { if rep >= 60 { 3 } else { if rep >= 25 { 2 } else { 1 } } }
+fn wedding_tier_name(t :: Int) -> Str { if t >= 3 { "The society wedding" } else { if t == 2 { "Ballroom galas" } else { "Backyard weddings" } } }
+fn wedding_tier_next_at(t :: Int) -> Int { if t == 1 { 25 } else { if t == 2 { 60 } else { 0 } } }
+fn wedding_tier_slots(t :: Int) -> Int { if t >= 3 { 1 } else { 2 } }
+fn wedding_tier_budget(t :: Int) -> Int { if t == 2 { 150 } else { 200 } }
+fn wedding_slots_cap(db :: Db, did :: Str) -> [sql] Int { wedding_tier_slots(wedding_tier(wedding_career_rep(db, did))) }
+fn wedding_budget_cap(db :: Db, did :: Str) -> [sql] Int { wedding_tier_budget(wedding_tier(wedding_career_rep(db, did))) }
+
+# ── P2: the reputation economy ────────────────────────────────────────────────
+# rep now rises AND falls, weighted by memory. Denying someone who already
+# resents you costs more (they torch your name); winning back a cold or furious
+# guest pays the most (reconciliation). A career of burning the same person
+# spirals; making amends recovers. `before` is the guest's regard PRIOR to this
+# event's fallout.
+fn wedding_rep_delta(approved :: Bool, before :: Int) -> Int {
+  if approved {
+    if before <= -4 { 20 } else { if before < 0 { 14 } else { 8 } }
+  } else {
+    if before <= -4 { -18 } else { if before < 0 { -12 } else { -6 } }
+  }
+}
+fn wedding_mood_of(regard :: Int) -> Str {
+  if regard <= -4 { "furious" } else { if regard < 0 { "cold" } else { if regard > 0 { "warm" } else { "new" } } }
+}
+
 fn wedding_guest_json(db :: Db, did :: Str, id :: Str) -> [sql] Str {
   let regard := wedding_regard(db, did, id)
-  let mood := if regard < 0 { "cold" } else { if regard > 0 { "warm" } else { "new" } }
+  let mood := wedding_mood_of(regard)
   str.join(["{\"id\":\"", id, "\",\"name\":\"", wedding_guest_name(id), "\",\"request\":\"", wedding_guest_request(id),
             "\",\"cost_budget\":", int.to_str(wedding_guest_cost_budget(id)), ",\"cost_slots\":", int.to_str(wedding_guest_cost_slots(id)),
             ",\"decision\":\"", wedding_decision(db, id), "\",\"line\":", json_str(wedding_line(db, id)),
@@ -1508,11 +1536,14 @@ fn wedding_epilogue(db :: Db) -> [sql] Str {
 fn wedding_state(db :: Db, arg_did :: Str) -> [sql] Str {
   let over := wedding_over(db)
   let did := wedding_active_did(db, arg_did)
-  str.join(["{\"budget_cap\":", int.to_str(wedding_budget_cap()), ",\"budget_used\":", int.to_str(wedding_budget_used(db)),
-            ",\"slots_cap\":", int.to_str(wedding_slots_cap()), ",\"slots_used\":", int.to_str(wedding_slots_used(db)),
+  let rep := wedding_career_rep(db, did)
+  let tier := wedding_tier(rep)
+  str.join(["{\"budget_cap\":", int.to_str(wedding_budget_cap(db, did)), ",\"budget_used\":", int.to_str(wedding_budget_used(db)),
+            ",\"slots_cap\":", int.to_str(wedding_slots_cap(db, did)), ",\"slots_used\":", int.to_str(wedding_slots_used(db)),
             ",\"talked\":", (if wedding_talked(db) { "true" } else { "false" }), ",\"over\":", (if over { "true" } else { "false" }),
             ",\"settled\":", (if get_state(db, "wedding_settled") == "1" { "true" } else { "false" }),
-            ",\"career\":{\"did\":", json_str(did), ",\"rep\":", int.to_str(wedding_career_rep(db, did)), ",\"events\":", int.to_str(wedding_career_events(db, did)), "}",
+            ",\"career\":{\"did\":", json_str(did), ",\"rep\":", int.to_str(rep), ",\"events\":", int.to_str(wedding_career_events(db, did)),
+            ",\"tier\":", int.to_str(tier), ",\"tier_name\":", json_str(wedding_tier_name(tier)), ",\"next_at\":", int.to_str(wedding_tier_next_at(tier)), "}",
             ",\"guests\":[", wedding_guest_json(db, did, "deb"), ",", wedding_guest_json(db, did, "kamala"), ",", wedding_guest_json(db, did, "jonah"), "]",
             ",\"epilogue\":", json_str(if over { wedding_epilogue(db) } else { "" }), "}"], "")
 }
@@ -1558,11 +1589,12 @@ fn wedding_rule(db :: Db, guest :: Str, decision :: Str, token :: Str) -> [sql, 
             let _ := insert_event(db, str.join(["{\"kind\":\"wedding_ruled\",\"guest\":\"", guest, "\",\"decision\":\"deny\"}"], ""))
             wedding_maybe_finish(db)
           } else {
+            let edid := wedding_active_did(db, "")
             let cb := wedding_guest_cost_budget(guest)
             let cs := wedding_guest_cost_slots(guest)
             let bu := wedding_budget_used(db)
             let su := wedding_slots_used(db)
-            if bu + cb > wedding_budget_cap() or su + cs > wedding_slots_cap() {
+            if bu + cb > wedding_budget_cap(db, edid) or su + cs > wedding_slots_cap(db, edid) {
               let _ := insert_event(db, str.join(["{\"kind\":\"wedding_refused\",\"guest\":\"", guest, "\",\"reason\":\"not enough budget or accommodations left\"}"], ""))
               "{\"status\":\"refused\",\"reason\":\"not enough budget or accommodations left\"}"
             } else {
@@ -1590,6 +1622,12 @@ fn wedding_maybe_finish(db :: Db) -> [sql, time] Str {
     "{\"status\":\"ruled\",\"over\":false}"
   }
 }
+# The reputation a single guest's outcome is worth this event, from their regard
+# BEFORE the fallout is applied. Computed separately so settle can sum it before
+# any regard is mutated.
+fn wedding_guest_rep_delta(db :: Db, did :: Str, guest :: Str) -> [sql] Int {
+  wedding_rep_delta(wedding_decision(db, guest) == "approve", wedding_regard(db, did, guest))
+}
 # Apply one guest's fallout to the broker's persistent memory and return a JSON
 # summary of what changed (for the settlement screen). Approving lifts regard and
 # clears their grudge; denying lowers regard and records a specific grievance.
@@ -1604,27 +1642,37 @@ fn wedding_apply_fallout(db :: Db, did :: Str, guest :: Str) -> [sql] Str {
   let cleared := if approved and not str.is_empty(had) { had } else { "" }
   str.join(["{\"id\":\"", guest, "\",\"name\":\"", wedding_guest_name(guest), "\",\"approved\":", (if approved { "true" } else { "false" }),
             ",\"before\":", int.to_str(before), ",\"after\":", int.to_str(after), ",\"delta\":", int.to_str(after - before),
+            ",\"mood\":\"", wedding_mood_of(after), "\",\"rep_delta\":", int.to_str(wedding_rep_delta(approved, before)),
             ",\"grudge\":", json_str(new_grudge), ",\"cleared\":", json_str(cleared), "}"], "")
 }
 # Settle a finished event: write each guest's fallout back to persistent memory,
-# bump the career, and return a summary. Idempotent — a second call returns the
-# stored summary rather than applying the deltas twice.
+# move the career reputation (up OR down, weighted by who you burned or won
+# back), and report any promotion/demotion between venue tiers. Idempotent — a
+# second call returns the stored summary rather than applying the deltas twice.
 fn wedding_settle(db :: Db, arg_did :: Str) -> [sql, time] Str {
   if not wedding_over(db) { "{\"status\":\"not_ready\"}" } else {
     if get_state(db, "wedding_settled") == "1" { get_state(db, "wedding_fallout_json") } else {
       let did := wedding_active_did(db, arg_did)
+      # sum the rep swing from pre-fallout regards, BEFORE apply mutates anything
+      let rep_delta := wedding_guest_rep_delta(db, did, "deb") + wedding_guest_rep_delta(db, did, "kamala") + wedding_guest_rep_delta(db, did, "jonah")
       let deb_fb := wedding_apply_fallout(db, did, "deb")
       let kamala_fb := wedding_apply_fallout(db, did, "kamala")
       let jonah_fb := wedding_apply_fallout(db, did, "jonah")
-      let rep := wedding_career_rep(db, did) + 10
+      let old_rep := wedding_career_rep(db, did)
+      let raw := old_rep + rep_delta
+      let rep := if raw < 0 { 0 } else { raw }
       let evs := wedding_career_events(db, did) + 1
+      let old_tier := wedding_tier(old_rep)
+      let new_tier := wedding_tier(rep)
+      let move := if new_tier > old_tier { "promoted" } else { if new_tier < old_tier { "demoted" } else { "" } }
       let _ := set_state(db, str.join(["career_", did, "_rep"], ""), int.to_str(rep))
       let _ := set_state(db, str.join(["career_", did, "_events"], ""), int.to_str(evs))
       let _ := set_state(db, "wedding_settled", "1")
-      let summary := str.join(["{\"status\":\"settled\",\"rep\":", int.to_str(rep), ",\"events\":", int.to_str(evs),
-                               ",\"fallout\":[", deb_fb, ",", kamala_fb, ",", jonah_fb, "]}"], "")
+      let summary := str.join(["{\"status\":\"settled\",\"rep\":", int.to_str(rep), ",\"rep_delta\":", int.to_str(rep_delta), ",\"events\":", int.to_str(evs),
+                               ",\"tier\":", int.to_str(new_tier), ",\"tier_name\":", json_str(wedding_tier_name(new_tier)), ",\"move\":\"", move, "\",",
+                               "\"fallout\":[", deb_fb, ",", kamala_fb, ",", jonah_fb, "]}"], "")
       let _ := set_state(db, "wedding_fallout_json", summary)
-      let _ := insert_event(db, str.join(["{\"kind\":\"wedding_settled\",\"rep\":", int.to_str(rep), ",\"events\":", int.to_str(evs), "}"], ""))
+      let _ := insert_event(db, str.join(["{\"kind\":\"wedding_settled\",\"rep\":", int.to_str(rep), ",\"rep_delta\":", int.to_str(rep_delta), ",\"move\":\"", move, "\"}"], ""))
       summary
     }
   }
