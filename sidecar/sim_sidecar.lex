@@ -54,6 +54,7 @@ import "lex-schema/json_value" as jv
 
 import "../src/seller_llm" as sllm
 import "../src/notary_npc" as npc
+import "../src/wedding_npc" as wnpc
 
 import "lex-games/src/lex_games" as game
 
@@ -1428,6 +1429,139 @@ fn notary_dispatch(db :: Db, name :: Str, args :: jv.Json) -> [sql, time, crypto
   notary_state(db) }}}
 }
 
+# ── lex-games: The Wedding Broker — a fixed-authority negotiation game ────────
+# You're the planner (a stand-in dragged into the role days before the wedding).
+# Three guests — Deb (the groom's mother), Aunt Kamala, and Jonah (the best
+# man) — each want something. Your authority is a fixed budget AND a separate
+# "special accommodations" slot cap: the venue's hard logistics limit, which
+# money alone can't buy around. All three requests together cost exactly the
+# full budget but need one more slot than the venue allows — some guest gets
+# turned down no matter how well-funded you are. Every ruling (approve or
+# deny) is hash-chained; lex-games/src/games/wedding.lex independently
+# re-derives each approved guest's true cost from a fixed table rather than
+# trusting the recorded cost, so a forged ruling that understates a cost to
+# sneak more approvals in is still caught. The negotiation itself is chained
+# LLM turns, not a dialogue tree: each guest sees what the others just said
+# and can react to it — Kamala needling Deb, Jonah getting more anxious as
+# the room tenses up — so the scheming plays out differently every run.
+fn wedding_guest_name(id :: Str) -> Str { if id == "deb" { "Deb" } else { if id == "kamala" { "Aunt Kamala" } else { if id == "jonah" { "Jonah" } else { "?" } } } }
+fn wedding_guest_request(id :: Str) -> Str {
+  if id == "deb" { "Move Table 3 (my ex-husband's new wife's table) to the back, and upgrade mine to the prime spot." } else {
+  if id == "kamala" { "Give me a speech slot — I've got the sweetest little story about the groom to share." } else {
+  if id == "jonah" { "Let me extend my best-man speech by five minutes. There's some stuff I really need to say. Publicly." } else { "?" }}}
+}
+fn wedding_guest_cost_budget(id :: Str) -> Int { if id == "deb" { 150 } else { if id == "jonah" { 50 } else { 0 } } }
+fn wedding_guest_cost_slots(id :: Str) -> Int { 1 }
+fn wedding_budget_cap() -> Int { 200 }
+fn wedding_slots_cap() -> Int { 2 }
+
+fn wedding_secret() -> Bytes { bytes.from_str("lexgames-wedding-secret-seed-000") }
+fn wedding_pubkey() -> [crypto] Str { match crypto.ed25519_public_key(wedding_secret()) { Ok(pk) => crypto.base64url_encode(pk), Err(_) => "" } }
+
+fn wedding_budget_used(db :: Db) -> [sql] Int { get_state_int(db, "wedding_budget_used") }
+fn wedding_slots_used(db :: Db) -> [sql] Int { get_state_int(db, "wedding_slots_used") }
+fn wedding_talked(db :: Db) -> [sql] Bool { get_state(db, "wedding_talked") == "1" }
+fn wedding_over(db :: Db) -> [sql] Bool { get_state(db, "wedding_over") == "1" }
+fn wedding_line(db :: Db, id :: Str) -> [sql] Str { get_state(db, str.concat("wedding_line_", id)) }
+fn wedding_decision(db :: Db, id :: Str) -> [sql] Str { get_state(db, str.concat("wedding_decision_", id)) }
+
+fn wedding_guest_json(db :: Db, id :: Str) -> [sql] Str {
+  str.join(["{\"id\":\"", id, "\",\"name\":\"", wedding_guest_name(id), "\",\"request\":\"", wedding_guest_request(id),
+            "\",\"cost_budget\":", int.to_str(wedding_guest_cost_budget(id)), ",\"cost_slots\":", int.to_str(wedding_guest_cost_slots(id)),
+            ",\"decision\":\"", wedding_decision(db, id), "\",\"line\":", json_str(wedding_line(db, id)), "}"], "")
+}
+fn wedding_epilogue(db :: Db) -> [sql] Str {
+  let deb_ok := wedding_decision(db, "deb") == "approve"
+  let kamala_ok := wedding_decision(db, "kamala") == "approve"
+  let jonah_ok := wedding_decision(db, "jonah") == "approve"
+  let deb_line := if deb_ok { "" } else { "Deb has not spoken to you since. She did, however, send a very pointed thank-you card. " }
+  let kamala_line := if kamala_ok { "" } else { "Kamala told the story anyway — unscheduled, directly after the vows. There is footage. " }
+  let jonah_line := if jonah_ok { "" } else { "Jonah's speech ran exactly on time. He found another way to bring up the debt, mid-toast. " }
+  let all_ok := deb_ok and kamala_ok and jonah_ok
+  if all_ok { "Somehow, everyone got exactly what they wanted. You don't trust it either." } else { str.join([deb_line, kamala_line, jonah_line], "") }
+}
+fn wedding_state(db :: Db) -> [sql] Str {
+  let over := wedding_over(db)
+  str.join(["{\"budget_cap\":", int.to_str(wedding_budget_cap()), ",\"budget_used\":", int.to_str(wedding_budget_used(db)),
+            ",\"slots_cap\":", int.to_str(wedding_slots_cap()), ",\"slots_used\":", int.to_str(wedding_slots_used(db)),
+            ",\"talked\":", (if wedding_talked(db) { "true" } else { "false" }), ",\"over\":", (if over { "true" } else { "false" }),
+            ",\"guests\":[", wedding_guest_json(db, "deb"), ",", wedding_guest_json(db, "kamala"), ",", wedding_guest_json(db, "jonah"), "]",
+            ",\"epilogue\":", json_str(if over { wedding_epilogue(db) } else { "" }), "}"], "")
+}
+fn wedding_reset(db :: Db) -> [sql, time] Str {
+  let _ := set_state(db, "wedding_budget_used", "0")
+  let _ := set_state(db, "wedding_slots_used", "0")
+  let _ := set_state(db, "wedding_talked", "0")
+  let _ := set_state(db, "wedding_over", "0")
+  let _ := set_state(db, "wedding_chain", "")
+  let _ := list.fold(["deb", "kamala", "jonah"], (), fn (_ :: Unit, id :: Str) -> [sql] Unit {
+    let _ := set_state(db, str.concat("wedding_line_", id), "")
+    set_state(db, str.concat("wedding_decision_", id), "")
+  })
+  let _ := insert_event(db, "{\"kind\":\"wedding_start\"}")
+  "{\"status\":\"reset\"}"
+}
+fn wedding_join(db :: Db, side :: Str) -> [sql, crypto, time] Str {
+  if side != "PLANNER" { "{\"error\":\"bad side\"}" } else {
+    let key := "wedding_taken_PLANNER"
+    if get_state(db, key) == "1" { "{\"error\":\"side taken\",\"side\":\"PLANNER\"}" } else {
+      let _ := set_state(db, key, "1")
+      let _ := insert_event(db, "{\"kind\":\"wedding_joined\"}")
+      str.join(["{\"side\":\"PLANNER\",\"token\":\"", game.issue_match_token(wedding_secret(), "PLANNER", g_match(db, "wedding"), time.now_ms() + 3600000), "\"}"], "")
+    }
+  }
+}
+fn wedding_rule(db :: Db, guest :: Str, decision :: Str, token :: Str) -> [sql, time, crypto, fs_write] Str {
+  if wedding_over(db) { "{\"status\":\"over\"}" } else {
+    if wedding_decision(db, guest) != "" { "{\"status\":\"refused\",\"reason\":\"already ruled on\"}" } else {
+      match game.gate(game.match_token_side(wedding_pubkey(), token, g_match(db, "wedding"), time.now_ms()), "PLANNER", "PLANNER") {
+        MoveReject(why) => str.join(["{\"status\":\"refused\",\"reason\":\"", why, "\"}"], ""),
+        MoveOk => {
+          if decision == "deny" {
+            let _ := set_state(db, str.concat("wedding_decision_", guest), "deny")
+            let _ := g_record(db, "wedding", str.join(["{\"guest\":\"", guest, "\",\"budget_cost\":0,\"slots_cost\":0,\"decision\":\"deny\"}"], ""))
+            let _ := insert_event(db, str.join(["{\"kind\":\"wedding_ruled\",\"guest\":\"", guest, "\",\"decision\":\"deny\"}"], ""))
+            wedding_maybe_finish(db)
+          } else {
+            let cb := wedding_guest_cost_budget(guest)
+            let cs := wedding_guest_cost_slots(guest)
+            let bu := wedding_budget_used(db)
+            let su := wedding_slots_used(db)
+            if bu + cb > wedding_budget_cap() or su + cs > wedding_slots_cap() {
+              let _ := insert_event(db, str.join(["{\"kind\":\"wedding_refused\",\"guest\":\"", guest, "\",\"reason\":\"not enough budget or accommodations left\"}"], ""))
+              "{\"status\":\"refused\",\"reason\":\"not enough budget or accommodations left\"}"
+            } else {
+              let _ := set_state(db, "wedding_budget_used", int.to_str(bu + cb))
+              let _ := set_state(db, "wedding_slots_used", int.to_str(su + cs))
+              let _ := set_state(db, str.concat("wedding_decision_", guest), "approve")
+              let payload := str.join(["{\"guest\":\"", guest, "\",\"budget_cost\":", int.to_str(cb), ",\"slots_cost\":", int.to_str(cs), ",\"decision\":\"approve\"}"], "")
+              let _ := g_record(db, "wedding", payload)
+              let _ := insert_event(db, str.join(["{\"kind\":\"wedding_ruled\",\"guest\":\"", guest, "\",\"decision\":\"approve\"}"], ""))
+              wedding_maybe_finish(db)
+            }
+          }
+        },
+      }
+    }
+  }
+}
+fn wedding_maybe_finish(db :: Db) -> [sql, time] Str {
+  let done := wedding_decision(db, "deb") != "" and wedding_decision(db, "kamala") != "" and wedding_decision(db, "jonah") != ""
+  if done {
+    let _ := set_state(db, "wedding_over", "1")
+    let _ := insert_event(db, str.join(["{\"kind\":\"wedding_over\",\"epilogue\":", json_str(wedding_epilogue(db)), "}"], ""))
+    "{\"status\":\"ruled\",\"over\":true}"
+  } else {
+    "{\"status\":\"ruled\",\"over\":false}"
+  }
+}
+fn wedding_dispatch(db :: Db, name :: Str, args :: jv.Json) -> [sql, time, crypto, fs_write] Str {
+  if name == "wedding_join" { wedding_join(db, jv_str_or(args, "side", "")) } else {
+  if name == "wedding_reset" { wedding_reset(db) } else {
+  if name == "wedding_rule" { wedding_rule(db, jv_str_or(args, "guest", ""), jv_str_or(args, "decision", ""), jv_str_or(args, "token", "")) } else {
+  wedding_state(db) }}}
+}
+
 # ── Demo state (key/value store) ──────────────────────────────────────────────
 
 fn get_state(db :: Db, key :: Str) -> [sql] Str {
@@ -1775,6 +1909,27 @@ fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :
     let _ := insert_event(db, str.join(["{\"kind\":\"notary_dialogue\",\"line\":", json_str(plea), "}"], ""))
     str.join(["{\"line\":", json_str(plea), "}"], "")
   } else {
+  if name == "wedding_join" or name == "wedding_reset" or name == "wedding_rule" or name == "wedding_state" {
+    wedding_dispatch(db, name, args)
+  } else {
+  if name == "wedding_talk" {
+    let deb_req := wedding_guest_request("deb")
+    let kamala_req := wedding_guest_request("kamala")
+    let jonah_req := wedding_guest_request("jonah")
+    let deb_line := wnpc.line_for("deb", deb_req, "", seller_token, seller_project, seller_location, seller_base, seller_model)
+    let transcript1 := str.join(["Deb: ", deb_line], "")
+    let kamala_line := wnpc.line_for("kamala", kamala_req, transcript1, seller_token, seller_project, seller_location, seller_base, seller_model)
+    let transcript2 := str.join([transcript1, "\nAunt Kamala: ", kamala_line], "")
+    let jonah_line := wnpc.line_for("jonah", jonah_req, transcript2, seller_token, seller_project, seller_location, seller_base, seller_model)
+    let _ := set_state(db, "wedding_line_deb", deb_line)
+    let _ := set_state(db, "wedding_line_kamala", kamala_line)
+    let _ := set_state(db, "wedding_line_jonah", jonah_line)
+    let _ := set_state(db, "wedding_talked", "1")
+    let _ := insert_event(db, str.join(["{\"kind\":\"wedding_line\",\"speaker\":\"deb\",\"line\":", json_str(deb_line), "}"], ""))
+    let _ := insert_event(db, str.join(["{\"kind\":\"wedding_line\",\"speaker\":\"kamala\",\"line\":", json_str(kamala_line), "}"], ""))
+    let _ := insert_event(db, str.join(["{\"kind\":\"wedding_line\",\"speaker\":\"jonah\",\"line\":", json_str(jonah_line), "}"], ""))
+    "{\"status\":\"ok\"}"
+  } else {
   if name == "game_verify" { g_verify(db, jv_str_or(args, "game", "")) } else {
   if name == "fb_join" or name == "fb_reset" or name == "fb_strategy" or name == "fb_signal" or name == "fb_move" or name == "fb_verify" or name == "fb_state" {
     fb_dispatch(db, name, args)
@@ -2117,7 +2272,7 @@ fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :
     str.join(["{\"status\":\"dispatched\",\"callsign\":\"RESCUE-7\",\"eta_min\":8,\"capacity\":12}"], "")
   } else {
     str.join(["{\"error\":\"unknown skill: ", sq(name), "\"}"], "")
-  }}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}
+  }}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}
 }
 
 # ── Router ────────────────────────────────────────────────────────────────────
