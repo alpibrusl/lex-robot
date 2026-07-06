@@ -13,6 +13,7 @@
 
 import "std.str"  as str
 import "std.list" as list
+import "std.int"  as int
 import "std.iter" as iter
 import "std.io"   as io
 
@@ -64,12 +65,52 @@ fn guest_fallback(id :: Str) -> Str {
   }}
 }
 
-# One LLM turn for one guest: given their persona, their fixed request, and
-# the transcript so far, produce their one-line in-character contribution.
-# Falls back to a static line if no LLM is configured or nothing parses —
-# the negotiation stays playable either way.
-fn line_for(id :: Str, request :: Str, transcript_so_far :: Str, token :: Str, project :: Str, location :: Str, base_url :: Str, model_name :: Str) -> [net, llm, io, proc] Str {
-  let fallback := guest_fallback(id)
+# ── Memory openers ────────────────────────────────────────────────────────────
+# A guest who has dealt with this broker before opens colored by history. The
+# grudge string is phrased to follow "how you ___" (e.g. "refused to move that
+# table"), written by the sidecar's fallout logic.
+fn guest_cold_opener(id :: Str, grudge :: Str) -> Str {
+  if id == "deb" {
+    str.join(["Oh. It's you again. I haven't forgotten how you ", grudge, " at the last one — so let's do better this time."], "")
+  } else {
+  if id == "kamala" {
+    str.join(["Well, look who they hired again. I'm still a teeny bit hurt you ", grudge, " last time — not that I'd ever hold a grudge."], "")
+  } else {
+    str.join(["Oh — hey. It's, uh, you. No hard feelings about how you ", grudge, " last time. Mostly. Anyway—"], "")
+  }}
+}
+fn guest_warm_opener(id :: Str) -> Str {
+  if id == "deb" {
+    "Oh, good — it's you. You did right by us last time, so I'll keep this civil."
+  } else {
+  if id == "kamala" {
+    "Oh, wonderful, it's you again! Always such a pleasure working with someone who listens."
+  } else {
+    "Hey, it's you! Last one went great — thanks again, really. So, um—"
+  }}
+}
+# The static fallback, now colored by memory when there is any.
+fn memory_fallback(id :: Str, regard :: Int, grudge :: Str) -> Str {
+  let base := guest_fallback(id)
+  if regard < 0 { str.join([guest_cold_opener(id, grudge), " ", base], "") } else {
+  if regard > 0 { str.join([guest_warm_opener(id), " ", base], "") } else { base }}
+}
+# The history note handed to the LLM so it opens in-character for the relationship.
+fn memory_note(regard :: Int, grudge :: Str) -> Str {
+  if regard < 0 {
+    str.join(["\n\nHISTORY WITH THIS PLANNER: it went BADLY before. You are cold and pointed with them. You have not forgotten that they ", grudge, ". Let that edge show immediately."], "")
+  } else {
+  if regard > 0 {
+    "\n\nHISTORY WITH THIS PLANNER: they treated you well before. You greet them warmly and give them the benefit of the doubt."
+  } else { "" }}
+}
+
+# One LLM turn for one guest: given their persona, their fixed request, the
+# transcript so far, and their memory of this broker (regard + any grudge),
+# produce their one-line in-character contribution. Falls back to a static —
+# but still memory-colored — line if no LLM is configured or nothing parses.
+fn line_for(id :: Str, request :: Str, transcript_so_far :: Str, regard :: Int, grudge :: Str, token :: Str, project :: Str, location :: Str, base_url :: Str, model_name :: Str) -> [net, llm, io, proc] Str {
+  let fallback := memory_fallback(id, regard, grudge)
   let use_opencode := base_url == "opencode" and not str.is_empty(token)
   let use_local    := not use_opencode and not str.is_empty(base_url)
   let use_vertex   := str.is_empty(base_url) and not str.is_empty(token) and not str.is_empty(project)
@@ -77,7 +118,8 @@ fn line_for(id :: Str, request :: Str, transcript_so_far :: Str, token :: Str, p
     fallback
   } else {
     let system_msg := str.join([
-      guest_persona(id), "\n\nYour request: ", request, "\n\n",
+      guest_persona(id), "\n\nYour request: ", request,
+      memory_note(regard, grudge), "\n\n",
       "You're negotiating with the wedding planner (a stand-in, not a professional) in front of the other family members. ",
       "React to whatever was just said if anything was said — agree, undercut it, pile on, whatever's in character. ",
       "Stay in character, one or two sentences, a little pointed or funny is good.\n",

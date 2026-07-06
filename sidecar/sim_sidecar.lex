@@ -1466,10 +1466,34 @@ fn wedding_over(db :: Db) -> [sql] Bool { get_state(db, "wedding_over") == "1" }
 fn wedding_line(db :: Db, id :: Str) -> [sql] Str { get_state(db, str.concat("wedding_line_", id)) }
 fn wedding_decision(db :: Db, id :: Str) -> [sql] Str { get_state(db, str.concat("wedding_decision_", id)) }
 
-fn wedding_guest_json(db :: Db, id :: Str) -> [sql] Str {
+# ── The broker's persistent memory (the P1 spine) ─────────────────────────────
+# Keyed by the player's did:lex broker identity, these keys are NOT touched by
+# wedding_reset — a reset clears the EVENT, the career persists. regard is how a
+# guest feels about this broker (warm > 0, cold < 0); grudge is their single
+# latest unforgiven grievance, phrased to follow "how you ___".
+fn wedding_active_did(db :: Db, arg :: Str) -> [sql] Str {
+  let d := if str.is_empty(arg) { get_state(db, "wedding_broker") } else { arg }
+  if str.is_empty(d) { "did:lex:agent:anon" } else { d }
+}
+fn wedding_rel_key(did :: Str, guest :: Str, field :: Str) -> Str { str.join(["rel_", did, "_", guest, "_", field], "") }
+fn wedding_regard(db :: Db, did :: Str, guest :: Str) -> [sql] Int { get_state_int(db, wedding_rel_key(did, guest, "regard")) }
+fn wedding_grudge(db :: Db, did :: Str, guest :: Str) -> [sql] Str { get_state(db, wedding_rel_key(did, guest, "grudge")) }
+fn wedding_career_rep(db :: Db, did :: Str) -> [sql] Int { get_state_int(db, str.join(["career_", did, "_rep"], "")) }
+fn wedding_career_events(db :: Db, did :: Str) -> [sql] Int { get_state_int(db, str.join(["career_", did, "_events"], "")) }
+# The grievance a guest carries when you turn them down, in "how you ___" form.
+fn wedding_grudge_of(guest :: Str) -> Str {
+  if guest == "deb" { "refused to move that table" } else {
+  if guest == "kamala" { "cut my little speech" } else {
+  if guest == "jonah" { "shut down my toast" } else { "let me down" }}}
+}
+
+fn wedding_guest_json(db :: Db, did :: Str, id :: Str) -> [sql] Str {
+  let regard := wedding_regard(db, did, id)
+  let mood := if regard < 0 { "cold" } else { if regard > 0 { "warm" } else { "new" } }
   str.join(["{\"id\":\"", id, "\",\"name\":\"", wedding_guest_name(id), "\",\"request\":\"", wedding_guest_request(id),
             "\",\"cost_budget\":", int.to_str(wedding_guest_cost_budget(id)), ",\"cost_slots\":", int.to_str(wedding_guest_cost_slots(id)),
-            ",\"decision\":\"", wedding_decision(db, id), "\",\"line\":", json_str(wedding_line(db, id)), "}"], "")
+            ",\"decision\":\"", wedding_decision(db, id), "\",\"line\":", json_str(wedding_line(db, id)),
+            ",\"regard\":", int.to_str(regard), ",\"mood\":\"", mood, "\",\"grudge\":", json_str(wedding_grudge(db, did, id)), "}"], "")
 }
 fn wedding_epilogue(db :: Db) -> [sql] Str {
   let deb_ok := wedding_decision(db, "deb") == "approve"
@@ -1481,19 +1505,28 @@ fn wedding_epilogue(db :: Db) -> [sql] Str {
   let all_ok := deb_ok and kamala_ok and jonah_ok
   if all_ok { "Somehow, everyone got exactly what they wanted. You don't trust it either." } else { str.join([deb_line, kamala_line, jonah_line], "") }
 }
-fn wedding_state(db :: Db) -> [sql] Str {
+fn wedding_state(db :: Db, arg_did :: Str) -> [sql] Str {
   let over := wedding_over(db)
+  let did := wedding_active_did(db, arg_did)
   str.join(["{\"budget_cap\":", int.to_str(wedding_budget_cap()), ",\"budget_used\":", int.to_str(wedding_budget_used(db)),
             ",\"slots_cap\":", int.to_str(wedding_slots_cap()), ",\"slots_used\":", int.to_str(wedding_slots_used(db)),
             ",\"talked\":", (if wedding_talked(db) { "true" } else { "false" }), ",\"over\":", (if over { "true" } else { "false" }),
-            ",\"guests\":[", wedding_guest_json(db, "deb"), ",", wedding_guest_json(db, "kamala"), ",", wedding_guest_json(db, "jonah"), "]",
+            ",\"settled\":", (if get_state(db, "wedding_settled") == "1" { "true" } else { "false" }),
+            ",\"career\":{\"did\":", json_str(did), ",\"rep\":", int.to_str(wedding_career_rep(db, did)), ",\"events\":", int.to_str(wedding_career_events(db, did)), "}",
+            ",\"guests\":[", wedding_guest_json(db, did, "deb"), ",", wedding_guest_json(db, did, "kamala"), ",", wedding_guest_json(db, did, "jonah"), "]",
             ",\"epilogue\":", json_str(if over { wedding_epilogue(db) } else { "" }), "}"], "")
 }
-fn wedding_reset(db :: Db) -> [sql, time] Str {
+fn wedding_reset(db :: Db, broker_did :: Str) -> [sql, time] Str {
+  # Store the active broker for the event; the career/relationship keys
+  # (career_*, rel_*) are deliberately NOT cleared here — reset ends the
+  # event, not the career.
+  let _ := set_state(db, "wedding_broker", wedding_active_did(db, broker_did))
   let _ := set_state(db, "wedding_budget_used", "0")
   let _ := set_state(db, "wedding_slots_used", "0")
   let _ := set_state(db, "wedding_talked", "0")
   let _ := set_state(db, "wedding_over", "0")
+  let _ := set_state(db, "wedding_settled", "0")
+  let _ := set_state(db, "wedding_fallout_json", "")
   let _ := set_state(db, "wedding_chain", "")
   let _ := list.fold(["deb", "kamala", "jonah"], (), fn (_ :: Unit, id :: Str) -> [sql] Unit {
     let _ := set_state(db, str.concat("wedding_line_", id), "")
@@ -1557,11 +1590,51 @@ fn wedding_maybe_finish(db :: Db) -> [sql, time] Str {
     "{\"status\":\"ruled\",\"over\":false}"
   }
 }
+# Apply one guest's fallout to the broker's persistent memory and return a JSON
+# summary of what changed (for the settlement screen). Approving lifts regard and
+# clears their grudge; denying lowers regard and records a specific grievance.
+fn wedding_apply_fallout(db :: Db, did :: Str, guest :: Str) -> [sql] Str {
+  let before := wedding_regard(db, did, guest)
+  let approved := wedding_decision(db, guest) == "approve"
+  let after := if approved { before + 2 } else { before - 2 }
+  let _ := set_state(db, wedding_rel_key(did, guest, "regard"), int.to_str(after))
+  let had := wedding_grudge(db, did, guest)
+  let new_grudge := if approved { "" } else { wedding_grudge_of(guest) }
+  let _ := set_state(db, wedding_rel_key(did, guest, "grudge"), new_grudge)
+  let cleared := if approved and not str.is_empty(had) { had } else { "" }
+  str.join(["{\"id\":\"", guest, "\",\"name\":\"", wedding_guest_name(guest), "\",\"approved\":", (if approved { "true" } else { "false" }),
+            ",\"before\":", int.to_str(before), ",\"after\":", int.to_str(after), ",\"delta\":", int.to_str(after - before),
+            ",\"grudge\":", json_str(new_grudge), ",\"cleared\":", json_str(cleared), "}"], "")
+}
+# Settle a finished event: write each guest's fallout back to persistent memory,
+# bump the career, and return a summary. Idempotent — a second call returns the
+# stored summary rather than applying the deltas twice.
+fn wedding_settle(db :: Db, arg_did :: Str) -> [sql, time] Str {
+  if not wedding_over(db) { "{\"status\":\"not_ready\"}" } else {
+    if get_state(db, "wedding_settled") == "1" { get_state(db, "wedding_fallout_json") } else {
+      let did := wedding_active_did(db, arg_did)
+      let deb_fb := wedding_apply_fallout(db, did, "deb")
+      let kamala_fb := wedding_apply_fallout(db, did, "kamala")
+      let jonah_fb := wedding_apply_fallout(db, did, "jonah")
+      let rep := wedding_career_rep(db, did) + 10
+      let evs := wedding_career_events(db, did) + 1
+      let _ := set_state(db, str.join(["career_", did, "_rep"], ""), int.to_str(rep))
+      let _ := set_state(db, str.join(["career_", did, "_events"], ""), int.to_str(evs))
+      let _ := set_state(db, "wedding_settled", "1")
+      let summary := str.join(["{\"status\":\"settled\",\"rep\":", int.to_str(rep), ",\"events\":", int.to_str(evs),
+                               ",\"fallout\":[", deb_fb, ",", kamala_fb, ",", jonah_fb, "]}"], "")
+      let _ := set_state(db, "wedding_fallout_json", summary)
+      let _ := insert_event(db, str.join(["{\"kind\":\"wedding_settled\",\"rep\":", int.to_str(rep), ",\"events\":", int.to_str(evs), "}"], ""))
+      summary
+    }
+  }
+}
 fn wedding_dispatch(db :: Db, name :: Str, args :: jv.Json) -> [sql, time, crypto, fs_write] Str {
   if name == "wedding_join" { wedding_join(db, jv_str_or(args, "side", "")) } else {
-  if name == "wedding_reset" { wedding_reset(db) } else {
+  if name == "wedding_reset" { wedding_reset(db, jv_str_or(args, "broker_did", "")) } else {
   if name == "wedding_rule" { wedding_rule(db, jv_str_or(args, "guest", ""), jv_str_or(args, "decision", ""), jv_str_or(args, "token", "")) } else {
-  wedding_state(db) }}}
+  if name == "wedding_settle" { wedding_settle(db, jv_str_or(args, "broker_did", "")) } else {
+  wedding_state(db, jv_str_or(args, "broker_did", "")) }}}}
 }
 
 # ── Demo state (key/value store) ──────────────────────────────────────────────
@@ -1911,18 +1984,19 @@ fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :
     let _ := insert_event(db, str.join(["{\"kind\":\"notary_dialogue\",\"line\":", json_str(plea), "}"], ""))
     str.join(["{\"line\":", json_str(plea), "}"], "")
   } else {
-  if name == "wedding_join" or name == "wedding_reset" or name == "wedding_rule" or name == "wedding_state" {
+  if name == "wedding_join" or name == "wedding_reset" or name == "wedding_rule" or name == "wedding_settle" or name == "wedding_state" {
     wedding_dispatch(db, name, args)
   } else {
   if name == "wedding_talk" {
+    let bdid := wedding_active_did(db, jv_str_or(args, "broker_did", ""))
     let deb_req := wedding_guest_request("deb")
     let kamala_req := wedding_guest_request("kamala")
     let jonah_req := wedding_guest_request("jonah")
-    let deb_line := wnpc.line_for("deb", deb_req, "", seller_token, seller_project, seller_location, seller_base, seller_model)
+    let deb_line := wnpc.line_for("deb", deb_req, "", wedding_regard(db, bdid, "deb"), wedding_grudge(db, bdid, "deb"), seller_token, seller_project, seller_location, seller_base, seller_model)
     let transcript1 := str.join(["Deb: ", deb_line], "")
-    let kamala_line := wnpc.line_for("kamala", kamala_req, transcript1, seller_token, seller_project, seller_location, seller_base, seller_model)
+    let kamala_line := wnpc.line_for("kamala", kamala_req, transcript1, wedding_regard(db, bdid, "kamala"), wedding_grudge(db, bdid, "kamala"), seller_token, seller_project, seller_location, seller_base, seller_model)
     let transcript2 := str.join([transcript1, "\nAunt Kamala: ", kamala_line], "")
-    let jonah_line := wnpc.line_for("jonah", jonah_req, transcript2, seller_token, seller_project, seller_location, seller_base, seller_model)
+    let jonah_line := wnpc.line_for("jonah", jonah_req, transcript2, wedding_regard(db, bdid, "jonah"), wedding_grudge(db, bdid, "jonah"), seller_token, seller_project, seller_location, seller_base, seller_model)
     let _ := set_state(db, "wedding_line_deb", deb_line)
     let _ := set_state(db, "wedding_line_kamala", kamala_line)
     let _ := set_state(db, "wedding_line_jonah", jonah_line)
