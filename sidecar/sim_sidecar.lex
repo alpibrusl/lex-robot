@@ -55,6 +55,7 @@ import "lex-schema/json_value" as jv
 import "../src/seller_llm" as sllm
 import "../src/notary_npc" as npc
 import "../src/wedding_npc" as wnpc
+import "../src/ww_npc" as wwn
 
 import "lex-games/src/lex_games" as game
 
@@ -1685,6 +1686,239 @@ fn wedding_dispatch(db :: Db, name :: Str, args :: jv.Json) -> [sql, time, crypt
   wedding_state(db, jv_str_or(args, "broker_did", "")) }}}}
 }
 
+# ── lex-games: Werewolf — social deduction, capability-gated & provably fair ──
+# Five seats: you (seat 0, always a townsperson) + four AI. Roles are 1 Werewolf,
+# 1 Seer, 3 Villagers, assigned at game start from the match seed and COMMITTED
+# to the hash-chained trail — so a replay proves the setup was never rigged and
+# every night action was legal for that seat's real role. Your night action is
+# gated by a signed role token: you can only act as the role you actually hold.
+# The AI seats discuss, accuse, and (if the wolf) lie — see src/ww_npc.lex.
+fn ww_range(n :: Int) -> List[Int] { if n <= 0 { [] } else { list.concat(ww_range(n - 1), [n - 1]) } }
+fn ww_nth_int(xs :: List[Int], i :: Int) -> Int {
+  if i <= 0 { match list.head(xs) { Some(x) => x, None => -1 } } else { ww_nth_int(list.tail(xs), i - 1) }
+}
+fn ww_int_mod(a :: Int, b :: Int) -> Int { a - (a / b) * b }
+fn ww_name(seat :: Int) -> Str {
+  if seat == 0 { "You" } else { if seat == 1 { "Vera" } else { if seat == 2 { "Sol" } else { if seat == 3 { "Bram" } else { if seat == 4 { "Nix" } else { "?" } } } } }
+}
+fn ww_secret() -> Bytes { bytes.from_str("lexgames-werewolf-secret-seed-00") }
+fn ww_pubkey() -> [crypto] Str { match crypto.ed25519_public_key(ww_secret()) { Ok(pk) => crypto.base64url_encode(pk), Err(_) => "" } }
+fn ww_seed(db :: Db) -> [sql, time] Int { match str.to_int(g_match(db, "ww")) { Some(n) => n, None => 0 } }
+
+fn ww_role(db :: Db, seat :: Int) -> [sql] Str { get_state(db, str.concat("ww_role_", int.to_str(seat))) }
+fn ww_alive(db :: Db, seat :: Int) -> [sql] Bool { get_state(db, str.concat("ww_alive_", int.to_str(seat))) != "0" and not str.is_empty(get_state(db, str.concat("ww_role_", int.to_str(seat)))) }
+fn ww_set_dead(db :: Db, seat :: Int) -> [sql] Unit { set_state(db, str.concat("ww_alive_", int.to_str(seat)), "0") }
+fn ww_phase(db :: Db) -> [sql] Str { let p := get_state(db, "ww_phase") if str.is_empty(p) { "none" } else { p } }
+fn ww_day(db :: Db) -> [sql] Int { get_state_int(db, "ww_day") }
+fn ww_winner(db :: Db) -> [sql] Str { get_state(db, "ww_winner") }
+fn ww_over(db :: Db) -> [sql] Bool { not str.is_empty(get_state(db, "ww_winner")) }
+fn ww_find_role(db :: Db, role :: Str) -> [sql] Int {
+  list.fold([0, 1, 2, 3, 4], -1, fn (acc :: Int, s :: Int) -> [sql] Int { if acc >= 0 { acc } else { if ww_role(db, s) == role { s } else { -1 } } })
+}
+fn ww_living_wolves(db :: Db) -> [sql] Int { list.fold([0, 1, 2, 3, 4], 0, fn (a :: Int, s :: Int) -> [sql] Int { if ww_alive(db, s) and ww_role(db, s) == "wolf" { a + 1 } else { a } }) }
+fn ww_living_total(db :: Db) -> [sql] Int { list.fold([0, 1, 2, 3, 4], 0, fn (a :: Int, s :: Int) -> [sql] Int { if ww_alive(db, s) { a + 1 } else { a } }) }
+
+# ── log + transcript (structured for the UI, plain for the LLM prompt) ─────────
+fn ww_logn(db :: Db) -> [sql] Int { get_state_int(db, "ww_logn") }
+fn ww_log(db :: Db, kind :: Str, seat :: Int, text :: Str) -> [sql] Unit {
+  let i := ww_logn(db)
+  let _ := set_state(db, str.join(["ww_log_", int.to_str(i)], ""), str.join(["{\"kind\":\"", kind, "\",\"seat\":", int.to_str(seat), ",\"name\":\"", ww_name(seat), "\",\"text\":", json_str(text), "}"], ""))
+  let _ := set_state(db, "ww_logn", int.to_str(i + 1))
+  let cur := get_state(db, "ww_transcript")
+  let entry := if kind == "say" { str.join([ww_name(seat), ": ", text, "\n"], "") } else { str.join(["( ", text, " )\n"], "") }
+  set_state(db, "ww_transcript", str.concat(cur, entry))
+}
+fn ww_log_json(db :: Db) -> [sql] Str {
+  let items := list.map(ww_range(ww_logn(db)), fn (i :: Int) -> [sql] Str { get_state(db, str.join(["ww_log_", int.to_str(i)], "")) })
+  str.join(["[", str.join(items, ","), "]"], "")
+}
+fn ww_transcript(db :: Db) -> [sql] Str { get_state(db, "ww_transcript") }
+
+# ── public + private state ────────────────────────────────────────────────────
+fn ww_player_json(db :: Db, seat :: Int) -> [sql] Str {
+  let alive := ww_alive(db, seat)
+  let reveal := (not alive) or ww_over(db)
+  str.join(["{\"seat\":", int.to_str(seat), ",\"name\":\"", ww_name(seat), "\",\"you\":", (if seat == 0 { "true" } else { "false" }),
+            ",\"alive\":", (if alive { "true" } else { "false" }), ",\"role\":", json_str(if reveal { ww_role(db, seat) } else { "" }), "}"], "")
+}
+fn ww_players_json(db :: Db) -> [sql] Str {
+  str.join(["[", str.join(list.map([0, 1, 2, 3, 4], fn (s :: Int) -> [sql] Str { ww_player_json(db, s) }), ","), "]"], "")
+}
+fn ww_seen_json(db :: Db) -> [sql] Str {
+  let items := list.fold([0, 1, 2, 3, 4], [], fn (acc :: List[Str], s :: Int) -> [sql] List[Str] {
+    let saw := get_state(db, str.join(["ww_seen_", int.to_str(s)], ""))
+    if str.is_empty(saw) { acc } else { list.concat(acc, [str.join(["{\"seat\":", int.to_str(s), ",\"name\":\"", ww_name(s), "\",\"role\":\"", saw, "\"}"], "")]) }
+  })
+  str.join(["[", str.join(items, ","), "]"], "")
+}
+fn ww_state(db :: Db) -> [sql] Str {
+  let my_role := ww_role(db, 0)
+  let phase := ww_phase(db)
+  let needs_night := phase == "night" and (my_role == "seer" or my_role == "wolf") and ww_alive(db, 0) and str.is_empty(get_state(db, "ww_acted_0"))
+  str.join(["{\"phase\":\"", phase, "\",\"day\":", int.to_str(ww_day(db)), ",\"winner\":", json_str(ww_winner(db)),
+            ",\"you\":{\"seat\":0,\"role\":", json_str(my_role), ",\"alive\":", (if ww_alive(db, 0) { "true" } else { "false" }), ",\"needs_night\":", (if needs_night { "true" } else { "false" }), ",\"seen\":", ww_seen_json(db), "}",
+            ",\"players\":", ww_players_json(db), ",\"log\":", ww_log_json(db), "}"], "")
+}
+
+# ── setup ─────────────────────────────────────────────────────────────────────
+fn ww_assign(db :: Db) -> [sql, time, fs_write] Unit {
+  let seed := ww_seed(db)
+  let wolf := 1 + ww_int_mod(seed, 4)
+  let sc := ww_int_mod(seed / 3, 5)
+  let seer := if sc == wolf { ww_int_mod(wolf + 2, 5) } else { sc }
+  let _ := list.fold([0, 1, 2, 3, 4], (), fn (_ :: Unit, s :: Int) -> [sql] Unit {
+    let role := if s == wolf { "wolf" } else { if s == seer { "seer" } else { "villager" } }
+    let _ := set_state(db, str.join(["ww_role_", int.to_str(s)], ""), role)
+    set_state(db, str.join(["ww_alive_", int.to_str(s)], ""), "1")
+  })
+  let assign := str.join(list.map([0, 1, 2, 3, 4], fn (s :: Int) -> [sql] Str { str.join(["\"", int.to_str(s), "\":\"", ww_role(db, s), "\""], "") }), ",")
+  let _ := g_record(db, "ww", str.join(["{\"kind\":\"roles\",\"assign\":{", assign, "}}"], ""))
+  ()
+}
+fn ww_new(db :: Db) -> [sql, time, crypto, fs_write] Str {
+  let _ := list.fold(ww_range(40), (), fn (_ :: Unit, i :: Int) -> [sql] Unit { set_state(db, str.join(["ww_log_", int.to_str(i)], ""), "") })
+  let _ := list.fold([0, 1, 2, 3, 4], (), fn (_ :: Unit, s :: Int) -> [sql] Unit {
+    let _ := set_state(db, str.join(["ww_seen_", int.to_str(s)], ""), "")
+    set_state(db, str.join(["ww_acted_", int.to_str(s)], ""), "")
+  })
+  let _ := set_state(db, "ww_logn", "0")
+  let _ := set_state(db, "ww_transcript", "")
+  let _ := set_state(db, "ww_winner", "")
+  let _ := set_state(db, "ww_day", "1")
+  let _ := set_state(db, "ww_phase", "night")
+  let _ := ww_assign(db)
+  let _ := ww_log(db, "event", 0, "Night falls over the village. Everyone close your eyes.")
+  let _ := insert_event(db, "{\"kind\":\"ww_new\"}")
+  str.join(["{\"status\":\"ok\",\"token\":\"", game.issue_match_token(ww_secret(), "S0", g_match(db, "ww"), time.now_ms() + 3600000), "\"}"], "")
+}
+
+# ── night resolution ──────────────────────────────────────────────────────────
+fn ww_ai_kill_target(db :: Db) -> [sql, time] Int {
+  let wolf := ww_find_role(db, "wolf")
+  let cands := list.fold([1, 2, 3, 4], [], fn (acc :: List[Int], s :: Int) -> [sql] List[Int] {
+    if s != wolf and ww_alive(db, s) and ww_role(db, s) != "wolf" { list.concat(acc, [s]) } else { acc }
+  })
+  let n := list.len(cands)
+  if n == 0 { -1 } else { ww_nth_int(cands, ww_int_mod(ww_seed(db) + ww_day(db), n)) }
+}
+fn ww_ai_seer_look(db :: Db) -> [sql, time, fs_write] Unit {
+  let seer := ww_find_role(db, "seer")
+  if seer == 0 or seer < 0 or not ww_alive(db, seer) { () } else {
+    let cands := list.fold([0, 1, 2, 3, 4], [], fn (acc :: List[Int], s :: Int) -> [sql] List[Int] {
+      if s != seer and ww_alive(db, s) and str.is_empty(get_state(db, str.join(["ww_seen_", int.to_str(s)], ""))) { list.concat(acc, [s]) } else { acc }
+    })
+    let n := list.len(cands)
+    if n == 0 { () } else {
+      let t := ww_nth_int(cands, ww_int_mod(ww_seed(db) + ww_day(db) + 1, n))
+      let _ := set_state(db, str.join(["ww_seen_", int.to_str(t)], ""), ww_role(db, t))
+      let _ := g_record(db, "ww", str.join(["{\"kind\":\"inspect\",\"by\":", int.to_str(seer), ",\"target\":", int.to_str(t), ",\"saw\":\"", ww_role(db, t), "\"}"], ""))
+      ()
+    }
+  }
+}
+fn ww_check_win(db :: Db) -> [sql, time] Str {
+  let wolves := ww_living_wolves(db)
+  let total := ww_living_total(db)
+  if wolves == 0 { let _ := set_state(db, "ww_winner", "town") let _ := set_state(db, "ww_phase", "over") "town" } else {
+  if wolves * 2 >= total { let _ := set_state(db, "ww_winner", "wolf") let _ := set_state(db, "ww_phase", "over") "wolf" } else { "" }}
+}
+fn ww_resolve_night(db :: Db) -> [sql, time, crypto, fs_write] Str {
+  let _ := ww_ai_seer_look(db)
+  let victim := ww_ai_kill_target(db)
+  let wolf := ww_find_role(db, "wolf")
+  let _ := if victim >= 0 {
+    let _ := ww_set_dead(db, victim)
+    let _ := g_record(db, "ww", str.join(["{\"kind\":\"kill\",\"by\":", int.to_str(wolf), ",\"target\":", int.to_str(victim), "}"], ""))
+    ww_log(db, "death", victim, str.join(["Dawn breaks. ", ww_name(victim), " was found dead — the work of the wolf."], ""))
+  } else { ww_log(db, "event", 0, "Dawn breaks on a strangely quiet village. No one died.") }
+  let w := ww_check_win(db)
+  if str.is_empty(w) {
+    let _ := set_state(db, "ww_phase", "day")
+    "{\"status\":\"ok\",\"phase\":\"day\"}"
+  } else {
+    str.join(["{\"status\":\"ok\",\"phase\":\"over\",\"winner\":\"", w, "\"}"], "")
+  }
+}
+fn ww_night(db :: Db, target :: Int, token :: Str) -> [sql, time, crypto, fs_write] Str {
+  if ww_phase(db) != "night" { "{\"status\":\"refused\",\"reason\":\"it is not night\"}" } else {
+    if game.match_token_side(ww_pubkey(), token, g_match(db, "ww"), time.now_ms()) != "S0" {
+      "{\"status\":\"refused\",\"reason\":\"capability denied: not your seat\"}"
+    } else {
+      let my_role := ww_role(db, 0)
+      if my_role == "villager" or not ww_alive(db, 0) { ww_resolve_night(db) } else {
+      if my_role == "seer" {
+        if target < 0 or target > 4 or target == 0 or not ww_alive(db, target) {
+          "{\"status\":\"refused\",\"reason\":\"pick a living player to inspect\"}"
+        } else {
+          let saw := ww_role(db, target)
+          let _ := set_state(db, str.join(["ww_seen_", int.to_str(target)], ""), saw)
+          let _ := set_state(db, "ww_acted_0", "1")
+          let _ := g_record(db, "ww", str.join(["{\"kind\":\"inspect\",\"by\":0,\"target\":", int.to_str(target), ",\"saw\":\"", saw, "\"}"], ""))
+          ww_resolve_night(db)
+        }
+      } else { ww_resolve_night(db) }}
+    }
+  }
+}
+# Tally the day's votes (human + AIs) and lynch the plurality; ties → lowest seat.
+fn ww_tally_and_lynch(db :: Db, human_vote :: Int, ai_votes :: List[Int]) -> [sql, time, crypto, fs_write] Str {
+  let all_votes := if human_vote >= 0 and ww_alive(db, 0) { list.concat([human_vote], ai_votes) } else { ai_votes }
+  let lynched := list.fold([0, 1, 2, 3, 4], -1, fn (best :: Int, s :: Int) -> [sql] Int {
+    if not ww_alive(db, s) { best } else {
+      let cs := list.fold(all_votes, 0, fn (a :: Int, v :: Int) -> Int { if v == s { a + 1 } else { a } })
+      let bc := if best < 0 { -1 } else { list.fold(all_votes, 0, fn (a :: Int, v :: Int) -> Int { if v == best { a + 1 } else { a } }) }
+      if cs > bc { s } else { best }
+    }
+  })
+  if lynched < 0 { let _ := set_state(db, "ww_phase", "day") "{\"status\":\"ok\",\"lynched\":-1}" } else {
+    let role := ww_role(db, lynched)
+    let _ := ww_set_dead(db, lynched)
+    let _ := g_record(db, "ww", str.join(["{\"kind\":\"lynch\",\"target\":", int.to_str(lynched), ",\"role\":\"", role, "\",\"day\":", int.to_str(ww_day(db)), "}"], ""))
+    let _ := ww_log(db, "lynch", lynched, str.join(["The village votes out ", ww_name(lynched), ". They were the ", role, "."], ""))
+    let w := ww_check_win(db)
+    if str.is_empty(w) {
+      let _ := set_state(db, "ww_day", int.to_str(ww_day(db) + 1))
+      let _ := set_state(db, "ww_acted_0", "")
+      let _ := set_state(db, "ww_phase", "night")
+      let _ := ww_log(db, "event", 0, "Night falls again. Close your eyes.")
+      str.join(["{\"status\":\"ok\",\"lynched\":", int.to_str(lynched), ",\"phase\":\"night\"}"], "")
+    } else {
+      str.join(["{\"status\":\"ok\",\"lynched\":", int.to_str(lynched), ",\"phase\":\"over\",\"winner\":\"", w, "\"}"], "")
+    }
+  }
+}
+# The private knowledge handed to one AI seat's LLM prompt.
+fn ww_private_note(db :: Db, seat :: Int) -> [sql] Str {
+  let role := ww_role(db, seat)
+  if role == "wolf" { "You alone are the WEREWOLF. You hunt at night and must never be exposed. Everyone else is a villager to you." } else {
+  if role == "seer" {
+    let seen := list.fold([0, 1, 2, 3, 4], "", fn (acc :: Str, t :: Int) -> [sql] Str {
+      let saw := get_state(db, str.join(["ww_seen_", int.to_str(t)], ""))
+      if str.is_empty(saw) { acc } else { str.join([acc, ww_name(t), " is the ", saw, ". "], "") }
+    })
+    str.join(["You are the SEER. Your inspections have revealed: ", (if str.is_empty(seen) { "nothing yet." } else { seen })], "")
+  } else { "You are an ordinary VILLAGER with no special knowledge — only your read of the room." }}
+}
+# Comma-separated names of the living players (vote candidates).
+fn ww_cand_names(db :: Db) -> [sql] Str {
+  str.join(list.fold([0, 1, 2, 3, 4], [], fn (acc :: List[Str], s :: Int) -> [sql] List[Str] { if ww_alive(db, s) { list.concat(acc, [ww_name(s)]) } else { acc } }), ", ")
+}
+# Map a name back to a living seat; fall back to `fb` if it doesn't resolve.
+fn ww_seat_of_name(db :: Db, nm :: Str, fb :: Int) -> [sql] Int {
+  list.fold([0, 1, 2, 3, 4], fb, fn (acc :: Int, s :: Int) -> [sql] Int { if acc != fb { acc } else { if ww_alive(db, s) and str.contains(nm, ww_name(s)) { s } else { acc } } })
+}
+# A deterministic fallback vote for AI seat `s` — prefers a fellow AI (spares the
+# human in the LLM-less path), never itself.
+fn ww_fallback_vote(db :: Db, s :: Int) -> [sql] Int {
+  let ai := list.fold([1, 2, 3, 4], -1, fn (acc :: Int, t :: Int) -> [sql] Int { if acc >= 0 { acc } else { if t != s and ww_alive(db, t) { t } else { -1 } } })
+  if ai >= 0 { ai } else { if ww_alive(db, 0) { 0 } else { -1 } }
+}
+fn ww_dispatch(db :: Db, name :: Str, args :: jv.Json) -> [sql, time, crypto, fs_write] Str {
+  if name == "ww_new" or name == "ww_reset" { ww_new(db) } else {
+  if name == "ww_night" { ww_night(db, jv_int_or(args, "target", -1), jv_str_or(args, "token", "")) } else {
+  ww_state(db) }}
+}
+
 # ── Demo state (key/value store) ──────────────────────────────────────────────
 
 fn get_state(db :: Db, key :: Str) -> [sql] Str {
@@ -2054,6 +2288,35 @@ fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :
     let _ := insert_event(db, str.join(["{\"kind\":\"wedding_line\",\"speaker\":\"jonah\",\"line\":", json_str(jonah_line), "}"], ""))
     "{\"status\":\"ok\"}"
   } else {
+  if name == "ww_new" or name == "ww_reset" or name == "ww_night" or name == "ww_state" {
+    ww_dispatch(db, name, args)
+  } else {
+  if name == "ww_discuss" {
+    # the human's line first (if alive), then each living AI speaks once, in seat
+    # order, seeing the transcript so far — so they react to each other.
+    let htext := jv_str_or(args, "text", "")
+    let _ := if ww_alive(db, 0) and not str.is_empty(htext) { ww_log(db, "say", 0, htext) } else { () }
+    let _ := list.fold([1, 2, 3, 4], (), fn (_ :: Unit, s :: Int) -> [sql, net, llm, io, proc, time, fs_write, crypto] Unit {
+      if not ww_alive(db, s) { () } else {
+        let line := wwn.speak(ww_name(s), ww_role(db, s), ww_private_note(db, s), ww_transcript(db), seller_token, seller_project, seller_location, seller_base, seller_model)
+        ww_log(db, "say", s, line)
+      }
+    })
+    let _ := set_state(db, "ww_phase", "vote")
+    ww_state(db)
+  } else {
+  if name == "ww_vote" {
+    let hvote := jv_int_or(args, "target", -1)
+    let cands := ww_cand_names(db)
+    let ai_votes := list.fold([1, 2, 3, 4], [], fn (acc :: List[Int], s :: Int) -> [sql, net, llm, io, proc, time, fs_write, crypto] List[Int] {
+      if not ww_alive(db, s) { acc } else {
+        let fb := ww_fallback_vote(db, s)
+        let picked := wwn.vote(ww_name(s), ww_role(db, s), ww_private_note(db, s), ww_transcript(db), cands, ww_name(fb), seller_token, seller_project, seller_location, seller_base, seller_model)
+        list.concat(acc, [ww_seat_of_name(db, picked, fb)])
+      }
+    })
+    ww_tally_and_lynch(db, hvote, ai_votes)
+  } else {
   if name == "game_verify" { g_verify(db, jv_str_or(args, "game", "")) } else {
   if name == "fb_join" or name == "fb_reset" or name == "fb_strategy" or name == "fb_signal" or name == "fb_move" or name == "fb_verify" or name == "fb_state" {
     fb_dispatch(db, name, args)
@@ -2396,7 +2659,7 @@ fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :
     str.join(["{\"status\":\"dispatched\",\"callsign\":\"RESCUE-7\",\"eta_min\":8,\"capacity\":12}"], "")
   } else {
     str.join(["{\"error\":\"unknown skill: ", sq(name), "\"}"], "")
-  }}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}
+  }}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}
 }
 
 # ── Router ────────────────────────────────────────────────────────────────────
