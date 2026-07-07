@@ -1789,6 +1789,8 @@ fn ww_new(db :: Db) -> [sql, time, crypto, fs_write] Str {
   let _ := set_state(db, "ww_logn", "0")
   let _ := set_state(db, "ww_transcript", "")
   let _ := set_state(db, "ww_advisor_log", "")
+  let _ := set_state(db, "ww_revealed", "")
+  let _ := list.fold([1, 2, 3, 4], (), fn (_ :: Unit, s :: Int) -> [sql] Unit { set_state(db, str.join(["ww_reveal_", int.to_str(s)], ""), "") })
   let _ := set_state(db, "ww_winner", "")
   let _ := set_state(db, "ww_day", "1")
   let _ := set_state(db, "ww_phase", "night")
@@ -1919,6 +1921,21 @@ fn ww_seat_of_name(db :: Db, nm :: Str, fb :: Int) -> [sql] Int {
 fn ww_advisor_log(db :: Db) -> [sql] Str { get_state(db, "ww_advisor_log") }
 fn ww_advisor_append(db :: Db, q :: Str, a :: Str) -> [sql] Unit {
   set_state(db, "ww_advisor_log", str.join([ww_advisor_log(db), "You: ", q, "\nAdvisor: ", a, "\n"], ""))
+}
+# Did seat `s`'s side win? Town seats (villager/seer) win iff the town won.
+fn ww_seat_won(db :: Db, s :: Int) -> [sql] Bool {
+  let winner := ww_winner(db)
+  if ww_role(db, s) == "wolf" { winner == "wolf" } else { winner == "town" }
+}
+# Post-game confessions, generated once and cached (each is one LLM turn, so we
+# never regenerate on a state re-poll). Only the four AI seats confess — seat 0
+# is the human. Stored per-seat; `ww_revealed` guards the one-time generation.
+fn ww_reveal_of(db :: Db, s :: Int) -> [sql] Str { get_state(db, str.join(["ww_reveal_", int.to_str(s)], "")) }
+fn ww_reveals_json(db :: Db) -> [sql] Str {
+  let items := list.fold([1, 2, 3, 4], [], fn (acc :: List[Str], s :: Int) -> [sql] List[Str] {
+    list.concat(acc, [str.join(["{\"seat\":", int.to_str(s), ",\"name\":\"", ww_name(s), "\",\"role\":\"", ww_role(db, s), "\",\"won\":", (if ww_seat_won(db, s) { "true" } else { "false" }), ",\"text\":", json_str(ww_reveal_of(db, s)), "}"], "")])
+  })
+  str.join(["[", str.join(items, ","), "]"], "")
 }
 # A deterministic fallback vote for AI seat `s` — prefers a fellow AI (spares the
 # human in the LLM-less path), never itself.
@@ -2338,6 +2355,20 @@ fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :
       str.join(["{\"status\":\"ok\",\"answer\":", json_str(answer), "}"], "")
     }
   } else {
+  if name == "ww_reveal" {
+    # Only meaningful once the game is over. Generate each AI seat's confession
+    # once and cache it (guarded by ww_revealed) so re-polling is free.
+    if not ww_over(db) { "{\"status\":\"refused\",\"reason\":\"the game is not over yet\"}" } else {
+      let _ := if str.is_empty(get_state(db, "ww_revealed")) {
+        let _ := list.fold([1, 2, 3, 4], (), fn (_ :: Unit, s :: Int) -> [sql, net, llm, io, proc, time, fs_write, crypto] Unit {
+          let line := wwn.reveal(ww_name(s), ww_role(db, s), ww_seat_won(db, s), ww_transcript(db), seller_token, seller_project, seller_location, seller_base, seller_model)
+          set_state(db, str.join(["ww_reveal_", int.to_str(s)], ""), line)
+        })
+        set_state(db, "ww_revealed", "1")
+      } else { () }
+      str.join(["{\"status\":\"ok\",\"reveals\":", ww_reveals_json(db), "}"], "")
+    }
+  } else {
   if name == "game_verify" { g_verify(db, jv_str_or(args, "game", "")) } else {
   if name == "fb_join" or name == "fb_reset" or name == "fb_strategy" or name == "fb_signal" or name == "fb_move" or name == "fb_verify" or name == "fb_state" {
     fb_dispatch(db, name, args)
@@ -2680,7 +2711,7 @@ fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :
     str.join(["{\"status\":\"dispatched\",\"callsign\":\"RESCUE-7\",\"eta_min\":8,\"capacity\":12}"], "")
   } else {
     str.join(["{\"error\":\"unknown skill: ", sq(name), "\"}"], "")
-  }}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}
+  }}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}
 }
 
 # ── Router ────────────────────────────────────────────────────────────────────
