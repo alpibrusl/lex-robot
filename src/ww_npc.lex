@@ -184,3 +184,47 @@ fn advise(private :: Str, transcript :: Str, history :: Str, question :: Str, to
     answer
   }
 }
+
+# ── Post-game reveal ─────────────────────────────────────────────────────────
+# Once the game is over, each AI seat confesses — in the first person, with
+# full hindsight — how it actually played: the wolf owns up to how it deflected,
+# the seer reveals what it knew and how it steered, villagers admit who they
+# suspected and whether they were fooled. This is the payoff of a bluffing game:
+# "the wolf fooled everyone" becomes "here is exactly how it lied to you."
+fn reveal_fallback(role :: Str, won :: Bool) -> Str {
+  if role == "wolf" {
+    if won { "I just kept quiet and let the loudest voices hang themselves. You were all watching each other — never me." }
+    else { "You got me. I pushed a little too hard on the wrong person and the table finally smelled it." }
+  } else {
+  if role == "seer" {
+    if won { "I knew more than I let on — I fed the town just enough to swing the vote without painting a target on my own back." }
+    else { "I had a read but I couldn't get anyone to believe me in time. They came for me before I could prove it." }
+  } else {
+    if won { "Honestly? I mostly followed my gut about who felt like they were performing — and this time it paid off." }
+    else { "I trusted the wrong voice at the wrong moment. In hindsight the tells were right there." }
+  }}
+}
+fn reveal(name :: Str, role :: Str, won :: Bool, transcript :: Str, token :: Str, project :: Str, location :: Str, base_url :: Str, model_name :: Str) -> [net, llm, io, proc] Str {
+  let fb := reveal_fallback(role, won)
+  if not provider_configured(token, project, base_url) { fb } else {
+    let outcome := if won { "Your side WON." } else { "Your side LOST." }
+    let lens := if role == "wolf" {
+      "Confess how you stayed hidden: who you deflected suspicion onto, your smoothest lie, and your riskiest moment."
+    } else {
+    if role == "seer" {
+      "Reveal what your inspections told you and how you tried to steer the town toward the wolf without exposing yourself."
+    } else {
+      "Admit who you suspected and why, and whether the wolf fooled you."
+    }}
+    let system_msg := str.join([
+      "You are ", name, ", and a game of Werewolf has just ended. You were the ", role, ". ", outcome, "\n\n",
+      "Speak now with full hindsight, breaking character to give the table an honest post-game confession. ", lens, "\n",
+      "1-2 sentences, first person, candid — a little smug if you won, a little rueful if you lost. Refer to the other players by name where it lands.\n",
+      "Respond with EXACTLY: REVEAL:<your confession>\nNo other text."
+    ], "")
+    let user_msg := str.join(["The full game, as it played out:\n", transcript, "\n\nYour confession now that it's over. REVEAL:<your confession>"], "")
+    let line := ww_llm_turn_retried(str.concat("wwr-", name), system_msg, user_msg, make_model(base_url, model_name), make_prov(token, project, location, base_url), 0.85, (if base_url == "opencode" { Some(2500) } else { Some(160) }), "REVEAL:", fb)
+    let _ := io.print(str.join(["  [ww-reveal:", name, "/", role, "] ", line], ""))
+    line
+  }
+}
