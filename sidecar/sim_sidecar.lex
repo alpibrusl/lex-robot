@@ -1703,7 +1703,7 @@ fn ww_name(seat :: Int) -> Str {
 }
 fn ww_secret() -> Bytes { bytes.from_str("lexgames-werewolf-secret-seed-00") }
 fn ww_pubkey() -> [crypto] Str { match crypto.ed25519_public_key(ww_secret()) { Ok(pk) => crypto.base64url_encode(pk), Err(_) => "" } }
-fn ww_seed(db :: Db) -> [sql, time] Int { match str.to_int(g_match(db, "ww")) { Some(n) => n, None => 0 } }
+fn ww_seed(db :: Db) -> [sql, time] Int { get_state_int(db, "ww_round") }
 
 fn ww_role(db :: Db, seat :: Int) -> [sql] Str { get_state(db, str.concat("ww_role_", int.to_str(seat))) }
 fn ww_alive(db :: Db, seat :: Int) -> [sql] Bool { get_state(db, str.concat("ww_alive_", int.to_str(seat))) != "0" and not str.is_empty(get_state(db, str.concat("ww_role_", int.to_str(seat)))) }
@@ -1776,6 +1776,11 @@ fn ww_assign(db :: Db) -> [sql, time, fs_write] Unit {
   ()
 }
 fn ww_new(db :: Db) -> [sql, time, crypto, fs_write] Str {
+  # Fresh per-round seed for role assignment + AI targeting — deliberately
+  # separate from g_match's match id (which never rotates across a server's
+  # lifetime), so every "New Game" reshuffles who the wolf/seer are instead of
+  # replaying the exact same setup every time.
+  let _ := set_state(db, "ww_round", int.to_str(time.now_ms()))
   let _ := list.fold(ww_range(40), (), fn (_ :: Unit, i :: Int) -> [sql] Unit { set_state(db, str.join(["ww_log_", int.to_str(i)], ""), "") })
   let _ := list.fold([0, 1, 2, 3, 4], (), fn (_ :: Unit, s :: Int) -> [sql] Unit {
     let _ := set_state(db, str.join(["ww_seen_", int.to_str(s)], ""), "")
