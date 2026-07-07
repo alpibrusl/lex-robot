@@ -42,6 +42,27 @@ fn extract_tagged(text :: Str, tag :: Str, fallback :: Str) -> Str {
     }
   })
 }
+fn first_nonempty_line(text :: Str) -> Str {
+  let lines := str.split(text, "\n")
+  list.fold(lines, "", fn (acc :: Str, line :: Str) -> Str {
+    if not str.is_empty(acc) { acc } else {
+      let t := str.trim(line)
+      if str.is_empty(t) { acc } else { t }
+    }
+  })
+}
+# Local models frequently ignore the "respond with EXACTLY SAY:<line>" format
+# instruction while still producing perfectly good in-character content — e.g.
+# qwen3-coder:30b routinely ANSWERS the prompt but drops the tag entirely. Only
+# fall all the way back to the canned line when the model gave back nothing
+# usable at all (a true empty/failed completion), not just an untagged one.
+fn extract_tagged_or_raw(text :: Str, tag :: Str, fallback :: Str) -> Str {
+  let tagged := extract_tagged(text, tag, "")
+  if not str.is_empty(tagged) { tagged } else {
+    let raw := first_nonempty_line(text)
+    if str.is_empty(raw) { fallback } else { raw }
+  }
+}
 
 fn provider_configured(token :: Str, project :: Str, base_url :: Str) -> Bool {
   (base_url == "opencode" and not str.is_empty(token))
@@ -55,6 +76,22 @@ fn make_prov(token :: Str, project :: Str, location :: Str, base_url :: Str) -> 
 fn make_model(base_url :: Str, model_name :: Str) -> prov.ModelRef {
   if base_url == "opencode" { prov.make_model_ref("opencode-go", model_name) }
   else { if not str.is_empty(base_url) { prov.make_model_ref("litellm", model_name) } else { vtx.gemini_35_flash() } }
+}
+
+# One bounded LLM turn, tagged-line extraction. Local models (and the local
+# litellm proxy) are occasionally flaky mid-conversation — a dropped
+# connection or a malformed completion — so this is called up to twice: an
+# empty/fallback-equal first result is retried once before giving up. Mirrors
+# the retry-on-format-miss pattern already proven to take local models from
+# partial to 3/3 reliable elsewhere in this platform (BYO-agent probes).
+fn ww_llm_turn(agent_name :: Str, system_msg :: Str, user_msg :: Str, model :: prov.ModelRef, provider :: prov.Provider, temperature :: Float, max_tokens :: Option[Int], tag :: Str, fb :: Str) -> [net, llm, io, proc] Str {
+  let agent := llm_agent.make_agent(agent_name, system_msg, model, provider, [], { temperature: Some(temperature), top_p: None, max_steps: Some(1), max_tokens: max_tokens })
+  let steps := iter.to_list(llm_agent.run_loop(agent, [UserMsg(user_msg)]))
+  extract_tagged_or_raw(extract_text(steps), tag, fb)
+}
+fn ww_llm_turn_retried(agent_name :: Str, system_msg :: Str, user_msg :: Str, model :: prov.ModelRef, provider :: prov.Provider, temperature :: Float, max_tokens :: Option[Int], tag :: Str, fb :: Str) -> [net, llm, io, proc] Str {
+  let first := ww_llm_turn(agent_name, system_msg, user_msg, model, provider, temperature, max_tokens, tag, fb)
+  if first != fb { first } else { ww_llm_turn(agent_name, system_msg, user_msg, model, provider, temperature, max_tokens, tag, fb) }
 }
 
 # ── Role framing ──────────────────────────────────────────────────────────────
@@ -94,9 +131,7 @@ fn speak(name :: Str, role :: Str, private :: Str, transcript :: Str, token :: S
     ], "")
     let user_msg := if str.is_empty(transcript) { "The day begins. You speak first. SAY:<your line>" }
       else { str.join(["The table so far:\n", transcript, "\n\nYour turn. SAY:<your line>"], "") }
-    let agent := llm_agent.make_agent(str.concat("ww-", name), system_msg, make_model(base_url, model_name), make_prov(token, project, location, base_url), [], { temperature: Some(0.9), top_p: None, max_steps: Some(1), max_tokens: if base_url == "opencode" { Some(2500) } else { Some(120) } })
-    let steps := iter.to_list(llm_agent.run_loop(agent, [UserMsg(user_msg)]))
-    let line := extract_tagged(extract_text(steps), "SAY:", fb)
+    let line := ww_llm_turn_retried(str.concat("ww-", name), system_msg, user_msg, make_model(base_url, model_name), make_prov(token, project, location, base_url), 0.9, (if base_url == "opencode" { Some(2500) } else { Some(120) }), "SAY:", fb)
     let _ := io.print(str.join(["  [ww:", name, "/", role, "] ", line], ""))
     line
   }
@@ -117,9 +152,7 @@ fn vote(name :: Str, role :: Str, private :: Str, transcript :: Str, candidates 
       "Respond with EXACTLY one line: VOTE:<exact candidate name>\nNo other text."
     ], "")
     let user_msg := str.join(["The table so far:\n", transcript, "\n\nWho do you vote to eliminate? VOTE:<name>"], "")
-    let agent := llm_agent.make_agent(str.concat("wwv-", name), system_msg, make_model(base_url, model_name), make_prov(token, project, location, base_url), [], { temperature: Some(0.6), top_p: None, max_steps: Some(1), max_tokens: if base_url == "opencode" { Some(2500) } else { Some(32) } })
-    let steps := iter.to_list(llm_agent.run_loop(agent, [UserMsg(user_msg)]))
-    let picked := extract_tagged(extract_text(steps), "VOTE:", fallback_target)
+    let picked := ww_llm_turn_retried(str.concat("wwv-", name), system_msg, user_msg, make_model(base_url, model_name), make_prov(token, project, location, base_url), 0.6, (if base_url == "opencode" { Some(2500) } else { Some(32) }), "VOTE:", fallback_target)
     let _ := io.print(str.join(["  [ww-vote:", name, "] ", picked], ""))
     picked
   }
