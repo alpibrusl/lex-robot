@@ -105,8 +105,11 @@ fn role_goal(role :: Str) -> Str {
   if role == "seer" {
     "You are the SEER. Each night you learn one player's true role. Use what you know to steer the town toward the wolf — but reveal carefully; if the wolf learns you're the seer, you'll be the next to die."
   } else {
+  if role == "doctor" {
+    "You are the DOCTOR. Each night you may protect one player from the wolf's attack, including yourself. You have no way to know who the wolf is except by watching the room — reason like a villager in public, and don't reveal your role unless it truly helps."
+  } else {
     "You are a VILLAGER. You have no special powers — only your read of the room. Reason out loud, weigh who's acting suspicious, and help the town find the wolf."
-  }}
+  }}}
 }
 
 # ── Discussion turn ───────────────────────────────────────────────────────────
@@ -117,8 +120,11 @@ fn speak_fallback(name :: Str, role :: Str) -> Str {
   if role == "seer" {
     "Let's not rush a vote. I've got a read forming, and I'd rather be sure before I say it out loud."
   } else {
+  if role == "doctor" {
+    "I don't have any special read — but I've been keeping a close eye on things, and I'll do what I can to keep us safe."
+  } else {
     "I don't have much yet — but whoever's steering us hardest is who I'd look at twice."
-  }}
+  }}}
 }
 fn speak(name :: Str, role :: Str, private :: Str, transcript :: Str, token :: Str, project :: Str, location :: Str, base_url :: Str, model_name :: Str) -> [net, llm, io, proc] Str {
   let fb := speak_fallback(name, role)
@@ -200,9 +206,13 @@ fn reveal_fallback(role :: Str, won :: Bool) -> Str {
     if won { "I knew more than I let on — I fed the town just enough to swing the vote without painting a target on my own back." }
     else { "I had a read but I couldn't get anyone to believe me in time. They came for me before I could prove it." }
   } else {
+  if role == "doctor" {
+    if won { "I saved the right person at the right moment — quietly, no one even noticed, but it bought us the round we needed." }
+    else { "I couldn't cover everyone, and in the end my saves weren't enough." }
+  } else {
     if won { "Honestly? I mostly followed my gut about who felt like they were performing — and this time it paid off." }
     else { "I trusted the wrong voice at the wrong moment. In hindsight the tells were right there." }
-  }}
+  }}}
 }
 fn reveal(name :: Str, role :: Str, won :: Bool, transcript :: Str, token :: Str, project :: Str, location :: Str, base_url :: Str, model_name :: Str) -> [net, llm, io, proc] Str {
   let fb := reveal_fallback(role, won)
@@ -214,8 +224,11 @@ fn reveal(name :: Str, role :: Str, won :: Bool, transcript :: Str, token :: Str
     if role == "seer" {
       "Reveal what your inspections told you and how you tried to steer the town toward the wolf without exposing yourself."
     } else {
+    if role == "doctor" {
+      "Reveal who you protected each night and whether you ever guessed right and saved the wolf's actual target."
+    } else {
       "Admit who you suspected and why, and whether the wolf fooled you."
-    }}
+    }}}
     let system_msg := str.join([
       "You are ", name, ", and a game of Werewolf has just ended. You were the ", role, ". ", outcome, "\n\n",
       "Speak now with full hindsight, breaking character to give the table an honest post-game confession. ", lens, "\n",
