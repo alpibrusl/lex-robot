@@ -157,3 +157,30 @@ fn vote(name :: Str, role :: Str, private :: Str, transcript :: Str, candidates 
     picked
   }
 }
+
+# ── Player's private advisor ─────────────────────────────────────────────────
+# NOT one of the five seats — a strategy sounding board for the human player,
+# scoped to exactly what the player already knows (public transcript + their
+# own private role knowledge), so it can't leak information the player
+# couldn't otherwise have. Free-flowing, so `history` is the running Q&A so
+# far rather than a strict single-line format.
+fn advisor_fallback() -> Str {
+  "I don't have a strong read yet — watch how people react when someone gets accused, that's usually where the tells show up."
+}
+fn advise(private :: Str, transcript :: Str, history :: Str, question :: Str, token :: Str, project :: Str, location :: Str, base_url :: Str, model_name :: Str) -> [net, llm, io, proc] Str {
+  let fb := advisor_fallback()
+  if not provider_configured(token, project, base_url) { fb } else {
+    let system_msg := str.join([
+      "You are the human player's private strategy advisor in a game of Werewolf. You are NOT one of the five seated players and you have no hidden agenda of your own — you're a sharp, honest ally helping the human think.\n\n",
+      "You know exactly what the player knows, nothing more: the public table transcript below, and the player's own private role knowledge. Never invent or assume information the player doesn't have access to.\n\n",
+      "What the player privately knows: ", private, "\n\n",
+      "Give real analysis and a direct opinion when asked — who seems suspicious and why, what to say next, or who to vote for. 1-3 sentences, conversational, no bullet points or hedging disclaimers.\n",
+      "Respond with EXACTLY: ADVICE:<your answer>\nNo other text."
+    ], "")
+    let convo := if str.is_empty(history) { "" } else { str.join(["Earlier in our conversation:\n", history, "\n\n"], "") }
+    let user_msg := str.join([convo, "The table so far:\n", transcript, "\n\nMy question: ", question, "\nADVICE:<your answer>"], "")
+    let answer := ww_llm_turn_retried("ww-advisor", system_msg, user_msg, make_model(base_url, model_name), make_prov(token, project, location, base_url), 0.7, (if base_url == "opencode" { Some(2500) } else { Some(220) }), "ADVICE:", fb)
+    let _ := io.print(str.join(["  [ww-advisor] Q: ", question, " -> ", answer], ""))
+    answer
+  }
+}
