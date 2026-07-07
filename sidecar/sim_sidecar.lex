@@ -1788,6 +1788,7 @@ fn ww_new(db :: Db) -> [sql, time, crypto, fs_write] Str {
   })
   let _ := set_state(db, "ww_logn", "0")
   let _ := set_state(db, "ww_transcript", "")
+  let _ := set_state(db, "ww_advisor_log", "")
   let _ := set_state(db, "ww_winner", "")
   let _ := set_state(db, "ww_day", "1")
   let _ := set_state(db, "ww_phase", "night")
@@ -1911,6 +1912,13 @@ fn ww_cand_names(db :: Db) -> [sql] Str {
 # Map a name back to a living seat; fall back to `fb` if it doesn't resolve.
 fn ww_seat_of_name(db :: Db, nm :: Str, fb :: Int) -> [sql] Int {
   list.fold([0, 1, 2, 3, 4], fb, fn (acc :: Int, s :: Int) -> [sql] Int { if acc != fb { acc } else { if ww_alive(db, s) and str.contains(nm, ww_name(s)) { s } else { acc } } })
+}
+# The running Q&A transcript with the player's private advisor (reset each
+# new game; never recorded to the trail — it's a scratchpad, not a move, and
+# doesn't affect what's legal, so the fairness model doesn't need to see it).
+fn ww_advisor_log(db :: Db) -> [sql] Str { get_state(db, "ww_advisor_log") }
+fn ww_advisor_append(db :: Db, q :: Str, a :: Str) -> [sql] Unit {
+  set_state(db, "ww_advisor_log", str.join([ww_advisor_log(db), "You: ", q, "\nAdvisor: ", a, "\n"], ""))
 }
 # A deterministic fallback vote for AI seat `s` — prefers a fellow AI (spares the
 # human in the LLM-less path), never itself.
@@ -2322,6 +2330,14 @@ fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :
     })
     ww_tally_and_lynch(db, hvote, ai_votes)
   } else {
+  if name == "ww_advise" {
+    let q := jv_str_or(args, "text", "")
+    if str.is_empty(q) { "{\"status\":\"refused\",\"reason\":\"ask something first\"}" } else {
+      let answer := wwn.advise(ww_private_note(db, 0), ww_transcript(db), ww_advisor_log(db), q, seller_token, seller_project, seller_location, seller_base, seller_model)
+      let _ := ww_advisor_append(db, q, answer)
+      str.join(["{\"status\":\"ok\",\"answer\":", json_str(answer), "}"], "")
+    }
+  } else {
   if name == "game_verify" { g_verify(db, jv_str_or(args, "game", "")) } else {
   if name == "fb_join" or name == "fb_reset" or name == "fb_strategy" or name == "fb_signal" or name == "fb_move" or name == "fb_verify" or name == "fb_state" {
     fb_dispatch(db, name, args)
@@ -2664,7 +2680,7 @@ fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :
     str.join(["{\"status\":\"dispatched\",\"callsign\":\"RESCUE-7\",\"eta_min\":8,\"capacity\":12}"], "")
   } else {
     str.join(["{\"error\":\"unknown skill: ", sq(name), "\"}"], "")
-  }}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}
+  }}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}
 }
 
 # ── Router ────────────────────────────────────────────────────────────────────
