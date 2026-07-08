@@ -1770,8 +1770,14 @@ fn ww_state(db :: Db) -> [sql] Str {
   let my_role := ww_role(db, 0)
   let phase := ww_phase(db)
   let needs_night := phase == "night" and (my_role == "seer" or my_role == "wolf" or my_role == "doctor") and ww_alive(db, 0) and str.is_empty(get_state(db, "ww_acted_0"))
+  # `seen` is only ever the SEER's own private inspection log — if the human
+  # isn't the seer this round, an AI seer's results must stay hidden from
+  # them, or the whole hidden-role premise breaks. ww_seen_<seat> is a shared
+  # write target with ww_private_note's own LLM-prompt bookkeeping, so this
+  # has to gate on role here rather than at the write site.
+  let seen := if my_role == "seer" { ww_seen_json(db) } else { "[]" }
   str.join(["{\"phase\":\"", phase, "\",\"day\":", int.to_str(ww_day(db)), ",\"winner\":", json_str(ww_winner(db)),
-            ",\"you\":{\"seat\":0,\"role\":", json_str(my_role), ",\"alive\":", (if ww_alive(db, 0) { "true" } else { "false" }), ",\"needs_night\":", (if needs_night { "true" } else { "false" }), ",\"seen\":", ww_seen_json(db), "}",
+            ",\"you\":{\"seat\":0,\"role\":", json_str(my_role), ",\"alive\":", (if ww_alive(db, 0) { "true" } else { "false" }), ",\"needs_night\":", (if needs_night { "true" } else { "false" }), ",\"seen\":", seen, "}",
             ",\"players\":", ww_players_json(db), ",\"log\":", ww_log_json(db), "}"], "")
 }
 
