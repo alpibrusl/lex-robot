@@ -29,7 +29,7 @@ platform's tarball (`aarch64-apple-darwin`, `x86_64-apple-darwin`,
 `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`), e.g. macOS Apple Silicon:
 
 ```sh
-V=v0.10.0; T=aarch64-apple-darwin
+V=v0.10.7; T=aarch64-apple-darwin
 curl -fsSL "https://github.com/alpibrusl/lex-lang/releases/download/$V/lex-$V-$T.tar.gz" | tar -xz
 sudo mv "lex-$V-$T/lex" /usr/local/bin/ && lex version
 ```
