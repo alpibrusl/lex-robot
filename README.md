@@ -87,7 +87,11 @@ src/
   charge.lex     OCPP client for the depot Verify gate (real lex-charge / CSMS)
   a2a_*.lex      A2A protocol: bootstrap blob, Ed25519 cards, handshake, consent, sessions, server
   human_goal.lex human-in-the-loop goal (ask a person at run time, don't hardcode it)
+  mcp_server.lex MCP stdio front door — exposes the bounded skills as agent tools
   bazaar*.lex    bazaar shopper + LLM seller logic
+  seller_llm.lex LLM seller policy behind the bazaar demos
+  haggle.lex     price negotiation between shopper and seller
+  *_npc.lex      demo counterparties (notary, wedding, werewolf) for the agentic scenarios
   (the games framework now lives in the lex-games package — a git dependency)
 examples/
   demo / task / budget / depot / safe_rollout / llm_planner   the robot governance demos
