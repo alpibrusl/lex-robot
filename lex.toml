@@ -3,7 +3,7 @@ name    = "lex-robot"
 version = "0.1.0"
 lex     = "0.10.7"
 license = "EUPL-1.2"
-description = "Effect-typed, capability-bounded control layer over LeRobot (design-stage scaffold)"
+description = "Effect-typed, capability-bounded control layer over LeRobot (working prototype)"
 
 # src/ (types/grant/client/skills) is std-only. src/task.lex adds lex-trail for
 # a hash-chained audit of each Perceive/Plan/Execute/Verify step.
