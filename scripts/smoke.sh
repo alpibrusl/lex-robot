@@ -98,6 +98,27 @@ else
   echo "$mcpw" | sed 's/^/      /'
 fi
 
+echo "== A2A grant gate =="
+# test_a2a_robot_grant.lex panics (1/0) on any failure; exit 0 on all-pass.
+# Drives the standard Google A2A tasks/send wire shape (via lex-agent's
+# protocol/message/task types), not just the internal dispatcher — proving
+# the grant holds through the standard-protocol layer too.
+if scripts/demo.sh a2a_grant >/dev/null 2>&1; then
+  pass "A2A grant gate: all assertions pass (deny / allow / clamp / kill / per-arm / unknown-skill)"
+else
+  bad "A2A grant gate: one or more assertions failed"
+fi
+
+# Same runtime effect-wall property as the MCP server, over the A2A wire.
+a2aw="$(lex run --allow-effects io,time,crypto,random,sql,fs_read,fs_write,net,concurrent,llm,proc,sense \
+          examples/a2a_robot_demo.lex run 2>&1 | tr -d '\r')"
+if grep -qF "effect \`actuate\` not in --allow-effects" <<<"$a2aw"; then
+  pass "A2A server: actuate withheld → actuating skills unreachable (runtime wall holds over HTTP)"
+else
+  bad "A2A server: actuate withheld did NOT block the server"
+  echo "$a2aw" | sed 's/^/      /'
+fi
+
 # The effect wall (DESIGN.md §4): actuate/sense are real Lex effects, so the
 # judgment/authority split is type-enforced — not a runtime convention. Both
 # halves are NEGATIVE checks: the build must FAIL to actuate when it shouldn't.
