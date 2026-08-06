@@ -19,6 +19,14 @@ numpy
 # xlerobot_sidecar.py (Tier-1 stub) needs nothing -- Python stdlib only.
 mujoco
 
+# xlerobot_sidecar.py Tier-3 (LEX_ROBOT_HW=1, real XLeRobot hardware) — see
+# SIDECAR.md "Real hardware" for the env vars and bring-up steps. Not needed
+# for Tier-1/Tier-2 and not installed in CI (no hardware to test against).
+#   pip install "lerobot[feetech]"    # SO101Follower + FeetechMotorsBus (arms + diff base)
+#   pip install sounddevice           # mic capture for the `listen` skill
+#   pip install faster-whisper        # local speech-to-text for `listen`
+#   pip install pillow                # JPEG-encodes read_camera frames (also listed above)
+
 # depot_g1_sidecar.py (Tier-3: real Unitree G1 humanoid) also needs the G1 model
 # from MuJoCo Menagerie (heavy STL meshes, not vendored). Sparse-checkout it and
 # point LEX_G1_DIR at it:

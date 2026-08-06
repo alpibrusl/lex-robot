@@ -20,9 +20,19 @@ protocol (SIDECAR.md), plus three XLeRobot skills:
 
 Out of the box it runs as a **stub** (stdlib only, no hardware, no pip): the
 base integrates kinematically toward the target, the arms report plausible
-joint states, and grasp obeys an independent firmware grip floor. Set
-LEX_ROBOT_HW=1 with the LeRobot ports configured to drive the real robot —
-fill in the `# REAL:` blocks.
+joint states, and grasp obeys an independent firmware grip floor.
+
+Set LEX_ROBOT_HW=1 (+ the env vars in the "Real hardware" section below) to
+drive the physical robot through LeRobot. **Read this first**: this backend
+was written against the LeRobot / XLeRobot APIs as documented (so_follower's
+SOFollower + FeetechMotorsBus + the robot_kinematic_processor IK helpers —
+see SIDECAR.md), but it has not been exercised against a physical XLeRobot in
+this repo's CI or by its authors — there is no hardware in the loop here to
+validate against. Community XLeRobot software (the dual-wheel diff base
+especially) moves fast and isn't merged upstream into lerobot, so treat this
+as a **starting point to bench-test at low torque/no load**, not a
+plug-and-drive certainty. If `lerobot`'s installed version doesn't match the
+shapes below, connect() fails loudly with the mismatch rather than guessing.
 
 Two layers of safety, by design (DESIGN.md §8):
   1. The Lex **grants** (one for the arms' reach box, one for the base's
@@ -31,11 +41,40 @@ Two layers of safety, by design (DESIGN.md §8):
   2. This sidecar independently enforces **firmware floors** — grip force
      (LEX_XLE_HARD_GRIP_N) and base speed (LEX_XLE_HARD_SPEED_MPS) — and a
      real deployment sits behind a hardware e-stop. A software grant is the
-     logical boundary, never physical safety.
+     logical boundary, never physical safety. Neither layer here does
+     torque/current-based force sensing (STS3215's Present_Load register is
+     read best-effort for the audit trail, see grasp_arm, but is NOT the
+     pass/fail signal) — grasp success is position/settle-based. A stronger
+     force-closed-loop grasp is a known gap, not a hidden one.
 
 Run:
     python3 sidecar/xlerobot_sidecar.py                 # stub (no hardware)
     LEX_ROBOT_HW=1 python3 sidecar/xlerobot_sidecar.py  # drive the real robot
+
+## Real hardware — environment variables
+
+Arms (required when LEX_ROBOT_HW=1):
+    LEX_XLE_LEFT_PORT / LEX_XLE_RIGHT_PORT     serial port per arm, e.g. /dev/ttyACM0
+    LEX_XLE_LEFT_ID / LEX_XLE_RIGHT_ID         lerobot robot id (calibration file
+                                                lookup); default xle_left / xle_right
+    LEX_XLE_MAX_REL_TARGET                     optional per-step joint clamp (degrees)
+                                                passed straight to SOFollowerConfig —
+                                                defense in depth independent of the grant
+    LEX_XLE_ARM_TIMEOUT_S / LEX_XLE_ARM_TOL_M  closed-loop reach budget (default 8 / 0.01)
+
+Base — LEX_XLE_BASE=diff (default, XLeRobot 0.4.0) or =omni (0.3.0-era LeKiwi kit):
+    diff:  LEX_XLE_BASE_PORT (required), LEX_XLE_BASE_LEFT_ID / _RIGHT_ID (default 1/2),
+           LEX_XLE_WHEEL_RADIUS_M (default 0.05), LEX_XLE_TRACK_WIDTH_M (default 0.30)
+    omni:  LEX_XLE_BASE_PORT (required), LEX_XLE_BASE_ID (default xle_base) — drives
+           the real LeKiwi 3-omni-wheel base via lerobot.robots.lekiwi
+    Both:  LEX_XLE_BASE_TIMEOUT_S (default 20)
+
+Camera:
+    LEX_XLE_CAMERA_INDEX   OpenCV camera index (default 0)
+
+Mic + local transcription (only imported if `listen` is actually called):
+    LEX_XLE_MIC_DEVICE     sounddevice input device index/name (default: system default)
+    LEX_XLE_WHISPER_MODEL  faster-whisper model name (default "base.en")
 """
 
 import json
@@ -55,34 +94,423 @@ CANNED_TRANSCRIPT = os.environ.get("LEX_XLE_TRANSCRIPT", "fetch the cup to the t
 
 ARM_JOINTS = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"]
 
+# XLeRobot 0.4.0 ships a dual-wheel DIFFERENTIAL base (no strafing); the
+# 0.3.0-era kit was a 3-omni-wheel holonomic (LeKiwi) base. Matches the
+# BASE_MODE convention in gym_env/xlerobot_sim.py so grant/skill semantics
+# stay identical between sim and hardware.
+BASE_MODE = os.environ.get("LEX_XLE_BASE", "diff")  # "diff" | "omni"
+YAW_RATE = float(os.environ.get("LEX_XLE_YAW_RATE", "1.0"))  # rad/s in-place turn rate
+
+
+# ---- pure helpers (no hardware/lerobot import — unit-testable standalone) ----
+
+def clamp(value, lo, hi):
+    return max(lo, min(hi, value))
+
+
+def diff_drive_wheel_speeds(v_mps, omega_rad_s, wheel_radius_m, track_width_m):
+    """Standard two-wheel differential-drive inverse kinematics.
+
+    v_mps: forward body velocity, omega_rad_s: body angular velocity (CCW+).
+    Returns (left_wheel_rad_s, right_wheel_rad_s).
+    """
+    left = (v_mps - omega_rad_s * track_width_m / 2.0) / wheel_radius_m
+    right = (v_mps + omega_rad_s * track_width_m / 2.0) / wheel_radius_m
+    return left, right
+
+
+def bearing_and_turn(cur_x, cur_y, cur_heading, target_x, target_y):
+    """Distance to target, bearing to target, and the signed turn (wrapped to
+    [-pi, pi]) needed to face it from cur_heading. Shared by the sim's
+    kinematic drive() and the real diff-drive control loop below."""
+    dx, dy = target_x - cur_x, target_y - cur_y
+    dist = math.hypot(dx, dy)
+    bearing = math.atan2(dy, dx) if dist > 1e-9 else cur_heading
+    turn = (bearing - cur_heading + math.pi) % (2 * math.pi) - math.pi
+    return dist, bearing, turn
+
+
+class HardwareError(RuntimeError):
+    """Raised when the installed lerobot's API doesn't match what this
+    sidecar expects, or hardware bring-up otherwise fails. Callers should let
+    this crash the process loudly (SystemExit) rather than fall back to a
+    stub silently — a robot that *looks* connected but isn't is worse than
+    one that refuses to start."""
+
+
+class _HwArm:
+    """One SO-101 follower arm, driven through LeRobot's so_follower robot."""
+
+    def __init__(self, side, port, robot_id, max_relative_target):
+        try:
+            from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
+        except ImportError as e:
+            raise HardwareError(
+                f"lerobot's SO101Follower isn't importable ({e}). Install with "
+                "`pip install \"lerobot[feetech]\"` — see SIDECAR.md."
+            ) from e
+        cfg_kwargs = {"port": port, "id": robot_id}
+        if max_relative_target is not None:
+            cfg_kwargs["max_relative_target"] = max_relative_target
+        self.side = side
+        self.config = SO101FollowerConfig(**cfg_kwargs)
+        self.follower = SO101Follower(self.config)
+        self.follower.connect(calibrate=False)
+        self._ik = self._make_ik()
+
+    def _make_ik(self):
+        """Best-effort: wire up LeRobot's own FK/IK processor for the arm so
+        move_arm can command Cartesian (x,y,z) targets. If the installed
+        lerobot's kinematics module doesn't match, IK is unavailable and
+        move_arm fails loudly per-call instead of silently no-op'ing."""
+        try:
+            from lerobot.robots.so_follower.robot_kinematic_processor import (
+                InverseKinematicsEEToJoints,
+            )
+            return InverseKinematicsEEToJoints(motor_names=ARM_JOINTS)
+        except Exception:
+            return None
+
+    def _forward_kinematics_ee(self, joints):
+        """Best-effort FK for the settle check in move_to(). Returns an
+        (x, y, z) tuple, or None if this lerobot install's FK entry point
+        doesn't match what we tried — callers must degrade gracefully, not
+        assume this always succeeds."""
+        try:
+            from lerobot.robots.so_follower.robot_kinematic_processor import (
+                compute_forward_kinematics_joints_to_ee,
+            )
+            ee = compute_forward_kinematics_joints_to_ee(joints, self.follower.kinematics, ARM_JOINTS)
+            return float(ee["x"]), float(ee["y"]), float(ee["z"])
+        except Exception:
+            return None
+
+    def read_joints(self):
+        obs = self.follower.get_observation()
+        positions = [float(obs.get(f"{j}.pos", 0.0)) for j in ARM_JOINTS]
+        return {"names": [f"{self.side}_{j}" for j in ARM_JOINTS], "positions": positions,
+                "velocities": [0.0] * len(ARM_JOINTS)}
+
+    def move_to(self, x, y, z, rx, ry, rz, timeout_s, tol_m):
+        if self._ik is None:
+            raise HardwareError(
+                "no Cartesian IK available from this lerobot install — the "
+                "`robot_kinematic_processor.InverseKinematicsEEToJoints` import failed "
+                "at connect time. Either upgrade lerobot or drive the arm in joint space."
+            )
+        import time as _time
+        target = {"x": x, "y": y, "z": z, "wx": rx, "wy": ry, "wz": rz, "gripper.pos": None}
+        deadline = _time.monotonic() + timeout_s
+        last_dist = None
+        fk_available = True
+        while _time.monotonic() < deadline:
+            obs = self.follower.get_observation()
+            joint_action = self._ik.action({**target, **obs})
+            self.follower.send_action(joint_action)
+            _time.sleep(0.05)
+            obs = self.follower.get_observation()
+            joints = {j: obs.get(f"{j}.pos", 0.0) for j in ARM_JOINTS}
+            ee = self._forward_kinematics_ee(joints)
+            if ee is None:
+                fk_available = False
+                break  # can't verify arrival on this install; degrade below
+            last_dist = math.dist(ee, (x, y, z))
+            if last_dist <= tol_m:
+                return {"outcome": "reached",
+                        "detail": f"{self.side} arm EE within {last_dist * 1000:.0f}mm of target"}
+        if not fk_available:
+            # No FK entry point on this lerobot install to verify arrival —
+            # the IK command was sent and we waited a fixed settle window,
+            # but this is a commanded, not sensor-verified, "reached".
+            _time.sleep(min(0.5, timeout_s))
+            return {"outcome": "reached",
+                    "detail": f"{self.side} arm commanded to ({x:.2f},{y:.2f},{z:.2f}) "
+                              "(no FK on this lerobot install — arrival unverified)"}
+        return {"outcome": "timeout",
+                "detail": f"{self.side} arm did not settle within {timeout_s}s (last dist {last_dist})"}
+
+    def grasp(self, force_n, max_force_n):
+        # Position-based close, scaled by the requested/firmware-capped force
+        # as a fraction of the arm's rated max. Present_Load is read
+        # best-effort for the audit trail only — see module docstring: this
+        # is NOT a closed-loop force controller.
+        frac = clamp(force_n / max(max_force_n, 1e-6), 0.0, 1.0)
+        gripper_pos = frac * 100.0  # SO-101 gripper.pos is roughly 0 (open) .. 100 (closed)
+        self.follower.send_action({"gripper.pos": gripper_pos})
+        sensed = self._read_gripper_load()
+        detail = f"{self.side} gripper closed at requested {force_n:.1f}N (firmware-capped)"
+        if sensed is not None:
+            detail += f", sensed load {sensed:.0f}"
+        return {"outcome": "reached", "detail": detail}
+
+    def release(self):
+        self.follower.send_action({"gripper.pos": 0.0})
+        return {"outcome": "reached", "detail": f"{self.side} released"}
+
+    def _read_gripper_load(self):
+        try:
+            raw = self.follower.bus.sync_read("Present_Load", ["gripper"])
+            return float(raw.get("gripper"))
+        except Exception:
+            return None
+
+    def disconnect(self):
+        try:
+            self.follower.disconnect()
+        except Exception:
+            pass
+
+
+class _HwDiffBase:
+    """XLeRobot 0.4.0's dual-wheel differential base, driven directly over a
+    Feetech motor bus in velocity mode. No canonical lerobot Robot class
+    covers this base shape yet (only the 3-omni-wheel LeKiwi is upstream),
+    so this talks to the bus directly — see the module docstring."""
+
+    def __init__(self, port, left_id, right_id, wheel_radius_m, track_width_m):
+        try:
+            from lerobot.motors import Motor, MotorNormMode
+            from lerobot.motors.feetech import FeetechMotorsBus
+        except ImportError as e:
+            raise HardwareError(
+                f"lerobot's FeetechMotorsBus isn't importable ({e}). Install with "
+                "`pip install \"lerobot[feetech]\"` — see SIDECAR.md."
+            ) from e
+        self.wheel_radius_m = wheel_radius_m
+        self.track_width_m = track_width_m
+        self.bus = FeetechMotorsBus(
+            port=port,
+            motors={
+                "wheel_left": Motor(left_id, "sts3215", MotorNormMode.RANGE_M100_100),
+                "wheel_right": Motor(right_id, "sts3215", MotorNormMode.RANGE_M100_100),
+            },
+        )
+        self.bus.connect()
+        try:
+            self.bus.write("Operating_Mode", "wheel_left", 1)   # 1 == velocity/wheel mode
+            self.bus.write("Operating_Mode", "wheel_right", 1)
+        except Exception as e:
+            raise HardwareError(f"could not set base wheels to velocity mode: {e}") from e
+        # Dead-reckoning pose estimate — there is no encoder-feedback
+        # localization wired here (a known gap, see SIDECAR.md); "reached" is
+        # therefore a commanded-time estimate, not sensor-verified.
+        self.pose = {"x": 0.0, "y": 0.0, "heading": 0.0}
+
+    def _set_wheel_velocity(self, v_mps, omega_rad_s):
+        left_w, right_w = diff_drive_wheel_speeds(v_mps, omega_rad_s, self.wheel_radius_m, self.track_width_m)
+        # deg/s, matching the STS3215 velocity-mode convention used elsewhere
+        # in lerobot (see lekiwi's _body_to_wheel_raw for the same unit choice).
+        self.bus.sync_write("Goal_Velocity", {
+            "wheel_left": math.degrees(left_w),
+            "wheel_right": math.degrees(right_w),
+        })
+
+    def drive(self, x, y, speed, timeout_s):
+        import time as _time
+        deadline = _time.monotonic() + timeout_s
+        last_t = _time.monotonic()
+        arrive_tol = 0.03
+        while _time.monotonic() < deadline:
+            now = _time.monotonic()
+            dt = now - last_t
+            last_t = now
+            dist, bearing, turn = bearing_and_turn(self.pose["x"], self.pose["y"], self.pose["heading"], x, y)
+            if dist < arrive_tol:
+                self._set_wheel_velocity(0.0, 0.0)
+                return {"outcome": "reached",
+                        "detail": f"base at ({self.pose['x']:.2f},{self.pose['y']:.2f}) (dead-reckoned)"}
+            if abs(turn) > 0.05:
+                omega = math.copysign(min(abs(turn), YAW_RATE), turn)
+                self._set_wheel_velocity(0.0, omega)
+                self.pose["heading"] += omega * dt
+            else:
+                self.pose["heading"] = bearing
+                v = min(speed, dist * 4.0)
+                self._set_wheel_velocity(v, 0.0)
+                self.pose["x"] += v * math.cos(self.pose["heading"]) * dt
+                self.pose["y"] += v * math.sin(self.pose["heading"]) * dt
+            _time.sleep(0.02)
+        self._set_wheel_velocity(0.0, 0.0)
+        return {"outcome": "stalled",
+                "detail": f"base did not reach ({x:.2f},{y:.2f}) within {timeout_s}s "
+                          f"(dead-reckoned at {self.pose['x']:.2f},{self.pose['y']:.2f})"}
+
+    def read(self):
+        return dict(self.pose)
+
+    def disconnect(self):
+        try:
+            self._set_wheel_velocity(0.0, 0.0)
+            self.bus.disconnect()
+        except Exception:
+            pass
+
+
+class _HwOmniBase:
+    """The 0.3.0-era 3-omni-wheel base — this one *is* a canonical upstream
+    lerobot robot (LeKiwi), so we drive it through that class directly rather
+    than re-deriving the inverse kinematics."""
+
+    def __init__(self, port, robot_id):
+        try:
+            from lerobot.robots.lekiwi import LeKiwi, LeKiwiConfig
+        except ImportError as e:
+            raise HardwareError(f"lerobot's LeKiwi robot isn't importable ({e}).") from e
+        self.robot = LeKiwi(LeKiwiConfig(port=port, id=robot_id))
+        self.robot.connect(calibrate=False)
+        self.pose = {"x": 0.0, "y": 0.0, "heading": 0.0}
+
+    def drive(self, x, y, speed, timeout_s):
+        import time as _time
+        deadline = _time.monotonic() + timeout_s
+        last_t = _time.monotonic()
+        arrive_tol = 0.03
+        while _time.monotonic() < deadline:
+            now = _time.monotonic()
+            dt = now - last_t
+            last_t = now
+            dist, bearing, _turn = bearing_and_turn(self.pose["x"], self.pose["y"], self.pose["heading"], x, y)
+            if dist < arrive_tol:
+                self.robot.send_action({"x.vel": 0.0, "y.vel": 0.0, "theta.vel": 0.0})
+                return {"outcome": "reached",
+                        "detail": f"base at ({self.pose['x']:.2f},{self.pose['y']:.2f}) (dead-reckoned)"}
+            v = min(speed, dist * 4.0)
+            vx, vy = v * math.cos(bearing), v * math.sin(bearing)
+            self.robot.send_action({"x.vel": vx, "y.vel": vy, "theta.vel": 0.0})
+            self.pose["x"] += vx * dt
+            self.pose["y"] += vy * dt
+            self.pose["heading"] = bearing
+            _time.sleep(0.02)
+        self.robot.send_action({"x.vel": 0.0, "y.vel": 0.0, "theta.vel": 0.0})
+        return {"outcome": "stalled", "detail": f"base did not reach ({x:.2f},{y:.2f}) within {timeout_s}s"}
+
+    def read(self):
+        return dict(self.pose)
+
+    def disconnect(self):
+        try:
+            self.robot.send_action({"x.vel": 0.0, "y.vel": 0.0, "theta.vel": 0.0})
+            self.robot.disconnect()
+        except Exception:
+            pass
+
+
+class _HwCamera:
+    def __init__(self, index):
+        try:
+            from lerobot.cameras.opencv import OpenCVCamera, OpenCVCameraConfig
+        except ImportError as e:
+            raise HardwareError(f"lerobot's OpenCVCamera isn't importable ({e}).") from e
+        self.camera = OpenCVCamera(OpenCVCameraConfig(index_or_path=index))
+        self.camera.connect()
+
+    def read(self):
+        import base64
+        import io
+        frame = self.camera.read()  # HxWx3 uint8 RGB
+        try:
+            from PIL import Image
+            buf = io.BytesIO()
+            Image.fromarray(frame).save(buf, format="JPEG")
+            jpeg_b64 = base64.b64encode(buf.getvalue()).decode()
+        except ImportError:
+            jpeg_b64 = ""  # frame captured but no JPEG encoder installed
+        h, w = frame.shape[0], frame.shape[1]
+        return {"width": int(w), "height": int(h), "jpeg_b64": jpeg_b64}
+
+    def disconnect(self):
+        try:
+            self.camera.disconnect()
+        except Exception:
+            pass
+
+
+def _hw_listen(seconds, device, model_name):
+    """Record `seconds` of audio locally and transcribe with faster-whisper.
+    Raw audio never leaves this process — only the transcript is returned."""
+    try:
+        import numpy as np
+        import sounddevice as sd
+    except ImportError as e:
+        raise HardwareError(
+            f"sounddevice/numpy not installed ({e}). `pip install sounddevice numpy`."
+        ) from e
+    try:
+        from faster_whisper import WhisperModel
+    except ImportError as e:
+        raise HardwareError(f"faster-whisper not installed ({e}). `pip install faster-whisper`.") from e
+    sample_rate = 16000
+    kwargs = {"samplerate": sample_rate, "channels": 1, "dtype": "float32"}
+    if device:
+        kwargs["device"] = device
+    audio = sd.rec(int(seconds * sample_rate), **kwargs)
+    sd.wait()
+    model = WhisperModel(model_name, device="cpu", compute_type="int8")
+    segments, _info = model.transcribe(np.squeeze(audio, axis=-1), language="en")
+    text = " ".join(s.text.strip() for s in segments).strip()
+    return {"transcript": text, "confidence": 1.0, "seconds": seconds}
+
 
 class XLeRobot:
-    """Thin wrapper around the real LeRobot XLeRobot, or a kinematic stub."""
+    """Thin wrapper around either the real hardware (arms/base/camera/mic) or
+    a kinematic stub — same shape either way so handle_skill() never branches
+    on USE_HW itself."""
 
     def __init__(self):
-        self.robot = None
+        self._hw_arms = {}
+        self._hw_base = None
+        self._hw_camera = None
         self.base = {"x": 0.0, "y": 0.0, "heading": 0.0}
         self.arms = {
             "left": {"positions": [0.0] * 6, "holding": False},
             "right": {"positions": [0.0] * 6, "holding": False},
         }
         if USE_HW:
-            # REAL: bring up the LeRobot robot for the XLeRobot, e.g. (lerobot ≥0.5,
-            # names per your calibration):
-            #   from lerobot.robots.xlerobot import XLerobotConfig, XLerobot
-            #   cfg = XLerobotConfig(left_arm_port=os.environ["LEX_XLE_LEFT_PORT"],
-            #                        right_arm_port=os.environ["LEX_XLE_RIGHT_PORT"],
-            #                        base_port=os.environ["LEX_XLE_BASE_PORT"])
-            #   self.robot = XLerobot(cfg); self.robot.connect()
-            # (If your lerobot version has no xlerobot config yet, compose two
-            #  SO101Follower configs + the LeKiwi-style base the same way.)
+            self._bring_up_hardware()
+
+    def _bring_up_hardware(self):
+        left_port = os.environ.get("LEX_XLE_LEFT_PORT")
+        right_port = os.environ.get("LEX_XLE_RIGHT_PORT")
+        base_port = os.environ.get("LEX_XLE_BASE_PORT")
+        if not left_port or not right_port or not base_port:
             raise SystemExit(
-                "LEX_ROBOT_HW=1 but no LeRobot robot is wired up yet — fill in the "
-                "`# REAL:` blocks in xlerobot_sidecar.py with your ports/config."
+                "LEX_ROBOT_HW=1 requires LEX_XLE_LEFT_PORT, LEX_XLE_RIGHT_PORT and "
+                "LEX_XLE_BASE_PORT (serial ports for the two SO-101 arms + the base) "
+                "— see SIDECAR.md."
             )
+        max_rel = os.environ.get("LEX_XLE_MAX_REL_TARGET")
+        max_rel = float(max_rel) if max_rel else None
+        try:
+            self._hw_arms["left"] = _HwArm("left", left_port, os.environ.get("LEX_XLE_LEFT_ID", "xle_left"), max_rel)
+            self._hw_arms["right"] = _HwArm("right", right_port, os.environ.get("LEX_XLE_RIGHT_ID", "xle_right"), max_rel)
+            if BASE_MODE == "omni":
+                self._hw_base = _HwOmniBase(base_port, os.environ.get("LEX_XLE_BASE_ID", "xle_base"))
+            else:
+                self._hw_base = _HwDiffBase(
+                    base_port,
+                    int(os.environ.get("LEX_XLE_BASE_LEFT_ID", "1")),
+                    int(os.environ.get("LEX_XLE_BASE_RIGHT_ID", "2")),
+                    float(os.environ.get("LEX_XLE_WHEEL_RADIUS_M", "0.05")),
+                    float(os.environ.get("LEX_XLE_TRACK_WIDTH_M", "0.30")),
+                )
+            self._hw_camera = _HwCamera(int(os.environ.get("LEX_XLE_CAMERA_INDEX", "0")))
+        except HardwareError as e:
+            self._disconnect_partial()
+            raise SystemExit(f"XLeRobot hardware bring-up failed: {e}") from e
+        except BaseException:
+            self._disconnect_partial()
+            raise
+
+    def _disconnect_partial(self):
+        """Leave nothing energized behind on a failed bring-up."""
+        for a in self._hw_arms.values():
+            a.disconnect()
+        if self._hw_base is not None:
+            self._hw_base.disconnect()
+        if self._hw_camera is not None:
+            self._hw_camera.disconnect()
 
     def reset(self):
-        # REAL: home both arms to a safe tucked pose, zero the base odometry.
         self.base = {"x": 0.0, "y": 0.0, "heading": 0.0}
         for a in self.arms.values():
             a["positions"] = [0.0] * 6
@@ -91,7 +519,8 @@ class XLeRobot:
 
     # ---- sensing -------------------------------------------------------------
     def read_joints(self, arm):
-        # REAL: obs = self.robot.get_observation(); pull <arm>_*.pos out of it.
+        if USE_HW:
+            return self._hw_arms[arm if arm in self._hw_arms else "left"].read_joints()
         a = self.arms.get(arm, self.arms["left"])
         return {
             "names": [f"{arm}_{j}" for j in ARM_JOINTS],
@@ -100,66 +529,63 @@ class XLeRobot:
         }
 
     def read_base(self):
-        # REAL: return odometry from the base (wheel encoders / SLAM pose).
+        if USE_HW:
+            return self._hw_base.read()
         return dict(self.base)
 
     def read_camera(self, name):
-        # REAL: grab a frame from the head / wrist camera and JPEG-encode it
-        # (0.4.0 head cam is a UVC webcam or RealSense — both stock LeRobot
-        # camera configs; the SO-101 wrist cams ride the arms).
+        if USE_HW:
+            return self._hw_camera.read()
         return {"width": 640, "height": 480, "jpeg_b64": ""}
 
     def listen(self, seconds):
-        # REAL: capture `seconds` of audio from the head cam's mic (e.g.
-        # sounddevice/arecord) and transcribe LOCALLY (e.g. faster-whisper).
-        # Only the transcript leaves this process — raw audio never crosses
-        # into Lex or the trail. The stub returns a canned transcript so the
-        # voice-goal demo runs offline.
+        if USE_HW:
+            return _hw_listen(seconds, os.environ.get("LEX_XLE_MIC_DEVICE"),
+                               os.environ.get("LEX_XLE_WHISPER_MODEL", "base.en"))
         return {"transcript": CANNED_TRANSCRIPT, "confidence": 1.0, "seconds": seconds}
 
     # ---- actuation -----------------------------------------------------------
     def move_arm(self, arm, x, y, z):
-        # REAL: closed-loop reach on that arm (IK or a LeRobot policy) at the
-        # control rate until the EE is at (x,y,z) or a timeout/force trips:
-        #   self.robot.send_action({f"{arm}_...": ...})
-        # The arm grant already guaranteed (x,y,z) is inside the granted reach box.
-        a = self.arms.get(arm)
-        if a is None:
+        if arm not in ("left", "right"):
             return {"outcome": "stalled", "detail": f"unknown arm '{arm}' (use left|right)"}
+        if USE_HW:
+            timeout_s = float(os.environ.get("LEX_XLE_ARM_TIMEOUT_S", "8"))
+            tol_m = float(os.environ.get("LEX_XLE_ARM_TOL_M", "0.01"))
+            return self._hw_arms[arm].move_to(x, y, z, 0.0, 0.0, 0.0, timeout_s, tol_m)
+        a = self.arms[arm]
         a["positions"] = [round(v, 3) for v in [x, y, z, 0.0, 0.0, a["positions"][5]]]
         return {"outcome": "reached", "detail": f"{arm} arm EE at ({x:.2f},{y:.2f},{z:.2f})"}
 
     def grasp_arm(self, arm, force):
-        # Independent firmware floor — defense in depth behind the Lex grant clamp.
         if force > HARD_GRIP_N:
             return {"outcome": "stalled", "detail": f"grip {force:.0f}N exceeds firmware limit {HARD_GRIP_N:.0f}N"}
-        a = self.arms.get(arm)
-        if a is None:
+        if arm not in ("left", "right"):
             return {"outcome": "stalled", "detail": f"unknown arm '{arm}' (use left|right)"}
-        # REAL: close the gripper with current-based force control; succeed only
-        # on a grip signature (current plateau), not open-loop position.
+        if USE_HW:
+            return self._hw_arms[arm].grasp(force, HARD_GRIP_N)
+        a = self.arms[arm]
         a["holding"] = True
         a["positions"][5] = 1.0
         return {"outcome": "reached", "detail": f"{arm} gripper closed at {force:.1f}N (firmware-capped)"}
 
     def release_arm(self, arm):
-        a = self.arms.get(arm)
-        if a is None:
+        if arm not in ("left", "right"):
             return {"outcome": "stalled", "detail": f"unknown arm '{arm}' (use left|right)"}
-        # REAL: open the gripper.
+        if USE_HW:
+            return self._hw_arms[arm].release()
+        a = self.arms[arm]
         was = a["holding"]
         a["holding"] = False
         a["positions"][5] = 0.0
         return {"outcome": "reached", "detail": f"{arm} released (was_holding={was})"}
 
     def move_base(self, x, y, speed):
-        # Independent firmware speed floor behind the Lex grant's velocity clamp.
         v = min(speed, HARD_SPEED_MPS)
-        # REAL: drive to (x,y) — 0.4.0's dual-wheel differential base: turn
-        # toward the target, then (v, omega) → left/right wheel speeds; stop on
-        # arrival or obstacle. (The older omni base takes vx/vy directly.)
-        #   self.robot.send_action({"base_v": ..., "base_omega": ...})
-        # The base grant already guaranteed (x,y) is inside the permitted floor area.
+        if USE_HW:
+            timeout_s = float(os.environ.get("LEX_XLE_BASE_TIMEOUT_S", "20"))
+            result = self._hw_base.drive(x, y, v, timeout_s)
+            self.base = self._hw_base.read()
+            return result
         dx, dy = x - self.base["x"], y - self.base["y"]
         dist = math.hypot(dx, dy)
         self.base["x"], self.base["y"] = round(x, 3), round(y, 3)
