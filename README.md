@@ -413,9 +413,17 @@ Three tiers behind one protocol, like the depot:
   base — counter, a 200 g cup) — `make xlerobot-sim` runs the *same demo unchanged*;
   every `reached` is physical. The grasp is a weld that only takes if the EE
   is actually at the cup, and the carry drags real mass across the room.
-- **Tier 3 — hardware** (`LEX_ROBOT_HW=1`, fill the `# REAL:` seams): the
-  stub's handler bodies are shaped for LeRobot's SO-101 buses + base drive;
-  the Lex side doesn't change a line. Before trusting it near the real kit:
+- **Tier 3 — hardware** (`LEX_ROBOT_HW=1`): drives the real SO-101 arms via
+  LeRobot's `SOFollower` + its own Cartesian IK, and the 0.4.0 differential
+  base directly over a Feetech motor bus (the 0.3.0-era omni base through
+  LeRobot's canonical `LeKiwi` class instead); the Lex side doesn't change a
+  line. **Not yet exercised against physical hardware** — written against
+  LeRobot's documented APIs and unit-tested where it can be (the pure
+  kinematics helpers), but there's no XLeRobot in this repo's CI to validate
+  end-to-end against, so bench-test at low torque/no load first. Grasp is
+  position-based, not force-closed-loop; base position is dead-reckoned, not
+  sensor-verified. See SIDECAR.md's "Real hardware" section for the honest
+  rundown and env vars. Before trusting it near the real kit either way:
   firmware joint/torque limits + the e-stop are the safety floor, not the
   grant (DESIGN.md §8).
 
@@ -817,3 +825,8 @@ enforced.
   Linux+KVM host and is exercised manually, not in CI. CI-gating it (GitHub's
   Linux runners expose `/dev/kvm`) is the next hardening step.
 - `record_episode` writes frames to `.npz`; full LeRobotDataset export is a follow-up.
+- XLeRobot Tier 3 (`sidecar/xlerobot_sidecar.py`, `LEX_ROBOT_HW=1`) is written
+  against LeRobot's documented hardware APIs but has never run against a
+  physical XLeRobot — no hardware in this repo's CI. Grasp is position-based
+  (no current/force closed loop) and the base's position is dead-reckoned (no
+  encoder/localization feedback). See SIDECAR.md's "Real hardware" section.
