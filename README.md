@@ -64,6 +64,9 @@ is public and fetched automatically on first run.
 | XLeRobot in MuJoCo physics (+ gym env) | `make xlerobot-sim` | + `pip install mujoco numpy` (`gymnasium` for the env) |
 | "bring me the cup": vision-grounded fetch (`locate_object`) | `make xlerobot-find` | **`lex` + `python3` only** (canned Tier-1 lookup) |
 | same, with real color-detection + ray-cast vision | `make xlerobot-find-sim` | + `pip install mujoco numpy` (+ a GL backend — `MUJOCO_GL=osmesa` headless) |
+| LLM planner tool-dispatch (scripted mock model) | `make xlerobot-llm-mock` | **`lex` + `python3` only** — no API key, no ML deps |
+| LLM planner, spoken/typed goal, real OpenCode model | `make xlerobot-llm` | `OPENCODE_API_KEY` (opencode.ai/zen) |
+| `speak` (Kokoro TTS) through a real speaker | Tier-3 hardware only (`LEX_ROBOT_HW=1`) | + `pip install kokoro sounddevice` (pulls torch, transformers) |
 | keep-out (learned policy vs. grant) | `make keepout` | + `pip install -r sidecar/requirements.txt` (gym-pusht, lerobot) |
 | MuJoCo depot (Tier-2 / Tier-3 G1) | `python3 sidecar/depot_mujoco_sidecar.py` · `depot_g1_sidecar.py` | + `mujoco` (+ G1 model via `LEX_G1_DIR`) |
 | learned reach policy (behaviour cloning) | `python3 sidecar/g1_bc_reach.py` | + `torch` (+ G1 model) |
@@ -499,6 +502,83 @@ make xlerobot-find
 lex-os's supervisor recognizes both `locate_object` and `transform_to_arm` as
 unbounded-by-design sensing skills (same bucket as `read_camera`/`read_base`)
 — see `crates/lex-os-supervisor/src/skill.rs` in lex-os.
+
+**Talking back, and a real LLM in the loop** (`make xlerobot-llm-mock` /
+`xlerobot-llm`): the robot could already hear (`listen`) but had no way to
+answer — `speak` (`src/skills.lex`) closes the loop with local Kokoro TTS
+through a real speaker on Tier-3 hardware (an honest simulated no-op on
+Tier-1/Tier-2, which have no physical speaker). Like every other actuating
+skill it's grant-gated — unlike `move_arm`'s numeric args, `speak`'s text may
+come straight from an LLM planner, so "is this program allowed to speak
+through the robot right now" stays a typed, auditable, refusable question.
+
+That planner is `src/llm_planner.lex` — a REAL agentic loop (via
+[lex-llm](https://github.com/alpibrusl/lex-llm) + [OpenCode
+Zen](https://opencode.ai/zen), the same `opencode-go` integration this repo's
+bazaar/game NPCs already use) answering "how does an agentic LLM turn 'bring
+me a beer' into something it can actually execute?" for real, not
+conceptually. Its tools are literally `a2a_robot_server.lex`'s own
+Capability values — the same schema that already drives the AgentCard and
+MCP/A2A tool listings, now a third consumer — and each tool's `execute` is a
+thin A2A client calling the robot's OWN `tasks/send` endpoint over real
+HTTP. The planner never declares `[sense, actuate]` anywhere: the model's
+tool call is *judgment*; `a2a_robot_server.lex`'s `dispatch_skill` (grant +
+budget + trail, already built) is *authority*. A hallucinating or
+prompt-injected planner gets exactly the same `denied:`/`killed:` any other
+A2A caller would — there is no separate, less-audited path for LLM-issued
+commands.
+
+```sh
+make xlerobot-llm-mock
+#   ALL PASS: llm_planner tool-dispatch reaches the real grant-gated server
+```
+
+`xlerobot-llm-mock` verifies the entire mechanism — agent construction, tool
+wrapping, wire encoding/decoding, the loop's turn-taking — for real, with a
+scripted mock model standing in for OpenCode (no API key, no network to an
+LLM provider, no ML deps: `tests/test_llm_planner.lex`'s mock is a genuine
+substitution of the same `{name, chat}` `Provider` interface the real OpenAI/
+Anthropic adapters implement, not a special test-only path). Both tool calls
+it proposes go over a real HTTP round-trip into a real, live
+`a2a_robot_server` process, and the *actual* grant — not a stand-in —
+decides both: `move_base` (in-bounds) reaches; `speak` (not granted in that
+demo's grant) is denied.
+
+```sh
+OPENCODE_API_KEY=sk-... make xlerobot-llm
+```
+
+`xlerobot-llm` is the live end of the same mechanism, with a real hosted
+model deciding what to do — set `OPENCODE_API_KEY` (from
+[opencode.ai/zen](https://opencode.ai/zen)) and optionally `OPENCODE_MODEL`,
+or `GOAL="..."` for a typed goal instead of a spoken one. This has NOT been
+run against a real OpenCode call while building this (this environment has
+no API key and no network path to opencode.ai) — everything up to the
+network call is verified for real by `xlerobot-llm-mock` above; a real
+model's actual tool choices for a given sentence are unverified here,
+honestly, the same way this repo's other ML-dependent demos are.
+
+**Known limitation, stated honestly rather than hidden**: `examples/a2a_robot_demo.lex`
+(the server this demo talks to) shares ONE grant box across `move_base` and
+`move_arm`/`grasp_arm` — unlike the in-process `xlerobot_demo.lex`, which
+splits a room-scale base grant from an SO-101-scale arm grant. That shared
+box is arm-sized, so a `move_base` command to actually cross the room to a
+located object's real position gets denied. Giving A2A callers the same
+base/arm grant split the in-process API already has is real, scoped,
+**not-yet-done** follow-up work — not papered over here. A likely outcome
+with a real model: it locates the cup for real (vision, ungated), tries to
+drive to it, gets denied, and — per its own system prompt — explains that
+rather than pretending success. That would be the grant doing its job, not
+a bug in this demo — but it's a plausible expectation from the mechanism's
+design, not something this environment could actually observe and confirm.
+
+**Model catalog note**: OpenCode Zen's Go-plan lineup moves fast (point
+releases like `glm-5.1` vs `5.2`, or `qwen3.6` vs `3.8`, supersede each
+other on a timescale of weeks) and this repo has no live way to query it.
+`kimi-k2.6` (`src/llm_planner.lex`'s default) was the one name that stayed
+consistent across everything checked while building this — confirm the
+current catalog (`opencode models`, or opencode.ai/docs/zen) before
+depending on it in production; override with `OPENCODE_MODEL`.
 
 **The first game — Fetch the Cup, verified** (`make xlerobot-task`): the
 mission runs as a competition entry. Every actuation is recorded to a
