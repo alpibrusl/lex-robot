@@ -118,6 +118,14 @@ fn grasp_arm_cap() -> cap.Capability {
   })
 }
 
+fn speak_cap() -> cap.Capability {
+  cap.inbound("speak", "Speak text aloud through the robot's speaker (Kokoro TTS on real hardware; a simulated no-op on the stub/MuJoCo tiers). Grant-gated: an audible output is a real effect on the world.", {
+    title: "SpeakArgs",
+    description: "The text to say.",
+    fields: [sch.required_str("text", [StrNonEmpty])]
+  })
+}
+
 fn move_base_cap() -> cap.Capability {
   cap.inbound("move_base", "Drive the XLeRobot base to (x, y) on the floor; grant-gated to the permitted floor area, speed clamped to the ceiling.", {
     title: "MoveBaseArgs",
@@ -160,7 +168,7 @@ fn transform_to_arm_cap() -> cap.Capability {
 
 fn all_capabilities() -> List[cap.Capability] {
   [mcp.move_to_cap(), mcp.grasp_cap(), mcp.connect_charger_cap(), mcp.read_joints_cap(), mcp.read_camera_cap(),
-   move_arm_cap(), grasp_arm_cap(), move_base_cap(), read_base_cap(), listen_cap(), locate_object_cap(), transform_to_arm_cap()]
+   move_arm_cap(), grasp_arm_cap(), move_base_cap(), read_base_cap(), listen_cap(), locate_object_cap(), transform_to_arm_cap(), speak_cap()]
 }
 
 fn robot_agent_card(base_url :: Str) -> card.AgentCard {
@@ -217,6 +225,22 @@ fn dispatch_grasp_arm(robot :: t.Robot, db :: Db, log :: trail.Log, args :: jv.J
       let o := skills.grasp_arm(robot, arm, force)
       let detail := str.join(["{\"skill\":\"grasp_arm\",\"arm\":\"", arm, "\",\"force\":", flt.to_str(force), ",\"outcome\":\"", rtask.outcome_str(o), "\"}"], "")
       let _ := rtask.trail_raw(log, "a2a", "a2a.grasp_arm", detail)
+      let _ := mcp.charge_if_committed(db, led, o)
+      rtask.outcome_str(o)
+    },
+  }
+}
+
+fn dispatch_speak(robot :: t.Robot, db :: Db, log :: trail.Log, args :: jv.Json) -> [sql, time, net, sense, actuate] Str {
+  let text := mcp.get_str(args, "text", "")
+  let now := time.now_ms()
+  let led := mcp.ledger_read(db, robot.grant, now)
+  match bud.breach(led, now) {
+    Some(reason) => rtask.outcome_str(Killed(reason)),
+    None => {
+      let o := skills.speak(robot, text)
+      let detail := str.join(["{\"skill\":\"speak\",\"text\":\"", skills.json_escape_str(text), "\",\"outcome\":\"", rtask.outcome_str(o), "\"}"], "")
+      let _ := rtask.trail_raw(log, "a2a", "a2a.speak", detail)
       let _ := mcp.charge_if_committed(db, led, o)
       rtask.outcome_str(o)
     },
@@ -292,22 +316,26 @@ fn dispatch_skill(robot :: t.Robot, db :: Db, log :: trail.Log, name :: Str, arg
     if name == "grasp_arm" {
       dispatch_grasp_arm(robot, db, log, args)
     } else {
-      if name == "move_base" {
-        dispatch_move_base(robot, db, log, args)
+      if name == "speak" {
+        dispatch_speak(robot, db, log, args)
       } else {
-        if name == "read_base" {
-          dispatch_read_base(robot)
+        if name == "move_base" {
+          dispatch_move_base(robot, db, log, args)
         } else {
-          if name == "listen" {
-            dispatch_listen(robot, args)
+          if name == "read_base" {
+            dispatch_read_base(robot)
           } else {
-            if name == "locate_object" {
-              dispatch_locate_object(robot, args)
+            if name == "listen" {
+              dispatch_listen(robot, args)
             } else {
-              if name == "transform_to_arm" {
-                dispatch_transform_to_arm(robot, args)
+              if name == "locate_object" {
+                dispatch_locate_object(robot, args)
               } else {
-                mcp.dispatch_skill(robot, db, log, name, args)
+                if name == "transform_to_arm" {
+                  dispatch_transform_to_arm(robot, args)
+                } else {
+                  mcp.dispatch_skill(robot, db, log, name, args)
+                }
               }
             }
           }

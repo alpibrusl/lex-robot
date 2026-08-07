@@ -75,6 +75,11 @@ Camera:
 Mic + local transcription (only imported if `listen` is actually called):
     LEX_XLE_MIC_DEVICE     sounddevice input device index/name (default: system default)
     LEX_XLE_WHISPER_MODEL  faster-whisper model name (default "base.en")
+
+Speaker + local synthesis (only imported if `speak` is actually called):
+    LEX_XLE_SPEAKER_DEVICE  sounddevice output device index/name (default: system default)
+    LEX_XLE_TTS_VOICE       Kokoro voice id (default "af_heart" — see hexgrad/Kokoro-82M)
+    LEX_XLE_TTS_SPEED       playback speed multiplier (default 1.0)
 """
 
 import json
@@ -481,6 +486,44 @@ def _hw_listen(seconds, device, model_name):
     return {"transcript": text, "confidence": 1.0, "seconds": seconds}
 
 
+def _hw_speak(text, device, voice, speed):
+    """Synthesize `text` locally with Kokoro and play it out the robot's
+    speaker — the output-side mirror of _hw_listen: text goes IN to this
+    process, only sound comes OUT, nothing is sent anywhere else.
+
+    Kokoro's own model/voice weights are lazily pulled from Hugging Face Hub
+    on first use (hexgrad/Kokoro-82M) and cached locally after that — the
+    first real call is slow, later ones are not. Like _hw_listen's
+    WhisperModel, the pipeline is (re)built on every call rather than
+    cached across calls, matching that function's existing (simple, not
+    optimized) shape.
+    """
+    try:
+        import numpy as np
+        import sounddevice as sd
+    except ImportError as e:
+        raise HardwareError(
+            f"sounddevice/numpy not installed ({e}). `pip install sounddevice numpy`."
+        ) from e
+    try:
+        from kokoro import KPipeline
+    except ImportError as e:
+        raise HardwareError(f"kokoro not installed ({e}). `pip install kokoro`.") from e
+    sample_rate = 24000  # Kokoro's fixed output rate
+    pipeline = KPipeline(lang_code="a", repo_id="hexgrad/Kokoro-82M")  # American English
+    chunks = [np.asarray(audio, dtype=np.float32) for _graphemes, _phonemes, audio in pipeline(text, voice=voice, speed=speed) if audio is not None]
+    if not chunks:
+        return {"outcome": "stalled", "detail": "kokoro produced no audio for the given text"}
+    samples = np.concatenate(chunks)
+    kwargs = {"samplerate": sample_rate, "channels": 1}
+    if device:
+        kwargs["device"] = device
+    sd.play(samples, **kwargs)
+    sd.wait()
+    seconds = len(samples) / sample_rate
+    return {"outcome": "reached", "detail": f"spoke {len(text)} chars ({seconds:.1f}s of audio)"}
+
+
 class XLeRobot:
     """Thin wrapper around either the real hardware (arms/base/camera/mic) or
     a kinematic stub — same shape either way so handle_skill() never branches
@@ -574,6 +617,16 @@ class XLeRobot:
                                os.environ.get("LEX_XLE_WHISPER_MODEL", "base.en"))
         return {"transcript": CANNED_TRANSCRIPT, "confidence": 1.0, "seconds": seconds}
 
+    def speak(self, text):
+        if USE_HW:
+            return _hw_speak(text, os.environ.get("LEX_XLE_SPEAKER_DEVICE"),
+                              os.environ.get("LEX_XLE_TTS_VOICE", "af_heart"),
+                              float(os.environ.get("LEX_XLE_TTS_SPEED", "1.0")))
+        # No physical speaker on Tier 1/2 (stub / physics sim) — say so rather
+        # than silently doing nothing, matching locate_object's honesty
+        # convention for capabilities a given tier doesn't actually have.
+        return {"outcome": "reached", "detail": f"(simulated, no speaker) would say: {text}"}
+
     def locate_object(self, name):
         if USE_HW:
             # No real-camera object-detection model wired up yet — say so
@@ -666,6 +719,8 @@ def handle_skill(name, args):
         return ROBOT.read_camera(args.get("name", "head"))
     if name == "listen":
         return ROBOT.listen(int(args.get("seconds", 3)))
+    if name == "speak":
+        return ROBOT.speak(args.get("text", ""))
     if name == "move_arm":
         return ROBOT.move_arm(args.get("arm", "left"), float(args.get("x", 0.2)),
                               float(args.get("y", 0.0)), float(args.get("z", 0.2)))

@@ -191,6 +191,47 @@ fn test_move_arm_reaches_sidecar_when_granted() -> [sql, fs_write, time, net, se
   }
 }
 
+# 6. speak: grant-gated like every other actuating skill (unlike locate_object/
+#    transform_to_arm, which are sensing-only and ungated) — denied when not
+#    granted, reaches the sidecar (and is budget-charged) when it is.
+fn test_speak_denied_when_not_granted() -> [sql, fs_write, time, net, sense, actuate] Result[Unit, Str] {
+  match sql.open(":memory:") {
+    Err(e) => Err(e.message),
+    Ok(db) => match trail.open_memory() {
+      Err(e) => Err(e),
+      Ok(log) => {
+        let robot := make_robot(["move_arm"], 10)
+        let body := tasks_send_body("speak", "{\"text\":\"hello\"}")
+        let resp := a2a.dispatch_request(robot, db, log, body)
+        if str.contains(resp, "denied: skill speak") {
+          Ok(())
+        } else {
+          Err(str.concat("expected speak denied, got: ", resp))
+        }
+      },
+    },
+  }
+}
+
+fn test_speak_reaches_sidecar_when_granted() -> [sql, fs_write, time, net, sense, actuate] Result[Unit, Str] {
+  match sql.open(":memory:") {
+    Err(e) => Err(e.message),
+    Ok(db) => match trail.open_memory() {
+      Err(e) => Err(e),
+      Ok(log) => {
+        let robot := make_robot(["speak"], 10)
+        let body := tasks_send_body("speak", "{\"text\":\"hello, i have the cup\"}")
+        let resp := a2a.dispatch_request(robot, db, log, body)
+        if str.contains(resp, "denied:") {
+          Err(str.concat("speak was denied but should have reached the sidecar: ", resp))
+        } else {
+          Ok(())
+        }
+      },
+    },
+  }
+}
+
 # 7. locate_object/transform_to_arm are sensing-only, like read_base/listen —
 #    no grant check at all (see sense.lex), so even a grant that never
 #    mentions them still reaches the sidecar (fails on the network, since
@@ -272,6 +313,8 @@ fn main() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent,
     test_budget_exhausted_returns_killed(),
     test_move_arm_denied_when_not_granted(),
     test_move_arm_reaches_sidecar_when_granted(),
+    test_speak_denied_when_not_granted(),
+    test_speak_reaches_sidecar_when_granted(),
     test_locate_object_not_grant_gated(),
     test_transform_to_arm_not_grant_gated(),
     test_unknown_skill_refused()
