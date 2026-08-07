@@ -30,6 +30,12 @@ import os
 import mujoco
 import numpy as np
 
+# Objects `locate_object` knows how to find: name -> (r, g, b) in [0, 1].
+# The color doubles as the XML material AND the detection target, so vision
+# is checked against the same value the renderer actually draws — not a
+# separately-maintained lookup table that could drift from the scene.
+KNOWN_OBJECTS = {"cup": (0.85, 0.3, 0.3)}
+
 # Room: 4m x 3m floor (matches the demo's base grant), counter along the +x
 # wall, a cup on the counter — reachable once the cart is close.
 XML = """
@@ -43,7 +49,7 @@ XML = """
     </body>
     <body name="cup" pos="3.15 1.0 0.86">
       <freejoint/>
-      <geom type="cylinder" size="0.03 0.05" mass="0.2" rgba="0.85 0.3 0.3 1"/>
+      <geom type="cylinder" size="0.03 0.05" mass="0.2" rgba="{cup_rgba} 1"/>
       <site name="cup_top" pos="0 0 0.05" size="0.01" rgba="1 0.6 0.6 1"/>
     </body>
     <body name="cart" pos="0.5 1.5 0.15">
@@ -71,7 +77,7 @@ XML = """
     <weld name="grasp_right" body1="ee_right" body2="cup" active="false"/>
   </equality>
 </mujoco>
-"""
+""".format(cup_rgba=" ".join(f"{c:.3f}" for c in KNOWN_OBJECTS["cup"]))
 
 # Where each arm's frame sits on the cart (cart frame: x nose-forward): forward
 # of center, left/right of the midline, at the arm base plate height.
@@ -84,6 +90,23 @@ ARRIVE_TOL = 0.03  # m — base arrival threshold
 # 0.3.0-era kit was a 3-omni-wheel holonomic base. Default matches 0.4.0.
 BASE_MODE = os.environ.get("LEX_XLE_BASE", "diff")  # "diff" | "omni"
 YAW_RATE = 2.0  # rad/s — in-place turn rate for the differential base
+
+# Loosely matches KNOWN_OBJECTS colors under the scene's single flat light —
+# per-channel tolerance, not a tight photometric match (real cameras and
+# lighting would need a proper vision model; this is intentionally narrow).
+COLOR_TOL = 60.0
+
+
+def arm_frame_offset(base_xy, heading, mount, world_target):
+    """Invert XLeSim.world_of(): world = base + R(heading) @ (mount + offset).
+    Shared by locate_object() (vision -> arm target) and any policy/eval code
+    that needs the same inverse (see gym_env/xlerobot_policy_eval.py)."""
+    d = np.asarray(world_target[:2]) - np.asarray(base_xy)
+    c, s = math.cos(heading), math.sin(heading)
+    local_xy = np.array([c * d[0] + s * d[1], -s * d[0] + c * d[1]])
+    off_xy = local_xy - mount[:2]
+    off_z = world_target[2] - mount[2]
+    return float(off_xy[0]), float(off_xy[1]), float(off_z)
 
 
 class XLeSim:
@@ -250,3 +273,72 @@ class XLeSim:
         was = bool(self.d.eq_active[self.weld[arm]])
         self.d.eq_active[self.weld[arm]] = 0
         return {"outcome": "reached", "detail": f"{arm} released (was_holding={was})"}
+
+    def locate_object(self, name, camera="head", width=320, height=240):
+        """Find a KNOWN_OBJECTS entry by color-threshold detection on a
+        rendered camera frame, then recover its real 3D world position by
+        ray-casting the detected pixel back into the scene (mujoco.mj_ray) —
+        genuine perception geometry over the actual rendered image, not a
+        lookup table keyed by name.
+
+        Returns {"outcome": "found", "world": {x,y,z}, "arm_frame":
+        {"arm","x","y","z"}, "detail"} or {"outcome": "not_found", "detail"}.
+        """
+        if name not in KNOWN_OBJECTS:
+            return {"outcome": "not_found",
+                    "detail": f"unknown object '{name}' (known: {sorted(KNOWN_OBJECTS)})"}
+        img = self.render_camera(camera, width, height)
+        if img is None:
+            return {"outcome": "not_found", "detail": "no renderer available (headless GL?)"}
+
+        target_rgb = np.array(KNOWN_OBJECTS[name]) * 255.0
+        diff = np.abs(img.astype(np.float64) - target_rgb).sum(axis=2)
+        ys, xs = np.nonzero(diff < COLOR_TOL)
+        if len(xs) == 0:
+            return {"outcome": "not_found", "detail": f"'{name}' not visible in '{camera}' camera"}
+        px, py = float(xs.mean()), float(ys.mean())
+
+        # Pinhole projection: cast a ray from the camera through the detected
+        # pixel's center. MuJoCo camera frame: +x right, +y up, looks down -z;
+        # cam_xmat is the world<-cam rotation (world_dir = R @ cam_dir).
+        cam_id = self.m.camera(camera).id
+        fovy = math.radians(self.m.cam_fovy[cam_id])
+        cam_pos = self.d.cam_xpos[cam_id].copy()
+        cam_mat = self.d.cam_xmat[cam_id].reshape(3, 3)
+        tan_half_fovy = math.tan(fovy / 2.0)
+        aspect = width / height
+        ndc_x = 2.0 * (px + 0.5) / width - 1.0
+        ndc_y = 1.0 - 2.0 * (py + 0.5) / height
+        cam_dir = np.array([ndc_x * tan_half_fovy * aspect, ndc_y * tan_half_fovy, -1.0])
+        cam_dir /= np.linalg.norm(cam_dir)
+        world_dir = cam_mat @ cam_dir
+
+        geomid = np.zeros(1, dtype=np.int32)
+        dist = mujoco.mj_ray(self.m, self.d, cam_pos, world_dir, None, 1, -1, geomid)
+        if dist < 0:
+            return {"outcome": "not_found", "detail": f"'{name}' color detected but the ray-cast hit nothing"}
+        world = cam_pos + world_dir * dist
+
+        arm_frame = self.arm_frame_for(world)
+        return {
+            "outcome": "found",
+            "world": {"x": float(world[0]), "y": float(world[1]), "z": float(world[2])},
+            "arm_frame": arm_frame,
+            "detail": (f"'{name}' at world ({world[0]:.2f},{world[1]:.2f},{world[2]:.2f}), "
+                       f"{arm_frame['arm']} arm offset ({arm_frame['x']:.2f},{arm_frame['y']:.2f},{arm_frame['z']:.2f})"),
+        }
+
+    def arm_frame_for(self, world):
+        """Project a world position into whichever arm's frame is nearest,
+        using the CURRENT base pose. Shared by locate_object() (world position
+        just recovered from vision) and the standalone `transform_to_arm`
+        skill: a caller that drove the base after locate_object saw a world
+        position needs this re-projected from the base's new pose — the base
+        moving invalidates the OLD arm-frame offset, not the world position."""
+        base = self.base_xy()
+        best_arm = min(
+            ("left", "right"),
+            key=lambda a: float(np.linalg.norm(np.asarray(world)[:2] - self.world_of(a, np.zeros(3))[:2])),
+        )
+        ox, oy, oz = arm_frame_offset(base, self.heading, ARM_MOUNT[best_arm], world)
+        return {"arm": best_arm, "x": ox, "y": oy, "z": oz}

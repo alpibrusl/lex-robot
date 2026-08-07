@@ -315,3 +315,9 @@ fn listen(r :: t.Robot, seconds :: Int) -> [net, sense] Result[Str, Str] { sense
 
 # Base floor pose (refuses unparseable responses) — see sense.read_base.
 fn read_base(r :: t.Robot) -> [net, sense] Result[t.Vec3, Str] { sense.read_base(r) }
+
+# Vision-based object localization — see sense.locate_object.
+fn locate_object(r :: t.Robot, name :: Str) -> [net, sense] Result[t.Located, Str] { sense.locate_object(r, name) }
+
+# Re-project a world position into the current arm frame — see sense.transform_to_arm.
+fn transform_to_arm(r :: t.Robot, world :: t.Vec3) -> [net, sense] Result[t.Located, Str] { sense.transform_to_arm(r, world) }

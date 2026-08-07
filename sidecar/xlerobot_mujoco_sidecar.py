@@ -111,6 +111,12 @@ def handle_skill(name, args):
         return SIM.release(arm)
     if name == "observe":
         return SIM.observe()
+    if name == "locate_object":
+        name_arg = args.get("name", "")
+        return SIM.locate_object(name_arg, camera=args.get("camera", "head"))
+    if name == "transform_to_arm":
+        world = (float(args.get("x", 0.0)), float(args.get("y", 0.0)), float(args.get("z", 0.0)))
+        return {"outcome": "found", "arm_frame": SIM.arm_frame_for(world)}
     return {"error": f"unknown skill: {name}"}
 
 

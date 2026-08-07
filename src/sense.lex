@@ -16,6 +16,8 @@ import "std.str" as str
 
 import "std.int" as int
 
+import "std.float" as flt
+
 import "std.list" as list
 
 import "./types" as t
@@ -44,6 +46,32 @@ fn jfloat(json :: Str, key :: Str, dflt :: Float) -> Float {
     Some(v) => v,
     None => dflt,
   }
+}
+
+# Unlike a2a_card.lex's jstr (which expects LEX-authored, unspaced JSON and
+# folds the value's opening quote into `key` itself), this JSON comes from
+# the Python sidecar's `json.dumps`, which puts a space after every colon
+# ("\"arm\": \"left\"") — so `key` here is colon-only (e.g. "\"arm\":") and
+# the segment is trimmed before splitting on the quote, landing the value at
+# index 1 (index 0 is the empty text before that now-leading quote).
+fn jstr(json :: Str, key :: Str, dflt :: Str) -> Str {
+  let seg := str.trim(nth1(str.split(json, key)))
+  let tok := nth1(str.split(seg, "\""))
+  if str.is_empty(tok) {
+    dflt
+  } else {
+    tok
+  }
+}
+
+# Isolate a flat nested-object field's raw text (e.g. the {"x":..,"y":..}
+# value at "world":) so jfloat/jstr can be applied within just that object —
+# `locate_object`'s response nests two same-shaped {x,y,z} records ("world"
+# and "arm_frame"), so a plain top-level jfloat("\"x\":") would always find
+# the FIRST one. Assumes no nested braces inside the field (true here).
+fn jobj(json :: Str, key :: Str) -> Str {
+  let seg := nth1(str.split(json, key))
+  head_or(str.split(seg, "}"), seg)
 }
 
 # ── sensing skills ────────────────────────────────────────────────────────────
@@ -83,6 +111,58 @@ fn read_base(r :: t.Robot) -> [net, sense] Result[t.Vec3, Str] {
         } else {
           Err(str.concat("read_base: no pose in response: ", s))
         }
+      }
+    },
+  }
+}
+
+# Find a named object via the sidecar's vision (Tier-2 MuJoCo: genuine
+# color-threshold detection + ray-cast against the rendered camera image;
+# Tier-1: an explicitly-labeled canned lookup so the demo runs with no
+# physics dependency; Tier-3 real hardware: not yet implemented, returns
+# Err). Sensing-only, no grant check — matching read_camera/read_joints:
+# locate_object never moves anything, so it carries no authority to gate.
+# The caller's own move_arm/move_base calls (see find_and_fetch_demo.lex)
+# are what the grant actually checks.
+fn locate_object(r :: t.Robot, name :: Str) -> [net, sense] Result[t.Located, Str] {
+  match client.call(r.sidecar_url, "locate_object", str.join(["{\"name\":\"", name, "\"}"], "")) {
+    Err(e) => Err(e),
+    Ok(s) => {
+      if str.contains(s, "\"found\"") {
+        let w := jobj(s, "\"world\":")
+        let af := jobj(s, "\"arm_frame\":")
+        Ok({
+          arm: jstr(af, "\"arm\":", "left"),
+          world: { x: jfloat(w, "\"x\":", 0.0), y: jfloat(w, "\"y\":", 0.0), z: jfloat(w, "\"z\":", 0.0) },
+          offset: { x: jfloat(af, "\"x\":", 0.0), y: jfloat(af, "\"y\":", 0.0), z: jfloat(af, "\"z\":", 0.0) },
+        })
+      } else {
+        Err(str.concat("locate_object: ", s))
+      }
+    },
+  }
+}
+
+# Re-project a world position (e.g. from an earlier locate_object call) into
+# whichever arm's frame is nearest, using the base's CURRENT pose. Needed
+# because the base moving after locate_object invalidates that earlier call's
+# arm_frame offset — the world position is still valid, but the base-relative
+# offset to reach it is not. Sensing-only, no grant check (same reasoning as
+# locate_object: it never moves anything).
+fn transform_to_arm(r :: t.Robot, world :: t.Vec3) -> [net, sense] Result[t.Located, Str] {
+  let body := str.join(["{\"x\":", flt.to_str(world.x), ",\"y\":", flt.to_str(world.y), ",\"z\":", flt.to_str(world.z), "}"], "")
+  match client.call(r.sidecar_url, "transform_to_arm", body) {
+    Err(e) => Err(e),
+    Ok(s) => {
+      if str.contains(s, "\"found\"") {
+        let af := jobj(s, "\"arm_frame\":")
+        Ok({
+          arm: jstr(af, "\"arm\":", "left"),
+          world: world,
+          offset: { x: jfloat(af, "\"x\":", 0.0), y: jfloat(af, "\"y\":", 0.0), z: jfloat(af, "\"z\":", 0.0) },
+        })
+      } else {
+        Err(str.concat("transform_to_arm: ", s))
       }
     },
   }
