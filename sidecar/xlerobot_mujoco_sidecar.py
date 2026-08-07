@@ -86,6 +86,10 @@ def handle_skill(name, args):
         # so the voice-goal flow runs against either tier unchanged.
         return {"transcript": CANNED_TRANSCRIPT, "confidence": 1.0,
                 "seconds": int(args.get("seconds", 3))}
+    if name == "speak":
+        # No physical speaker in the physics sim either — same honest
+        # no-op-with-detail as Tier 1's stub.
+        return {"outcome": "reached", "detail": f"(simulated, no speaker) would say: {args.get('text', '')}"}
     if name == "move_base":
         speed = min(float(args.get("speed", 0.3)), HARD_SPEED_MPS)  # firmware floor
         return SIM.drive(float(args.get("x", 0.0)), float(args.get("y", 0.0)), speed)

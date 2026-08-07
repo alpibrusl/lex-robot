@@ -57,6 +57,17 @@ expect xlerobot_voice "denied: skill listen not in grant" "xlerobot voice: mic-l
 expect xlerobot_find "located 'cup' at world" "xlerobot find: locate_object turns an object name into a real position"
 expect xlerobot_find "grasp 15N                  → reached" "xlerobot find: vision-driven approach + grasp succeeds"
 
+# The LLM planner's tool-dispatch loop, verified for real with a scripted
+# mock model (no OpenCode API key / network needed): both tool calls it
+# proposes go over a real A2A round-trip into a real, live a2a_robot_server
+# process, so the actual grant — not a stand-in — decides allow/deny.
+echo "== LLM planner (mock model, real grant) =="
+if bash scripts/llm_planner_mock_test.sh 2>/dev/null | grep -qF "ALL PASS:"; then
+  pass "llm planner: mock-scripted tool calls reach the real grant-gated A2A server"
+else
+  bad "llm planner: mock-scripted tool-dispatch test failed"
+fi
+
 # The safe-RL/eval loop, closed: a policy's rollout (here, the committed fixture
 # — regenerating it needs a mujoco venv, out-of-band) is replayed through the
 # ACTUAL grant gate (not re-scripted), verified by the robot_task referee, and

@@ -23,8 +23,10 @@ mujoco
 # SIDECAR.md "Real hardware" for the env vars and bring-up steps. Not needed
 # for Tier-1/Tier-2 and not installed in CI (no hardware to test against).
 #   pip install "lerobot[feetech]"    # SO101Follower + FeetechMotorsBus (arms + diff base)
-#   pip install sounddevice           # mic capture for the `listen` skill
+#   pip install sounddevice           # mic capture for `listen`, speaker playback for `speak`
 #   pip install faster-whisper        # local speech-to-text for `listen`
+#   pip install kokoro                # local text-to-speech for `speak` (hexgrad/Kokoro-82M;
+#                                      # pulls torch + transformers -- heavier, see below)
 #   pip install pillow                # JPEG-encodes read_camera frames (also listed above)
 
 # depot_g1_sidecar.py (Tier-3: real Unitree G1 humanoid) also needs the G1 model

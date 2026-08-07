@@ -42,6 +42,23 @@ fn pose_json(p :: t.Pose) -> Str {
   ], "")
 }
 
+# Minimal JSON string escape — every other skill's body only ever encodes
+# numbers/enum-like arm names, but `speak`'s text is free-form (may come from
+# an LLM planner) and could contain quotes/backslashes/newlines that would
+# otherwise break the hand-built JSON body below.
+fn json_escape_str(s :: Str) -> Str {
+  list.fold(str.split(s, ""), "", fn (acc :: Str, c :: Str) -> Str {
+    str.concat(acc, match c {
+      "\"" => "\\\"",
+      "\\" => "\\\\",
+      "\n" => "\\n",
+      "\r" => "\\r",
+      "\t" => "\\t",
+      _ => c,
+    })
+  })
+}
+
 # Minimal outcome parse: the sidecar returns {"outcome":"reached|stalled|timeout", "detail":"..."}.
 fn parse_outcome(resp :: Str) -> t.Outcome {
   if str.contains(resp, "\"reached\"") {
@@ -286,6 +303,26 @@ fn grasp_arm(r :: t.Robot, arm :: Str, force :: Float) -> [net, sense, actuate] 
     }
   } else {
     Denied("skill grasp_arm not in grant")
+  }
+}
+
+# Speak `text` aloud through the robot's speaker (Kokoro TTS on Tier-3
+# hardware; an honest "would say" no-op on Tier-1/Tier-2, which have no
+# physical speaker). Grant-gated like every other actuating skill: an
+# audible output is a real effect on the world (and, unlike move_arm/
+# grasp_arm's numeric args, `text` may come straight from an LLM planner),
+# so "is this program allowed to make the robot talk right now" is a typed,
+# auditable, refusable question — the same posture `listen` takes on the
+# input side. No workspace/force bound applies; there's nothing to clamp.
+fn speak(r :: t.Robot, text :: Str) -> [net, sense, actuate] t.Outcome {
+  if grant.skill_allowed(r.grant, "speak") {
+    let body := str.join(["{\"text\":\"", json_escape_str(text), "\"}"], "")
+    match client.call(r.sidecar_url, "speak", body) {
+      Err(e) => Stalled(e),
+      Ok(resp) => parse_outcome(resp),
+    }
+  } else {
+    Denied("skill speak not in grant")
   }
 }
 

@@ -2,7 +2,7 @@
 # python3 (no pip). The ML demos (keep-out / MuJoCo / learned policy) need the
 # Python deps in sidecar/requirements.txt — see the README dependency matrix.
 
-.PHONY: help check smoke demo grant task budget depot xlerobot xlerobot-task xlerobot-voice xlerobot-sim xlerobot-find xlerobot-find-sim keepout dynamic_keepout tool_fire mcp-grant a2a-grant xlerobot-rl-train xlerobot-rl-run xlerobot-rl-usage xlerobot-rl-finetune deps clean
+.PHONY: help check smoke demo grant task budget depot xlerobot xlerobot-task xlerobot-voice xlerobot-sim xlerobot-find xlerobot-find-sim keepout dynamic_keepout tool_fire mcp-grant a2a-grant xlerobot-rl-train xlerobot-rl-run xlerobot-rl-usage xlerobot-rl-finetune xlerobot-llm-mock xlerobot-llm deps clean
 
 help: ## Show this help
 	@grep -hE '^[a-z-]+:.*##' $(MAKEFILE_LIST) | sed -E 's/:.*## /\t/' | sort
@@ -73,6 +73,22 @@ mcp-grant: ## MCP grant gate smoke test (deny/allow/clamp/budget-kill, no sideca
 
 a2a-grant: ## A2A grant gate smoke test: same skills over standard Google A2A (no sidecar needed)
 	@bash scripts/demo.sh a2a_grant
+
+xlerobot-llm-mock: ## LLM planner tool-dispatch, verified for real with a scripted mock model (no API key, no ML deps)
+	@bash scripts/llm_planner_mock_test.sh
+
+xlerobot-llm: ## "Bring me the cup", spoken + a REAL OpenCode-backed plan (NEEDS: OPENCODE_API_KEY; GOAL="..." for a typed goal)
+	@python3 sidecar/xlerobot_sidecar.py & echo $$! > /tmp/lex-robot-xle-llm-sc.pid; \
+	 lex run --allow-effects io,time,crypto,random,sql,fs_read,fs_write,net,concurrent,llm,proc,sense,actuate \
+	   examples/a2a_robot_demo.lex run & echo $$! > /tmp/lex-robot-xle-llm-a2a.pid; \
+	 for i in $$(seq 1 100); do curl -sf http://127.0.0.1:8900/health >/dev/null 2>&1 && curl -sf http://127.0.0.1:8766/.well-known/agent.json >/dev/null 2>&1 && break; sleep 0.2; done; \
+	 EFF=io,time,crypto,random,sql,fs_read,fs_write,net,concurrent,llm,proc,sense,actuate,env,stream; \
+	 if [ -n "$$GOAL" ]; then \
+	   lex run --allow-effects $$EFF examples/llm_command_demo.lex run_text "\"$$GOAL\""; \
+	 else \
+	   lex run --allow-effects $$EFF examples/llm_command_demo.lex run; \
+	 fi; \
+	 kill `cat /tmp/lex-robot-xle-llm-sc.pid` `cat /tmp/lex-robot-xle-llm-a2a.pid` 2>/dev/null || true
 
 xlerobot-rl-train: ## Train a real PPO policy against LexXLeRobotFetch-v0 (NEEDS: pip install stable-baselines3)
 	@python3 sidecar/xlerobot_rl_train.py
