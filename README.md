@@ -608,18 +608,33 @@ from the existing checkpoint and continues training against the governed
 env, so the retrained policy keeps its task-solving competence while
 (in principle) learning to stay inside the envelope it's actually held to.
 
-Honest result, not a success claim: a 30k-timestep smoke test confirms the
-mechanism runs correctly end to end (clip + penalty behave as designed,
-verified in isolation; the finetune produces a loadable, still-successful
-checkpoint) — but 30k timesteps (10% of the original training budget)
-was not enough to meaningfully shift a policy whose entire learned strategy
-relies on reaching for the cup along an axis the grant forbids; the denial
-rate did not measurably improve at that budget. This is the same "the
-training loop is real, mastery takes more timesteps than a demo affords"
-honesty as the base policy above — closing the *mechanism* (using real
-usage data to shape retraining) is what this delivers; how many timesteps
-it takes to actually converge to a compliant policy is an open, expected-
-to-be-substantial cost, not a solved problem.
+Honest result, not a success claim: the mechanism runs correctly end to
+end — verified in isolation (forcing max-delta actions drives `ee_off` to
+exactly the workspace boundary, never beyond) and through three real
+finetune attempts of increasing seriousness (a 30k-timestep smoke test, a
+250k-timestep run, and a second 250k-timestep run after fixing a real bug
+this work surfaced — the wrapper's reward was computed from the *pre-clip*
+position, so the dominant `-distance` term kept crediting the violation
+the penalty was trying to suppress; recomputing both from the corrected
+pose was a genuine, needed fix, landed regardless of what came next). None
+of the three converged to a policy that is both compliant *and* successful
+within these budgets: the first two keep solving the task by reaching
+outside the grant exactly as before (the penalty alone wasn't enough to
+change the strategy); the third — the reward-fixed one — stopped violating
+the box by *no longer solving the task either*, trading away its only
+learned strategy without discovering an in-bounds replacement.
+
+The likely reason, stated as a hypothesis rather than fixed: the cup's
+position may simply not be reachable from this base-approach strategy
+*within* the granted workspace box at all — compliance may require the
+policy to also change *where the base parks*, not just clamp how far the
+arm reaches from wherever it stopped, and nothing here rewards that
+joint change explicitly. Curriculum learning (gradually tightening the
+box), a base-positioning-aware reward term, or simply far more timesteps
+are the natural next things to try — none of which this PR claims to have
+done. What this delivers is the real thing asked for — an actual retraining
+mechanism driven by actual usage data, correctly implemented and honestly
+evaluated — not a converged compliant policy, which remains open work.
 
 ## Evidence-gated task graph (the lex-loom pattern)
 
