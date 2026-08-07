@@ -142,9 +142,25 @@ fn listen_cap() -> cap.Capability {
   })
 }
 
+fn locate_object_cap() -> cap.Capability {
+  cap.inbound("locate_object", "Find a named object's real-world position via the head camera (Tier-2: color detection + ray-cast against the rendered image; Tier-1: a canned lookup; sensing only — no actuation, no budget charge).", {
+    title: "LocateObjectArgs",
+    description: "The object's name (e.g. \"cup\").",
+    fields: [sch.required_str("name", [StrNonEmpty])]
+  })
+}
+
+fn transform_to_arm_cap() -> cap.Capability {
+  cap.inbound("transform_to_arm", "Re-project a world position (from an earlier locate_object) into whichever arm frame is nearest, using the base's CURRENT pose (sensing only — no actuation, no budget charge).", {
+    title: "TransformToArmArgs",
+    description: "World-frame target in metres.",
+    fields: [sch.required_float("x", []), sch.required_float("y", []), sch.required_float("z", [])]
+  })
+}
+
 fn all_capabilities() -> List[cap.Capability] {
   [mcp.move_to_cap(), mcp.grasp_cap(), mcp.connect_charger_cap(), mcp.read_joints_cap(), mcp.read_camera_cap(),
-   move_arm_cap(), grasp_arm_cap(), move_base_cap(), read_base_cap(), listen_cap()]
+   move_arm_cap(), grasp_arm_cap(), move_base_cap(), read_base_cap(), listen_cap(), locate_object_cap(), transform_to_arm_cap()]
 }
 
 fn robot_agent_card(base_url :: Str) -> card.AgentCard {
@@ -241,6 +257,29 @@ fn dispatch_listen(robot :: t.Robot, args :: jv.Json) -> [net, sense] Str {
   }
 }
 
+fn located_to_json(loc :: t.Located) -> Str {
+  str.join([
+    "{\"arm\":\"", loc.arm, "\",",
+    "\"world\":{\"x\":", flt.to_str(loc.world.x), ",\"y\":", flt.to_str(loc.world.y), ",\"z\":", flt.to_str(loc.world.z), "},",
+    "\"offset\":{\"x\":", flt.to_str(loc.offset.x), ",\"y\":", flt.to_str(loc.offset.y), ",\"z\":", flt.to_str(loc.offset.z), "}}"
+  ], "")
+}
+
+fn dispatch_locate_object(robot :: t.Robot, args :: jv.Json) -> [net, sense] Str {
+  match skills.locate_object(robot, mcp.get_str(args, "name", "")) {
+    Err(e) => str.concat("error: locate_object: ", e),
+    Ok(loc) => located_to_json(loc),
+  }
+}
+
+fn dispatch_transform_to_arm(robot :: t.Robot, args :: jv.Json) -> [net, sense] Str {
+  let world := { x: mcp.get_float(args, "x", 0.0), y: mcp.get_float(args, "y", 0.0), z: mcp.get_float(args, "z", 0.0) }
+  match skills.transform_to_arm(robot, world) {
+    Err(e) => str.concat("error: transform_to_arm: ", e),
+    Ok(loc) => located_to_json(loc),
+  }
+}
+
 # The single skill router — the XLeRobot skills above, falling through to
 # mcp_server.lex's dispatch_skill for the five it already handles (move_to /
 # grasp / connect_charger / read_joints / read_camera) and for unknown names
@@ -262,7 +301,15 @@ fn dispatch_skill(robot :: t.Robot, db :: Db, log :: trail.Log, name :: Str, arg
           if name == "listen" {
             dispatch_listen(robot, args)
           } else {
-            mcp.dispatch_skill(robot, db, log, name, args)
+            if name == "locate_object" {
+              dispatch_locate_object(robot, args)
+            } else {
+              if name == "transform_to_arm" {
+                dispatch_transform_to_arm(robot, args)
+              } else {
+                mcp.dispatch_skill(robot, db, log, name, args)
+              }
+            }
           }
         }
       }

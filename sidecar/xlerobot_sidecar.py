@@ -92,6 +92,36 @@ USE_HW = os.environ.get("LEX_ROBOT_HW", "0") == "1"
 # Stub transcript for the mic (override to script voice demos offline).
 CANNED_TRANSCRIPT = os.environ.get("LEX_XLE_TRANSCRIPT", "fetch the cup to the table")
 
+# Tier-1 has no camera model at all (arms/base are position vectors, not a
+# physics scene) — `locate_object` here is an explicitly-labeled canned
+# lookup, not vision, so the flagship "find and fetch" demo runs at every
+# tier. Real detection (color-threshold + MuJoCo ray-cast against the actual
+# rendered camera image) lives in the Tier-2 sidecar (xlerobot_mujoco_sidecar.py
+# -> gym_env/xlerobot_sim.py's XLeSim.locate_object).
+CANNED_OBJECT_WORLD = {"cup": {"x": 0.75, "y": 0.0, "z": 0.30}}
+
+# Same mount geometry as gym_env/xlerobot_sim.py's ARM_MOUNT — kept as a
+# separate constant here rather than importing the gym_env module (Tier-1 has
+# no mujoco/numpy dependency at all; see requirements.txt).
+ARM_MOUNT_XY = {"left": (0.25, 0.15), "right": (0.25, -0.15)}
+
+
+def _arm_frame_for(base, world):
+    """Project a world position into whichever arm's frame is nearest, given
+    the CURRENT base pose — the Tier-1 (no-physics) analogue of
+    gym_env/xlerobot_sim.py's XLeSim.arm_frame_for."""
+    c, s = math.cos(base["heading"]), math.sin(base["heading"])
+
+    def offset_for(arm):
+        mx, my = ARM_MOUNT_XY[arm]
+        dx, dy = world["x"] - base["x"], world["y"] - base["y"]
+        lx, ly = c * dx + s * dy, (0.0 - s) * dx + c * dy
+        return lx - mx, ly - my, world["z"]
+
+    best_arm = min(("left", "right"), key=lambda a: math.hypot(*offset_for(a)[:2]))
+    ox, oy, oz = offset_for(best_arm)
+    return {"arm": best_arm, "x": ox, "y": oy, "z": oz}
+
 ARM_JOINTS = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"]
 
 # XLeRobot 0.4.0 ships a dual-wheel DIFFERENTIAL base (no strafing); the
@@ -544,6 +574,32 @@ class XLeRobot:
                                os.environ.get("LEX_XLE_WHISPER_MODEL", "base.en"))
         return {"transcript": CANNED_TRANSCRIPT, "confidence": 1.0, "seconds": seconds}
 
+    def locate_object(self, name):
+        if USE_HW:
+            # No real-camera object-detection model wired up yet — say so
+            # rather than fabricating a position. Tier-2 (MuJoCo) is the only
+            # tier with genuine detection today.
+            return {"outcome": "not_found",
+                    "detail": "real-camera object detection not implemented on Tier-3 hardware"}
+        if name not in CANNED_OBJECT_WORLD:
+            return {"outcome": "not_found", "detail": f"unknown object '{name}' (stub knows: cup)"}
+        off = CANNED_OBJECT_WORLD[name]
+        world = {"x": self.base["x"] + off["x"], "y": self.base["y"] + off["y"], "z": off["z"]}
+        arm_frame = _arm_frame_for(self.base, world)
+        return {
+            "outcome": "found",
+            "world": world,
+            "arm_frame": arm_frame,
+            "detail": f"'{name}' (canned Tier-1 lookup, not vision) at world "
+                      f"({world['x']:.2f},{world['y']:.2f},{world['z']:.2f})",
+        }
+
+    def transform_to_arm(self, x, y, z):
+        if USE_HW:
+            return {"outcome": "not_found", "detail": "transform_to_arm not implemented on Tier-3 hardware"}
+        world = {"x": x, "y": y, "z": z}
+        return {"outcome": "found", "arm_frame": _arm_frame_for(self.base, world)}
+
     # ---- actuation -----------------------------------------------------------
     def move_arm(self, arm, x, y, z):
         if arm not in ("left", "right"):
@@ -620,6 +676,10 @@ def handle_skill(name, args):
     if name == "move_base":
         return ROBOT.move_base(float(args.get("x", 0.0)), float(args.get("y", 0.0)),
                                float(args.get("speed", 0.3)))
+    if name == "locate_object":
+        return ROBOT.locate_object(args.get("name", ""))
+    if name == "transform_to_arm":
+        return ROBOT.transform_to_arm(float(args.get("x", 0.0)), float(args.get("y", 0.0)), float(args.get("z", 0.0)))
     return {"error": f"unknown skill: {name}"}
 
 

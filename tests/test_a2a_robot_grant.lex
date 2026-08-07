@@ -191,7 +191,57 @@ fn test_move_arm_reaches_sidecar_when_granted() -> [sql, fs_write, time, net, se
   }
 }
 
-# 6. Unknown skill name still refuses cleanly (falls through to
+# 7. locate_object/transform_to_arm are sensing-only, like read_base/listen —
+#    no grant check at all (see sense.lex), so even a grant that never
+#    mentions them still reaches the sidecar (fails on the network, since
+#    :19999 isn't listening — never "denied:").
+fn test_locate_object_not_grant_gated() -> [sql, fs_write, time, net, sense, actuate] Result[Unit, Str] {
+  match sql.open(":memory:") {
+    Err(e) => Err(e.message),
+    Ok(db) => match trail.open_memory() {
+      Err(e) => Err(e),
+      Ok(log) => {
+        let robot := make_robot([], 10)
+        let body := tasks_send_body("locate_object", "{\"name\":\"cup\"}")
+        let resp := a2a.dispatch_request(robot, db, log, body)
+        if str.contains(resp, "denied:") {
+          Err(str.concat("locate_object was denied but is sensing-only (ungated): ", resp))
+        } else {
+          if str.contains(resp, "\"state\":\"failed\"") {
+            Ok(())
+          } else {
+            Err(str.concat("expected a failed task (no sidecar listening), got: ", resp))
+          }
+        }
+      },
+    },
+  }
+}
+
+fn test_transform_to_arm_not_grant_gated() -> [sql, fs_write, time, net, sense, actuate] Result[Unit, Str] {
+  match sql.open(":memory:") {
+    Err(e) => Err(e.message),
+    Ok(db) => match trail.open_memory() {
+      Err(e) => Err(e),
+      Ok(log) => {
+        let robot := make_robot([], 10)
+        let body := tasks_send_body("transform_to_arm", "{\"x\":0.3,\"y\":0.1,\"z\":0.2}")
+        let resp := a2a.dispatch_request(robot, db, log, body)
+        if str.contains(resp, "denied:") {
+          Err(str.concat("transform_to_arm was denied but is sensing-only (ungated): ", resp))
+        } else {
+          if str.contains(resp, "\"state\":\"failed\"") {
+            Ok(())
+          } else {
+            Err(str.concat("expected a failed task (no sidecar listening), got: ", resp))
+          }
+        }
+      },
+    },
+  }
+}
+
+# 8. Unknown skill name still refuses cleanly (falls through to
 #    mcp.dispatch_skill's "error: unknown tool:" — never silently allowed).
 fn test_unknown_skill_refused() -> [sql, fs_write, time, net, sense, actuate] Result[Unit, Str] {
   match sql.open(":memory:") {
@@ -222,6 +272,8 @@ fn main() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent,
     test_budget_exhausted_returns_killed(),
     test_move_arm_denied_when_not_granted(),
     test_move_arm_reaches_sidecar_when_granted(),
+    test_locate_object_not_grant_gated(),
+    test_transform_to_arm_not_grant_gated(),
     test_unknown_skill_refused()
   ]
   let failures := list.fold(results, 0, fn (n :: Int, r :: Result[Unit, Str]) -> Int {

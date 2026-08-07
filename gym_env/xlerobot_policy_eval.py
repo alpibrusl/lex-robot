@@ -24,28 +24,17 @@ producing a robot_task-format trail: "roll out through the grant gate."
 Usage: python3 gym_env/xlerobot_policy_eval.py [out.json]
 """
 import json
-import math
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
 import numpy as np
-from xlerobot_sim import XLeSim, ARM_MOUNT, GRASP_TOL
+from xlerobot_sim import XLeSim, ARM_MOUNT, GRASP_TOL, arm_frame_offset
 
 ARM = "left"
 GRASP_FORCE_N = 15.0     # matches the arm grant's max_grip_force ceiling
 HOME_XY = (0.5, 1.5)     # the base's reset position — "carry it home"
-
-
-def arm_frame_offset(base_xy, heading, mount, world_target):
-    """Invert XLeSim.world_of(): world = base + R(heading) @ (mount + offset)."""
-    d = np.asarray(world_target[:2]) - np.asarray(base_xy)
-    c, s = math.cos(heading), math.sin(heading)
-    local_xy = np.array([c * d[0] + s * d[1], -s * d[0] + c * d[1]])
-    off_xy = local_xy - mount[:2]
-    off_z = world_target[2] - mount[2]
-    return float(off_xy[0]), float(off_xy[1]), float(off_z)
 
 
 def clamp(v, lo, hi):

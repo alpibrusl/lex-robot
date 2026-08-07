@@ -62,6 +62,8 @@ is public and fetched automatically on first run.
 | LLM planner / grant / task / budget / depot | `make demo` / `grant` / `task` / `budget` / `depot` | **`lex` + `python3` only** (stdlib sidecars) |
 | XLeRobot dual-arm + base governance | `make xlerobot` | **`lex` + `python3` only** (stub sidecar) |
 | XLeRobot in MuJoCo physics (+ gym env) | `make xlerobot-sim` | + `pip install mujoco numpy` (`gymnasium` for the env) |
+| "bring me the cup": vision-grounded fetch (`locate_object`) | `make xlerobot-find` | **`lex` + `python3` only** (canned Tier-1 lookup) |
+| same, with real color-detection + ray-cast vision | `make xlerobot-find-sim` | + `pip install mujoco numpy` (+ a GL backend — `MUJOCO_GL=osmesa` headless) |
 | keep-out (learned policy vs. grant) | `make keepout` | + `pip install -r sidecar/requirements.txt` (gym-pusht, lerobot) |
 | MuJoCo depot (Tier-2 / Tier-3 G1) | `python3 sidecar/depot_mujoco_sidecar.py` · `depot_g1_sidecar.py` | + `mujoco` (+ G1 model via `LEX_G1_DIR`) |
 | learned reach policy (behaviour cloning) | `python3 sidecar/g1_bc_reach.py` | + `torch` (+ G1 model) |
@@ -463,6 +465,40 @@ make xlerobot-voice
 #   head camera frame: {"width": 640, ...}
 #   muted robot → denied: skill listen not in grant   ← NEVER SENT
 ```
+
+**"Bring me the cup" — vision-grounded object fetch** (`make xlerobot-find` /
+`xlerobot-find-sim`): naming an object isn't the same as knowing where it is —
+an LLM planner can say "the cup" but has no `move_arm` target until *something*
+turns that word into a pose. `locate_object` (`src/sense.lex`, sensing-only —
+no grant check, like `read_camera`/`read_base`) is that missing link. On the
+MuJoCo tier it's genuine perception: color-threshold detection on the actual
+rendered head-camera frame, then a `mujoco.mj_ray` cast recovers the real 3D
+world position — never a privileged read of the simulator's ground-truth cup
+position. The Tier-1 stub returns an explicitly-labeled canned lookup instead,
+so the same mission runs with no physics dependency.
+
+The head camera can only see the cup from a stand-off distance — any closer
+and the counter's own front edge blocks the line of sight — so the mission
+looks once from a distance, drives in on that single sighting, and
+re-projects the same world position into the arm's new frame with
+`transform_to_arm` once the base has moved (the base moving invalidates the
+old arm-frame offset, not the object's position). It does not visually servo
+the final approach — a real look-then-move constraint of the camera mount,
+not a shortcut:
+
+```sh
+make xlerobot-find
+#   base → search vantage (2.3,1.0) → reached
+#   located 'cup' at world          → (3.05,1,0.3)
+#   base → approach                 → reached
+#   left arm → cup                  → reached
+#   left grasp 15N                  → reached
+#   base → home                      → reached
+```
+
+lex-os's supervisor recognizes both `locate_object` and `transform_to_arm` as
+unbounded-by-design sensing skills (same bucket as `read_camera`/`read_base`)
+— see `crates/lex-os-supervisor/src/skill.rs` in lex-os.
 
 **The first game — Fetch the Cup, verified** (`make xlerobot-task`): the
 mission runs as a competition entry. Every actuation is recorded to a

@@ -16,6 +16,14 @@ type JointState = { names :: List[Str], positions :: List[Float], velocities :: 
 
 type Frame = { width :: Int, height :: Int, jpeg_b64 :: Str }
 
+# Result of locate_object: a real (Tier-2: color+ray-cast; Tier-1: canned
+# stub) world position plus the arm-frame offset from whichever arm mount is
+# nearest — the same frame move_arm expects, so a caller can drive the base
+# toward `world`, re-derive its own arm-frame target once it has arrived
+# (the base's post-drive pose differs from the pose locate_object saw), and
+# reach — see examples/find_and_fetch_demo.lex.
+type Located = { arm :: Str, world :: Vec3, offset :: Vec3 }
+
 # Result of any actuating skill.
 #   Denied(reason) — the *grant* refused a capability (skill/workspace/force).
 #   Killed(reason) — the *supervisor* stopped the run on a budget breach
