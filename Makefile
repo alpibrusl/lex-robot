@@ -2,7 +2,7 @@
 # python3 (no pip). The ML demos (keep-out / MuJoCo / learned policy) need the
 # Python deps in sidecar/requirements.txt — see the README dependency matrix.
 
-.PHONY: help check smoke demo grant task budget depot xlerobot xlerobot-task xlerobot-voice xlerobot-sim xlerobot-find xlerobot-find-sim keepout dynamic_keepout tool_fire mcp-grant a2a-grant xlerobot-rl-train xlerobot-rl-run xlerobot-rl-usage xlerobot-rl-finetune deps clean
+.PHONY: help check smoke demo grant task budget depot xlerobot xlerobot-task xlerobot-voice xlerobot-sim xlerobot-find xlerobot-find-sim keepout dynamic_keepout tool_fire mcp-grant a2a-grant xlerobot-rl-train xlerobot-rl-run xlerobot-rl-usage xlerobot-rl-finetune xlerobot-llm-mock deps clean
 
 help: ## Show this help
 	@grep -hE '^[a-z-]+:.*##' $(MAKEFILE_LIST) | sed -E 's/:.*## /\t/' | sort
@@ -73,6 +73,9 @@ mcp-grant: ## MCP grant gate smoke test (deny/allow/clamp/budget-kill, no sideca
 
 a2a-grant: ## A2A grant gate smoke test: same skills over standard Google A2A (no sidecar needed)
 	@bash scripts/demo.sh a2a_grant
+
+xlerobot-llm-mock: ## LLM planner tool-dispatch, verified for real with a scripted mock model (no API key, no ML deps)
+	@bash scripts/llm_planner_mock_test.sh
 
 xlerobot-rl-train: ## Train a real PPO policy against LexXLeRobotFetch-v0 (NEEDS: pip install stable-baselines3)
 	@python3 sidecar/xlerobot_rl_train.py
