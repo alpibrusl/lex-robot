@@ -100,6 +100,21 @@ class GovernedXLeRobotFetchEnv(gym.Wrapper):
             # policy sees is consistent with the clip, not the pre-clip pose.
             raw.sim._ride_arms()
             mujoco.mj_forward(raw.sim.m, raw.sim.d)
+            # The base env's `reward`/`terminated` were computed from the
+            # PRE-clip position (self.env.step() already returned before we
+            # got a chance to correct anything) — recompute both from the
+            # corrected pose using the exact same formula xlerobot_env.py
+            # uses, so the policy is actually rewarded for the compliant
+            # position, not penalized on top of a reward that still credits
+            # the violation. Without this, the penalty is fighting a reward
+            # signal that never stopped preferring the out-of-bounds reach.
+            o = raw.sim.observe()
+            ee = np.array(o["ee"]["left"])
+            cup = np.array(o["cup"])
+            dist = float(np.linalg.norm(ee - cup))
+            lifted = o["holding"]["left"] and cup[2] > 0.9
+            reward = -dist + (10.0 if lifted else 0.0)
+            terminated = bool(lifted)
         obs = raw._obs(raw.sim.observe())
         return obs, float(reward) - penalty, terminated, truncated, info
 
