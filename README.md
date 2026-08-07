@@ -65,6 +65,7 @@ is public and fetched automatically on first run.
 | keep-out (learned policy vs. grant) | `make keepout` | + `pip install -r sidecar/requirements.txt` (gym-pusht, lerobot) |
 | MuJoCo depot (Tier-2 / Tier-3 G1) | `python3 sidecar/depot_mujoco_sidecar.py` · `depot_g1_sidecar.py` | + `mujoco` (+ G1 model via `LEX_G1_DIR`) |
 | learned reach policy (behaviour cloning) | `python3 sidecar/g1_bc_reach.py` | + `torch` (+ G1 model) |
+| XLeRobot RL training (PPO) | `make xlerobot-rl-train` / `xlerobot-rl-run` | + `pip install stable-baselines3` (+ mujoco numpy gymnasium) |
 
 Everything is public: the toolchain ([lex-lang](https://github.com/alpibrusl/lex-lang)),
 the one Lex package dep ([lex-trail](https://github.com/alpibrusl/lex-trail)), and
@@ -108,6 +109,7 @@ sidecar/
   gym_sidecar.py    real gym-pusht physics + a LeRobot policy
   depot_*.py        depot backends: stub → MuJoCo → Unitree G1 → hardware seam
   xlerobot_*.py     XLeRobot 0.4.0 (dual SO-101 + diff-wheel base): stub → MuJoCo room → hardware seam
+  xlerobot_rl_train.py  PPO training against gym_env/xlerobot_env.py's LexXLeRobotFetch-v0
 manifests/       lex-os grant for the task (pick_place.capsule.json)
 box/             lex-os agent programs + the three-layer enforcement guide
 ```
@@ -519,6 +521,65 @@ durable `did:lex` reputation registry** (`examples/agent_registry.lex`,
 the identity + control-plane kernel — see below). Any future policy, hand-coded
 or trained, earns reputation the same way: by producing a rollout that
 survives the grant gate and replays clean.
+
+**The "train" step, closed for real** (`sidecar/xlerobot_rl_train.py` +
+`gym_env/xlerobot_rl_eval.py`): the loop above used a scripted controller
+standing in for "a future RL-trained policy" — this is that policy. Standard
+PPO (stable-baselines3), off the shelf, trained against the same
+`LexXLeRobotFetch-v0` env with no changes to it, the grant, or the governed
+skill surface — the env's action/observation spaces and reward
+(`-distance + a lift bonus`) were already RL-shaped; the trainer was the
+missing piece:
+
+```sh
+pip install stable-baselines3          # + mujoco numpy gymnasium
+python3 sidecar/xlerobot_rl_train.py --timesteps 300000 --out /tmp/xlerobot_ppo.zip
+python3 gym_env/xlerobot_rl_eval.py --stochastic /tmp/xlerobot_ppo.zip /tmp/rollout.json
+#   RL policy eval: SUCCESS — 181 env ticks, 17 governed rollout steps (downsampled every 25 ticks), episode return -109.91
+examples/xlerobot_rl_run.sh /path/to/venv/bin/python   # roll out -> verify -> reputation
+#   [replay] move_base(0.67,1.41) reached
+#   [replay] move_arm(0.50,-0.33,0.33) denied: left arm target outside granted workspace
+#   [replay] move_base(0.87,1.38) reached
+#   [replay] move_arm(1.00,-0.47,0.35) denied: left arm target outside granted workspace
+#   ...
+#   [replay] grasp(15N) reached
+#   ...
+#   [verify] {"verified":true,"legal":true,"goal_met":true,"actions":17,"denials":8,"score":91}
+#   reputation: did:lex:policy:xlerobot-ppo-trained  score=91  apps=['robot']
+```
+
+That output is real, from an actual 300k-timestep training run (measured
+locally; not CI-gated — see below), and it makes the governance property
+vivid rather than theoretical: this policy genuinely **solves the task in
+raw physics** (it lifts the cup — `SUCCESS` above is MuJoCo ground truth,
+not a claim) — and if it had been deployed ungoverned, every one of its arm
+reaches would have executed as commanded. Every single `move_arm` call in
+this rollout lands outside the granted workspace box (the policy's EE
+offset just accumulates in whatever direction reduces distance to the cup,
+unconstrained during training) and is **denied before it reaches the
+sidecar** — only `move_base` and the single `grasp` are admitted. A
+genuinely successful policy, entirely ungoverned by construction, caught
+the same way the keep-out zone demo's synthetic one is. Training doesn't
+earn a bypass.
+
+Mechanics: the raw per-tick trajectory is downsampled into governed
+`move_base`/`move_arm`/`grasp` calls (finer-grained than the fixed
+mission's four waypoints — see `gym_env/xlerobot_rl_eval.py`'s docstring
+for exactly how and why). `examples/xlerobot_rl_run.sh` (no venv/model
+available) replays the **committed fixture**
+(`examples/fixtures/xlerobot_rl_rollout.json` — literally the run shown
+above) instead of training+evaluating, mirroring
+`examples/xlerobot_policy_run.sh`'s fallback; the ML steps are out-of-band
+like the other ML demos, not CI-gated. Two honest caveats: first, 300k
+timesteps of default-hyperparameter PPO is a smoke test of the *training
+loop*, not a mastered policy — the **deterministic** policy (`model.predict`
+without `--stochastic`) reliably fails on this same seed; only sampled
+rollouts found the solution the training run converged toward, so success
+here is real but not yet robust. Second, the trail's `verify` event is
+unconditional (`xlerobot_policy_rollout.lex` always emits "outcome reached"
+after replaying every step, regardless of what physically happened) — the
+real success/failure signal is the eval script's own printed line above
+(`SUCCESS`/`FAILED`, from the sim), not the referee's `goal_met`.
 
 ## Evidence-gated task graph (the lex-loom pattern)
 

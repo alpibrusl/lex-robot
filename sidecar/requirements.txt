@@ -37,3 +37,7 @@ mujoco
 
 # g1_bc_reach.py (learned reach policy via behavior cloning) also needs torch:
 #   pip install torch    # MPS-accelerated on Apple Silicon
+
+# xlerobot_rl_train.py + gym_env/xlerobot_rl_eval.py (RL training loop against
+# LexXLeRobotFetch-v0 — the mujoco/gymnasium deps above, plus:
+#   pip install stable-baselines3    # PPO; pulls torch
