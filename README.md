@@ -433,7 +433,10 @@ Three tiers behind one protocol, like the depot:
   sensor-verified. See SIDECAR.md's "Real hardware" section for the honest
   rundown and env vars. Before trusting it near the real kit either way:
   firmware joint/torque limits + the e-stop are the safety floor, not the
-  grant (DESIGN.md §8).
+  grant (DESIGN.md §8). Bringing up a freshly-assembled kit from scratch
+  (mechanical assembly order, Linux/macOS software setup, port discovery,
+  motor ID assignment, arm calibration) is
+  [docs/XLEROBOT_SETUP.md](docs/XLEROBOT_SETUP.md).
 
 **The gym** (`gym_env/xlerobot_env.py`, Gymnasium `LexXLeRobotFetch-v0`)
 wraps the *same* MuJoCo scene as Tier 2: obs = base/EE/cup state, action =
