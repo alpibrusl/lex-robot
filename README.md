@@ -581,6 +581,46 @@ after replaying every step, regardless of what physically happened) — the
 real success/failure signal is the eval script's own printed line above
 (`SUCCESS`/`FAILED`, from the sim), not the referee's `goal_met`.
 
+**Retraining from actual usage data** (`gym_env/xlerobot_usage_log.py` +
+`gym_env/xlerobot_governed_env.py` + `sidecar/xlerobot_rl_finetune.py`):
+the policy above solved the task by drifting its arm reach wherever reduced
+distance to the cup, unconstrained — the training loop had no notion of the
+grant. This closes that gap using the **denial pattern from a real governed
+rollout** as the retraining signal, not a guess:
+
+```sh
+python3 gym_env/xlerobot_usage_log.py /tmp/xlerobot_policy_trail.jsonl --json > /tmp/usage.json
+#   {"total": 16, "denied": 8, "denial_rate": 0.5,
+#    "axis_weights": {"move_to.x": 2.69, "move_to.y": 0.23, "move_to.z": 0.08}}
+python3 sidecar/xlerobot_rl_finetune.py /tmp/xlerobot_ppo.zip \
+  --usage-log /tmp/usage.json --timesteps 250000 --out /tmp/xlerobot_ppo_v2.zip
+```
+
+`xlerobot_usage_log.py` reads the trail every governed replay already
+writes (nothing new needed there — `skill`, `args`, `grant`, `outcome` were
+already recorded) and computes, per axis, how often and how far it was
+denied. `xlerobot_governed_env.py` wraps `LexXLeRobotFetch-v0` with the
+*exact same bounds* the grant checks, clipping violations and applying a
+penalty weighted by those real per-axis numbers — an axis usage actually
+hit hardest (here, `move_to.x`, ~2.7x the average) gets the strongest
+training signal, not a uniform guess. `xlerobot_rl_finetune.py` warm-starts
+from the existing checkpoint and continues training against the governed
+env, so the retrained policy keeps its task-solving competence while
+(in principle) learning to stay inside the envelope it's actually held to.
+
+Honest result, not a success claim: a 30k-timestep smoke test confirms the
+mechanism runs correctly end to end (clip + penalty behave as designed,
+verified in isolation; the finetune produces a loadable, still-successful
+checkpoint) — but 30k timesteps (10% of the original training budget)
+was not enough to meaningfully shift a policy whose entire learned strategy
+relies on reaching for the cup along an axis the grant forbids; the denial
+rate did not measurably improve at that budget. This is the same "the
+training loop is real, mastery takes more timesteps than a demo affords"
+honesty as the base policy above — closing the *mechanism* (using real
+usage data to shape retraining) is what this delivers; how many timesteps
+it takes to actually converge to a compliant policy is an open, expected-
+to-be-substantial cost, not a solved problem.
+
 ## Evidence-gated task graph (the lex-loom pattern)
 
 `src/task.lex` runs **Perceive → Plan → Execute → Verify** with a hard gate at

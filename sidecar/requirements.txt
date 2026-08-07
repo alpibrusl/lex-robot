@@ -41,3 +41,7 @@ mujoco
 # xlerobot_rl_train.py + gym_env/xlerobot_rl_eval.py (RL training loop against
 # LexXLeRobotFetch-v0 — the mujoco/gymnasium deps above, plus:
 #   pip install stable-baselines3    # PPO; pulls torch
+# xlerobot_rl_finetune.py (retrain from a real rollout's usage log against
+# gym_env/xlerobot_governed_env.py's LexXLeRobotFetchGoverned-v0) needs the
+# same stable-baselines3. gym_env/xlerobot_usage_log.py needs nothing extra
+# (Python stdlib only).

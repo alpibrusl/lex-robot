@@ -2,7 +2,7 @@
 # python3 (no pip). The ML demos (keep-out / MuJoCo / learned policy) need the
 # Python deps in sidecar/requirements.txt — see the README dependency matrix.
 
-.PHONY: help check smoke demo grant task budget depot xlerobot xlerobot-task xlerobot-voice xlerobot-sim keepout dynamic_keepout tool_fire mcp-grant a2a-grant xlerobot-rl-train xlerobot-rl-run deps clean
+.PHONY: help check smoke demo grant task budget depot xlerobot xlerobot-task xlerobot-voice xlerobot-sim keepout dynamic_keepout tool_fire mcp-grant a2a-grant xlerobot-rl-train xlerobot-rl-run xlerobot-rl-usage xlerobot-rl-finetune deps clean
 
 help: ## Show this help
 	@grep -hE '^[a-z-]+:.*##' $(MAKEFILE_LIST) | sed -E 's/:.*## /\t/' | sort
@@ -66,6 +66,12 @@ a2a-grant: ## A2A grant gate smoke test: same skills over standard Google A2A (n
 
 xlerobot-rl-train: ## Train a real PPO policy against LexXLeRobotFetch-v0 (NEEDS: pip install stable-baselines3)
 	@python3 sidecar/xlerobot_rl_train.py
+
+xlerobot-rl-usage: ## Summarize a real trail's denial pattern into a retraining signal (no ML deps)
+	@python3 gym_env/xlerobot_usage_log.py $(TRAIL)
+
+xlerobot-rl-finetune: ## Retrain an existing policy from a real rollout's usage log (NEEDS: pip install stable-baselines3)
+	@python3 sidecar/xlerobot_rl_finetune.py $(MODEL) --usage-log $(USAGE_LOG)
 
 xlerobot-rl-run: ## Trained-policy safe-RL/eval loop: train* -> roll out -> verify -> reputation (no venv: replays a fixture)
 	@bash examples/xlerobot_rl_run.sh
