@@ -88,6 +88,7 @@ src/
   a2a_*.lex      A2A protocol: bootstrap blob, Ed25519 cards, handshake, consent, sessions, server
   human_goal.lex human-in-the-loop goal (ask a person at run time, don't hardcode it)
   mcp_server.lex MCP stdio front door — exposes the bounded skills as agent tools
+  a2a_robot_server.lex  standard Google A2A front door for the same skills (via lex-agent)
   bazaar*.lex    bazaar shopper + LLM seller logic
   seller_llm.lex LLM seller policy behind the bazaar demos
   haggle.lex     price negotiation between shopper and seller
@@ -648,6 +649,56 @@ Linux+KVM host — in-grant run completes with a verified audit chain, an
 out-of-grant move is `command_denied` at the perimeter, and the kernel egress
 wall drops non-allowlisted hosts. See [`box/README.md`](box/README.md) §4b.
 
+## Managing the robot via lex-agent (standard Google A2A)
+
+A third front door, alongside the in-process skill API and the MCP server
+above: [`src/a2a_robot_server.lex`](src/a2a_robot_server.lex) exposes the
+same grant-gated skills — including the XLeRobot's `move_arm` / `grasp_arm`
+/ `move_base` — over the standard
+[Google A2A protocol](https://github.com/google/A2A), reusing
+[lex-agent](https://github.com/alpibrusl/lex-agent)'s `AgentCard`,
+JSON-RPC envelope, and `Message`/`Task` types. Any standard A2A client —
+ADK, LangGraph, CrewAI, AutoGen, or lex-agent's own `client.lex` — can
+fetch `/.well-known/agent.json` and drive the robot with `tasks/send`,
+getting back a real, spec-shaped `Task`:
+
+```sh
+python3 sidecar/xlerobot_sidecar.py &
+lex run --allow-effects io,time,crypto,random,sql,fs_read,fs_write,net,concurrent,llm,proc,sense,actuate \
+    examples/a2a_robot_demo.lex run &
+
+curl -s localhost:8766/.well-known/agent.json   # AgentCard: move_arm, grasp_arm, move_base, ...
+
+curl -s localhost:8766/ -d '{"jsonrpc":"2.0","id":1,"method":"tasks/send","params":{
+  "id":"t_1","contextId":"ctx_1","skill":"move_arm",
+  "message":{"kind":"message","messageId":"m1","role":"user",
+             "parts":[{"type":"data","data":{"arm":"left","x":0.3,"y":0.2,"z":0.2}}]}}}'
+#   {"jsonrpc":"2.0","id":1,"result":{"kind":"task","id":"t_1","contextId":"ctx_1",
+#    "status":{"state":"completed"}, ...,
+#    "message":{...,"parts":[{"type":"data","data":{"skill":"move_arm","result":"reached"}}]}}}
+```
+
+**lex-agent's own `AgentDef`/`Skill.handle`/`dispatch_request`/`mount()`
+machinery is not used here** — `Skill.handle` is typed with a fixed effect
+row that deliberately excludes `sense`/`actuate` (so it can mount onto a
+`lex-web` router without an effect-row impedance), and widening it would
+weaken that boundary for every non-robot lex-agent consumer without even
+being sufficient on its own (mount()'s own handler would still need a row
+`lex-web`'s router doesn't accept). So, exactly like `mcp_server.lex` does
+for MCP, this reuses lex-agent's *pure* building blocks — `agent_card`,
+`protocol`, `message`, `task` — and writes its own `tasks/send` dispatch
+loop that calls straight into `skills.lex`, where the grant/budget/trail
+checks actually live. One skill surface, three front doors, no duplicated
+authority. The `a2a-grant` Makefile target (`bash scripts/demo.sh a2a_grant`)
+runs the deny/allow/clamp/budget-kill grant assertions — the A2A twin of
+`mcp-grant` — against the real A2A wire shape.
+
+This is distinct from the `a2a_*.lex` files elsewhere in `src/` (peer
+handshake, consent, sessions) — those implement a separate, bespoke
+protocol for the agentic interaction demos below (QR-code bootstrap,
+budget-gated commerce), predating and orthogonal to this task-dispatch
+integration.
+
 ## Agentic interactions: agents that meet, negotiate, and consent
 
 The same judgment-vs-authority boundary, applied to **agent-to-agent** interaction
@@ -817,6 +868,9 @@ enforced.
 - **lex-guard** — capability-gated budget tokens: the signed allowance an agent
   spends against in the A2A commerce demos.
 - **lex-llm** — high-level planner / skill selector.
+- **lex-agent** — standard Google A2A protocol types (`AgentCard`, JSON-RPC,
+  `Message`/`Task`), reused by `src/a2a_robot_server.lex` to expose the
+  robot's skills to any A2A-speaking agent framework.
 
 ## Known gaps (intentional / next)
 - JSON is hand-built with `std.str`; could swap to `lex-schema/json_value`.
