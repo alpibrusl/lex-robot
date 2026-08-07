@@ -11,12 +11,21 @@ depot seam (depot_hw_sidecar.py). move_base is a goal-point command, so the
 skill surface and grants are identical for the older 3-omni holonomic base.
 
 This is the **transfer point** for that robot: the standard lex-robot sidecar
-protocol (SIDECAR.md), plus three XLeRobot skills:
+protocol (SIDECAR.md), plus XLeRobot's own skills:
 
     move_arm  {"arm":"left|right", x,y,z,rx,ry,rz}   → outcome
     grasp_arm {"arm":"left|right", "force": N}        → outcome
     move_base {"x","y","speed"}                       → outcome
     read_base {}                                      → {"x","y","heading"}
+    render_qr {"payload": "..."}                       → {"ok","payload","detail"}
+    scan_qr   {}                                       → {"payload","detail"?}
+
+`render_qr`/`scan_qr` are the QR half of src/a2a_bootstrap.lex's stranger
+handshake (two robots that don't know each other bootstrap trust from a QR
+code, then verify each other's signed A2A card — see README's "Agentic
+interactions" section). They work identically on every tier's `sidecar_url`,
+same as every other skill here — see "QR bootstrap" below for what's
+actually real on Tier 3 vs simulated on Tier 1/2.
 
 Out of the box it runs as a **stub** (stdlib only, no hardware, no pip): the
 base integrates kinematically toward the target, the arms report plausible
@@ -80,6 +89,22 @@ Speaker + local synthesis (only imported if `speak` is actually called):
     LEX_XLE_SPEAKER_DEVICE  sounddevice output device index/name (default: system default)
     LEX_XLE_TTS_VOICE       Kokoro voice id (default "af_heart" — see hexgrad/Kokoro-82M)
     LEX_XLE_TTS_SPEED       playback speed multiplier (default 1.0)
+
+QR bootstrap (only imported if `render_qr`/`scan_qr` are actually called):
+    LEX_XLE_QR_IMAGE_PATH     where render_qr writes the QR PNG (default
+                               /tmp/xlerobot_qr.png). The XLeRobot 0.4.0 BOM has
+                               no screen/e-ink/OLED, and lerobot pins
+                               opencv-python-headless (no GUI window support
+                               either), so "render" on Tier 3 means "write a
+                               real, correct QR image to disk" — showing it is
+                               the next transfer point (tape a small display to
+                               the robot, or point another process at the path),
+                               same class of gap as move_base's dead-reckoning.
+    LEX_XLE_QR_SCAN_TIMEOUT_S  how long scan_qr polls the head camera for a
+                               decodable code before giving up (default 5)
+    render_qr needs `qrcode` (`pip install "qrcode[pil]"`); scan_qr needs only
+    cv2, which lerobot already pulls in as a base dependency (opencv-python-
+    headless) for OpenCVCamera — no extra install for scanning.
 """
 
 import json
@@ -439,10 +464,15 @@ class _HwCamera:
         self.camera = OpenCVCamera(OpenCVCameraConfig(index_or_path=index))
         self.camera.connect()
 
+    def capture(self):
+        """One raw HxWx3 uint8 RGB frame — shared by read_camera (JPEG-encodes
+        it) and _hw_scan_qr (decodes a QR code from it)."""
+        return self.camera.read()
+
     def read(self):
         import base64
         import io
-        frame = self.camera.read()  # HxWx3 uint8 RGB
+        frame = self.capture()
         try:
             from PIL import Image
             buf = io.BytesIO()
@@ -524,6 +554,44 @@ def _hw_speak(text, device, voice, speed):
     return {"outcome": "reached", "detail": f"spoke {len(text)} chars ({seconds:.1f}s of audio)"}
 
 
+def _hw_render_qr(payload, image_path):
+    """Encode `payload` (an src/a2a_bootstrap.lex BootstrapBlob, base64url)
+    as a real, scannable QR code and write it to disk. There is no display
+    in the XLeRobot 0.4.0 BOM to show it on — see the module docstring's "QR
+    bootstrap" section — so writing a correct image is as far as this
+    sidecar goes; an attached screen picking up `image_path` is the next
+    transfer point, not hidden or faked here."""
+    try:
+        import qrcode
+    except ImportError as e:
+        raise HardwareError(f'qrcode not installed ({e}). `pip install "qrcode[pil]"`.') from e
+    qrcode.make(payload).save(image_path)
+    return {"ok": "displayed", "payload": payload, "detail": f"QR image written to {image_path}"}
+
+
+def _hw_scan_qr(camera, timeout_s):
+    """Poll the head camera for a decodable QR code with OpenCV's built-in
+    detector — no extra dependency (cv2 ships as a base lerobot dependency
+    for OpenCVCamera itself). Polls rather than reading a single frame
+    because the code being scanned is very unlikely to already be centered
+    in frame the instant this is called."""
+    try:
+        import cv2
+    except ImportError as e:
+        raise HardwareError(f"cv2 not importable ({e}) — expected via lerobot's own opencv dependency.") from e
+    import time as _time
+    detector = cv2.QRCodeDetector()
+    deadline = _time.monotonic() + timeout_s
+    while True:
+        frame = camera.capture()  # HxWx3 uint8 RGB
+        payload, _points, _straight = detector.detectAndDecode(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+        if payload:
+            return {"payload": payload}
+        if _time.monotonic() >= deadline:
+            return {"payload": "", "detail": f"no QR code detected within {timeout_s}s"}
+        _time.sleep(0.1)
+
+
 class XLeRobot:
     """Thin wrapper around either the real hardware (arms/base/camera/mic) or
     a kinematic stub — same shape either way so handle_skill() never branches
@@ -538,6 +606,10 @@ class XLeRobot:
             "left": {"positions": [0.0] * 6, "holding": False},
             "right": {"positions": [0.0] * 6, "holding": False},
         }
+        # Tier-1/2 QR round trip (no display/no real camera at those tiers —
+        # see render_qr/scan_qr below): last payload "shown", stashed here so
+        # a scan_qr call gets back what render_qr last displayed.
+        self._qr_payload = ""
         if USE_HW:
             self._bring_up_hardware()
 
@@ -626,6 +698,22 @@ class XLeRobot:
         # than silently doing nothing, matching locate_object's honesty
         # convention for capabilities a given tier doesn't actually have.
         return {"outcome": "reached", "detail": f"(simulated, no speaker) would say: {text}"}
+
+    def render_qr(self, payload):
+        if USE_HW:
+            path = os.environ.get("LEX_XLE_QR_IMAGE_PATH", "/tmp/xlerobot_qr.png")
+            return _hw_render_qr(payload, path)
+        # No display on Tier 1/2 either (see the module docstring) — stash
+        # the payload so a paired scan_qr completes the round trip, same
+        # honest-simulation convention as speak/listen at these tiers.
+        self._qr_payload = payload
+        return {"ok": "displayed", "payload": payload, "detail": "(simulated, no display) QR payload stored"}
+
+    def scan_qr(self):
+        if USE_HW:
+            timeout_s = float(os.environ.get("LEX_XLE_QR_SCAN_TIMEOUT_S", "5"))
+            return _hw_scan_qr(self._hw_camera, timeout_s)
+        return {"payload": self._qr_payload}
 
     def locate_object(self, name):
         if USE_HW:
@@ -721,6 +809,10 @@ def handle_skill(name, args):
         return ROBOT.listen(int(args.get("seconds", 3)))
     if name == "speak":
         return ROBOT.speak(args.get("text", ""))
+    if name == "render_qr":
+        return ROBOT.render_qr(args.get("payload", ""))
+    if name == "scan_qr":
+        return ROBOT.scan_qr()
     if name == "move_arm":
         return ROBOT.move_arm(args.get("arm", "left"), float(args.get("x", 0.2)),
                               float(args.get("y", 0.0)), float(args.get("z", 0.2)))
@@ -740,7 +832,11 @@ def handle_skill(name, args):
 
 class Handler(BaseHTTPRequestHandler):
     def _send(self, code, payload):
-        body = json.dumps(payload).encode()
+        # Compact (no space after ':') to match sim_sidecar.py and satisfy
+        # a2a_bootstrap.lex's strict jstr (its receive_qr parses this response
+        # directly, unlike sense.lex's jstr which is written to tolerate
+        # either spacing via str.trim — see that module's jstr comment).
+        body = json.dumps(payload, separators=(",", ":")).encode()
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))

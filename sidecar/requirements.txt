@@ -28,6 +28,8 @@ mujoco
 #   pip install kokoro                # local text-to-speech for `speak` (hexgrad/Kokoro-82M;
 #                                      # pulls torch + transformers -- heavier, see below)
 #   pip install pillow                # JPEG-encodes read_camera frames (also listed above)
+#   pip install "qrcode[pil]"         # render_qr's QR image (scan_qr needs nothing extra --
+#                                      # cv2 ships as a base "lerobot[feetech]" dependency)
 
 # depot_g1_sidecar.py (Tier-3: real Unitree G1 humanoid) also needs the G1 model
 # from MuJoCo Menagerie (heavy STL meshes, not vendored). Sparse-checkout it and
