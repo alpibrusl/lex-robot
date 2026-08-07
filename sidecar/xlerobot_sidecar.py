@@ -19,6 +19,11 @@ protocol (SIDECAR.md), plus XLeRobot's own skills:
     read_base {}                                      → {"x","y","heading"}
     render_qr {"payload": "..."}                       → {"ok","payload","detail"}
     scan_qr   {}                                       → {"payload","detail"?}
+    show_image {"source": "path-or-http(s)-url"}        → outcome
+    show_video {"source": "path-or-http(s)-url"}        → outcome
+    show_url   {"url": "http(s)://..."}                 → outcome
+    show_text  {"text": "..."}                          → outcome
+    clear_display {}                                    → outcome
 
 `render_qr`/`scan_qr` are the QR half of src/a2a_bootstrap.lex's stranger
 handshake (two robots that don't know each other bootstrap trust from a QR
@@ -26,6 +31,13 @@ code, then verify each other's signed A2A card — see README's "Agentic
 interactions" section). They work identically on every tier's `sidecar_url`,
 same as every other skill here — see "QR bootstrap" below for what's
 actually real on Tier 3 vs simulated on Tier 1/2.
+
+`show_image`/`show_video`/`show_url`/`show_text`/`clear_display` are a
+general-purpose sibling to `render_qr`: instead of one fixed QR image, a
+kiosk browser pointed at `GET /display` can be told to show any local
+file, any http(s) URL (image, video, or a full webpage via iframe), or
+plain text. Unlike the arm/base/camera skills, these are **not** gated by
+`LEX_ROBOT_HW` — see "Display" below for why.
 
 Out of the box it runs as a **stub** (stdlib only, no hardware, no pip): the
 base integrates kinematically toward the target, the arms report plausible
@@ -96,19 +108,34 @@ QR bootstrap (only imported if `render_qr`/`scan_qr` are actually called):
                                no screen/e-ink/OLED, and lerobot pins
                                opencv-python-headless (no GUI window support
                                either), so "render" on Tier 3 means "write a
-                               real, correct QR image to disk" — showing it is
-                               the next transfer point (tape a small display to
-                               the robot, or point another process at the path),
-                               same class of gap as move_base's dead-reckoning.
+                               real, correct QR image to disk" — this file is
+                               also fed straight into the Display mechanism
+                               below, so a kiosk browser on GET /display shows
+                               it automatically once a screen exists.
     LEX_XLE_QR_SCAN_TIMEOUT_S  how long scan_qr polls the head camera for a
                                decodable code before giving up (default 5)
     render_qr needs `qrcode` (`pip install "qrcode[pil]"`); scan_qr needs only
     cv2, which lerobot already pulls in as a base dependency (opencv-python-
     headless) for OpenCVCamera — no extra install for scanning.
+
+Display (GET /display, /display/state, /display/content — always on, no
+extra env vars, no extra pip installs):
+    A kiosk browser (any Chromium/Firefox in fullscreen/kiosk mode, on
+    whatever screen ends up attached — see docs/XLEROBOT_SETUP.md) pointed
+    at `http://<sidecar-host>:8900/display` polls its state once a second
+    and renders whatever show_image/show_video/show_url/show_text/
+    render_qr last set: a local file (served via /display/content, MIME-
+    sniffed with stdlib `mimetypes`), an http(s) URL (fetched by the
+    browser itself — an image/video src, or a webpage via <iframe>), or
+    plain text. Unlike move_arm/scan_qr this is **not** gated by
+    LEX_ROBOT_HW: none of it needs a servo or camera, only a browser
+    somewhere pointed at the URL, which this process has no way to verify
+    either way — see DisplayState's docstring.
 """
 
 import json
 import math
+import mimetypes
 import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -592,6 +619,109 @@ def _hw_scan_qr(camera, timeout_s):
         _time.sleep(0.1)
 
 
+class DisplayState:
+    """What the kiosk page (GET /display) should currently show.
+
+    Deliberately tier-independent, unlike render_qr/scan_qr: encoding text,
+    serving a local file, or pointing at a URL needs no real servo or camera
+    hardware at all -- the only hardware-shaped fact about "a screen" is
+    whether an actual monitor with a kiosk browser is pointed at GET
+    /display, and that's a deployment fact this process cannot observe or
+    fake, so (unlike move_arm/scan_qr) there's no USE_HW branch here. This
+    class always does the real thing; whether anyone's watching is outside
+    its job.
+    """
+
+    def __init__(self):
+        self.kind = "blank"  # blank | image | video | url | text
+        self.content = ""  # <img>/<video> src, <iframe> src, or literal text
+        self.local_path = None  # backing file for GET /display/content, if any
+        self.version = 0  # bumped on every change; the kiosk page polls this
+
+    def set_local_file(self, kind, path):
+        self.local_path = path
+        self.version += 1
+        self.kind = kind
+        # Cache-bust via the version in the query string so the kiosk page's
+        # <img>/<video> tag is forced to refetch when the same path is shown
+        # again with different bytes.
+        self.content = f"/display/content?v={self.version}"
+        return {"outcome": "reached", "detail": f"showing local {kind} file {path}"}
+
+    def set_remote(self, kind, url):
+        self.local_path = None
+        self.version += 1
+        self.kind = kind
+        self.content = url
+        return {"outcome": "reached", "detail": f"showing {kind} from {url}"}
+
+    def set_text(self, text):
+        self.local_path = None
+        self.version += 1
+        self.kind = "text"
+        self.content = text
+        return {"outcome": "reached", "detail": f"showing {len(text)} chars of text"}
+
+    def clear(self):
+        self.local_path = None
+        self.version += 1
+        self.kind = "blank"
+        self.content = ""
+        return {"outcome": "reached", "detail": "display cleared"}
+
+    def to_json(self):
+        return {"kind": self.kind, "content": self.content, "version": self.version}
+
+
+# Self-contained kiosk page: no external JS/CSS, so it works on an offline
+# robot. Polls /display/state once a second and only touches the DOM when
+# the version actually changed. object-fit:contain (not cover) so nothing
+# gets cropped -- important for a QR code shown via render_qr, still a
+# reasonable default for photos/video.
+DISPLAY_PAGE_HTML = """<!doctype html>
+<html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>lex-robot display</title>
+<style>
+  html,body{margin:0;padding:0;width:100%;height:100%;background:#000;overflow:hidden}
+  #stage{width:100vw;height:100vh;display:flex;align-items:center;justify-content:center}
+  #stage img,#stage video{max-width:100%;max-height:100%;object-fit:contain}
+  #stage iframe{width:100%;height:100%;border:0}
+  #stage .text{color:#fff;font:6vh/1.3 -apple-system,Helvetica,Arial,sans-serif;
+               text-align:center;padding:4vw;white-space:pre-wrap}
+</style></head>
+<body><div id="stage"></div>
+<script>
+let lastVersion = -1;
+function render(s) {
+  const stage = document.getElementById('stage');
+  stage.innerHTML = '';
+  if (s.kind === 'image') {
+    const el = document.createElement('img'); el.src = s.content; stage.appendChild(el);
+  } else if (s.kind === 'video') {
+    const el = document.createElement('video');
+    el.src = s.content; el.autoplay = true; el.loop = true; el.muted = true; el.playsInline = true;
+    stage.appendChild(el);
+  } else if (s.kind === 'url') {
+    const el = document.createElement('iframe'); el.src = s.content; stage.appendChild(el);
+  } else if (s.kind === 'text') {
+    const el = document.createElement('div'); el.className = 'text'; el.textContent = s.content;
+    stage.appendChild(el);
+  }
+  // 'blank' -> stage stays empty
+}
+async function poll() {
+  try {
+    const r = await fetch('/display/state', {cache: 'no-store'});
+    const s = await r.json();
+    if (s.version !== lastVersion) { lastVersion = s.version; render(s); }
+  } catch (e) { /* sidecar restarting/unreachable -- just retry next tick */ }
+}
+poll();
+setInterval(poll, 1000);
+</script></body></html>"""
+
+
 class XLeRobot:
     """Thin wrapper around either the real hardware (arms/base/camera/mic) or
     a kinematic stub — same shape either way so handle_skill() never branches
@@ -610,6 +740,9 @@ class XLeRobot:
         # see render_qr/scan_qr below): last payload "shown", stashed here so
         # a scan_qr call gets back what render_qr last displayed.
         self._qr_payload = ""
+        # What GET /display's kiosk page should currently show — see
+        # DisplayState's docstring for why this isn't USE_HW-gated.
+        self.display = DisplayState()
         if USE_HW:
             self._bring_up_hardware()
 
@@ -702,7 +835,12 @@ class XLeRobot:
     def render_qr(self, payload):
         if USE_HW:
             path = os.environ.get("LEX_XLE_QR_IMAGE_PATH", "/tmp/xlerobot_qr.png")
-            return _hw_render_qr(payload, path)
+            result = _hw_render_qr(payload, path)
+            # Feed the same file into the general display mechanism below, so
+            # a kiosk browser already pointed at GET /display picks up the
+            # bootstrap QR automatically instead of needing a separate path.
+            self.display.set_local_file("image", path)
+            return result
         # No display on Tier 1/2 either (see the module docstring) — stash
         # the payload so a paired scan_qr completes the round trip, same
         # honest-simulation convention as speak/listen at these tiers.
@@ -714,6 +852,37 @@ class XLeRobot:
             timeout_s = float(os.environ.get("LEX_XLE_QR_SCAN_TIMEOUT_S", "5"))
             return _hw_scan_qr(self._hw_camera, timeout_s)
         return {"payload": self._qr_payload}
+
+    # ---- general-purpose display (image/video/webpage/text) --------------
+    # Tier-independent (see DisplayState) — these always do the real thing,
+    # whether or not USE_HW is set, because none of it needs a servo or
+    # camera. A source starting with http(s):// is treated as a URL the
+    # kiosk browser fetches itself; anything else is a local file path this
+    # process serves over GET /display/content.
+    def show_image(self, source):
+        if not source:
+            return {"outcome": "stalled", "detail": "show_image needs a non-empty path or URL"}
+        if source.startswith("http://") or source.startswith("https://"):
+            return self.display.set_remote("image", source)
+        return self.display.set_local_file("image", source)
+
+    def show_video(self, source):
+        if not source:
+            return {"outcome": "stalled", "detail": "show_video needs a non-empty path or URL"}
+        if source.startswith("http://") or source.startswith("https://"):
+            return self.display.set_remote("video", source)
+        return self.display.set_local_file("video", source)
+
+    def show_url(self, url):
+        if not url:
+            return {"outcome": "stalled", "detail": "show_url needs a non-empty url"}
+        return self.display.set_remote("url", url)
+
+    def show_text(self, text):
+        return self.display.set_text(text)
+
+    def clear_display(self):
+        return self.display.clear()
 
     def locate_object(self, name):
         if USE_HW:
@@ -813,6 +982,16 @@ def handle_skill(name, args):
         return ROBOT.render_qr(args.get("payload", ""))
     if name == "scan_qr":
         return ROBOT.scan_qr()
+    if name == "show_image":
+        return ROBOT.show_image(args.get("source", ""))
+    if name == "show_video":
+        return ROBOT.show_video(args.get("source", ""))
+    if name == "show_url":
+        return ROBOT.show_url(args.get("url", ""))
+    if name == "show_text":
+        return ROBOT.show_text(args.get("text", ""))
+    if name == "clear_display":
+        return ROBOT.clear_display()
     if name == "move_arm":
         return ROBOT.move_arm(args.get("arm", "left"), float(args.get("x", 0.2)),
                               float(args.get("y", 0.0)), float(args.get("z", 0.2)))
@@ -843,6 +1022,13 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_bytes(self, code, content_type, body):
+        self.send_response(code)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def _body(self):
         n = int(self.headers.get("Content-Length", "0") or "0")
         raw = self.rfile.read(n) if n else b"{}"
@@ -860,9 +1046,32 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(404, {"error": "not found"})
 
     def do_GET(self):
-        if self.path == "/health":
+        path = self.path.split("?", 1)[0]
+        if path == "/health":
             return self._send(200, {"ok": True, "hardware": USE_HW, "base": ROBOT.base})
+        if path == "/display":
+            return self._send_bytes(200, "text/html; charset=utf-8", DISPLAY_PAGE_HTML.encode())
+        if path == "/display/state":
+            return self._send(200, ROBOT.display.to_json())
+        if path == "/display/content":
+            return self._serve_display_content()
         return self._send(404, {"error": "not found"})
+
+    def _serve_display_content(self):
+        # Backs GET /display's <img>/<video> tag when show_image/show_video/
+        # render_qr set a *local* file (an http(s):// source is fetched by
+        # the browser directly and never routes through here). Same "no auth,
+        # localhost only" model as every other route in this protocol
+        # (SIDECAR.md) -- whatever process can reach this port can already
+        # call any skill, so serving back whichever local file was last
+        # explicitly set isn't a new trust boundary, just a new shape of it.
+        local_path = ROBOT.display.local_path
+        if not local_path or not os.path.isfile(local_path):
+            return self._send(404, {"error": "no local display content set"})
+        content_type = mimetypes.guess_type(local_path)[0] or "application/octet-stream"
+        with open(local_path, "rb") as f:
+            body = f.read()
+        return self._send_bytes(200, content_type, body)
 
     def log_message(self, *a):
         print("[xlerobot]", self.command, self.path)

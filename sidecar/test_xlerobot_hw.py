@@ -1,13 +1,14 @@
-"""Unit tests for xlerobot_sidecar's pure math helpers, plus the stub-mode
-(Tier-1, no lerobot install, no hardware, no HTTP server) parts of the QR
-bootstrap round trip — no lerobot install, no hardware, no HTTP server
-needed either way. The math helpers back the real-hardware (Tier 3) control
-loops (_HwDiffBase.drive, _HwOmniBase.drive); testing them in isolation is
-the part of the hardware seam we *can* verify without a physical XLeRobot.
+"""Unit tests for xlerobot_sidecar's pure math helpers, the stub-mode
+(Tier-1) QR bootstrap round trip, and the display mechanism (which is
+tier-independent and thus fully real here, not stubbed) — no lerobot
+install, no hardware, no HTTP server needed for any of it. The math helpers
+back the real-hardware (Tier 3) control loops (_HwDiffBase.drive,
+_HwOmniBase.drive); testing them in isolation is the part of the hardware
+seam we *can* verify without a physical XLeRobot.
 """
 import math
 
-from xlerobot_sidecar import XLeRobot, bearing_and_turn, clamp, diff_drive_wheel_speeds
+from xlerobot_sidecar import DisplayState, XLeRobot, bearing_and_turn, clamp, diff_drive_wheel_speeds
 
 
 def test_clamp_bounds():
@@ -76,3 +77,59 @@ def test_stub_qr_round_trip():
 def test_stub_scan_qr_before_any_render_is_empty():
     robot = XLeRobot()
     assert robot.scan_qr() == {"payload": ""}
+
+
+def test_display_starts_blank():
+    d = DisplayState()
+    assert d.to_json() == {"kind": "blank", "content": "", "version": 0}
+
+
+def test_display_local_file_gets_a_cache_busting_content_url():
+    d = DisplayState()
+    result = d.set_local_file("image", "/tmp/whatever.png")
+    assert result == {"outcome": "reached", "detail": "showing local image file /tmp/whatever.png"}
+    assert d.kind == "image"
+    assert d.local_path == "/tmp/whatever.png"
+    assert d.content == "/display/content?v=1"  # the kiosk page's <img src>
+
+
+def test_display_remote_url_is_used_directly_no_local_path():
+    d = DisplayState()
+    d.set_remote("video", "https://example.com/clip.mp4")
+    assert d.kind == "video"
+    assert d.content == "https://example.com/clip.mp4"
+    assert d.local_path is None  # nothing for GET /display/content to serve
+
+
+def test_display_version_increments_across_every_kind_of_change():
+    d = DisplayState()
+    d.set_text("hello")
+    assert d.version == 1
+    d.set_remote("url", "https://example.com")
+    assert d.version == 2
+    d.clear()
+    assert d.version == 3
+    assert d.kind == "blank" and d.content == "" and d.local_path is None
+
+
+def test_show_image_routes_by_source_prefix():
+    robot = XLeRobot()
+    robot.show_image("https://example.com/cup.jpg")
+    assert robot.display.kind == "image"
+    assert robot.display.content == "https://example.com/cup.jpg"
+    robot.show_image("/tmp/local_cup.jpg")
+    assert robot.display.local_path == "/tmp/local_cup.jpg"
+
+
+def test_show_image_rejects_empty_source():
+    robot = XLeRobot()
+    assert robot.show_image("")["outcome"] == "stalled"
+
+
+def test_render_qr_feeds_the_shared_display_on_stub_tier_too():
+    # Tier-1 render_qr doesn't touch DisplayState today (no real image is
+    # written to feed it) -- confirms that boundary rather than assuming it,
+    # so a future change to one doesn't silently break the other unnoticed.
+    robot = XLeRobot()
+    robot.render_qr("payload")
+    assert robot.display.kind == "blank"

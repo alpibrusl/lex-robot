@@ -306,7 +306,39 @@ needs `OPENCODE_API_KEY`) — runs the same way: start
 `sidecar/xlerobot_sidecar.py` with `LEX_ROBOT_HW=1` and the env vars
 above instead of letting the `make` target spin up its own stub.
 
-## 8. Troubleshooting
+## 8. Attaching a screen: the kiosk display
+
+The XLeRobot 0.4.0 BOM has no display, so once you've picked one (any
+panel with HDMI in works — see the project's own notes on why touch/
+resolution barely matter for this), wiring it up is a software step, not
+a hardware integration:
+
+1. Connect the screen's HDMI to whatever runs `xlerobot_sidecar.py` (the
+   Raspberry Pi/mini PC, or your laptop on the bench).
+2. Point any browser at it in fullscreen/kiosk mode, at whatever host
+   and port the sidecar is listening on (`LEX_ROBOT_SIDECAR_PORT`,
+   default `8900`):
+
+   ```sh
+   chromium --kiosk --incognito "http://127.0.0.1:8900/display"
+   # or, on a Pi running a minimal X session:
+   chromium-browser --kiosk "http://127.0.0.1:8900/display"
+   ```
+
+3. That's it — the page polls the sidecar once a second and renders
+   whatever the robot last set: `render_qr`'s bootstrap code, or
+   `show_image`/`show_video`/`show_url`/`show_text` (a picture, a video,
+   a webpage, or plain status text), until `clear_display` blanks it.
+   No restart needed when the robot changes what it's showing.
+
+This is tier-independent — it works identically against the stub
+sidecar (no `LEX_ROBOT_HW` needed) or the real one, since none of it
+depends on servos or the camera; only a browser needs to actually be
+pointed at the URL, which is this step, not something the sidecar can
+verify on its own. See `sidecar/xlerobot_sidecar.py`'s "Display" section
+for the full skill list and the `/display/content` MIME-serving details.
+
+## 9. Troubleshooting
 
 - **`lerobot-find-port` reports 0 or 2+ ports changed.** Something else
   changed state at the same time (another USB device, a Bluetooth

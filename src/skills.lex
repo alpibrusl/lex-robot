@@ -326,6 +326,85 @@ fn speak(r :: t.Robot, text :: Str) -> [net, sense, actuate] t.Outcome {
   }
 }
 
+# Show an image on the robot's attached screen — `source` is either a local
+# file path (already on the robot) or an http(s) URL (fetched by the kiosk
+# browser itself). Grant-gated like speak: the source may come straight from
+# an LLM planner, so "is this program allowed to put something on the screen
+# right now" stays a typed, refusable question, not an ambient one. No
+# workspace/force bound applies; there's nothing to clamp.
+fn show_image(r :: t.Robot, source :: Str) -> [net, sense, actuate] t.Outcome {
+  if grant.skill_allowed(r.grant, "show_image") {
+    let body := str.join(["{\"source\":\"", json_escape_str(source), "\"}"], "")
+    match client.call(r.sidecar_url, "show_image", body) {
+      Err(e) => Stalled(e),
+      Ok(resp) => parse_outcome(resp),
+    }
+  } else {
+    Denied("skill show_image not in grant")
+  }
+}
+
+# Play a video on the robot's attached screen — same local-path-or-URL
+# contract and grant-gating as show_image.
+fn show_video(r :: t.Robot, source :: Str) -> [net, sense, actuate] t.Outcome {
+  if grant.skill_allowed(r.grant, "show_video") {
+    let body := str.join(["{\"source\":\"", json_escape_str(source), "\"}"], "")
+    match client.call(r.sidecar_url, "show_video", body) {
+      Err(e) => Stalled(e),
+      Ok(resp) => parse_outcome(resp),
+    }
+  } else {
+    Denied("skill show_video not in grant")
+  }
+}
+
+# Show a webpage (via the kiosk page's <iframe>) on the robot's attached
+# screen. Same grant-gating rationale as show_image — a URL is exactly the
+# kind of free-form, possibly-LLM-chosen content that should stay a typed,
+# refusable question. Note: some sites refuse to be iframed (X-Frame-
+# Options/CSP) — that surfaces as the iframe staying blank, not an error
+# this skill can detect or report.
+fn show_url(r :: t.Robot, url :: Str) -> [net, sense, actuate] t.Outcome {
+  if grant.skill_allowed(r.grant, "show_url") {
+    let body := str.join(["{\"url\":\"", json_escape_str(url), "\"}"], "")
+    match client.call(r.sidecar_url, "show_url", body) {
+      Err(e) => Stalled(e),
+      Ok(resp) => parse_outcome(resp),
+    }
+  } else {
+    Denied("skill show_url not in grant")
+  }
+}
+
+# Show plain text on the robot's attached screen (status, a message, a
+# number — whatever). Same grant-gating rationale as show_image.
+fn show_text(r :: t.Robot, text :: Str) -> [net, sense, actuate] t.Outcome {
+  if grant.skill_allowed(r.grant, "show_text") {
+    let body := str.join(["{\"text\":\"", json_escape_str(text), "\"}"], "")
+    match client.call(r.sidecar_url, "show_text", body) {
+      Err(e) => Stalled(e),
+      Ok(resp) => parse_outcome(resp),
+    }
+  } else {
+    Denied("skill show_text not in grant")
+  }
+}
+
+# Blank the robot's attached screen. Grant-gated for consistency with the
+# rest of the display skills, even though there's no content to leak here —
+# the grant is what makes the whole show_* family a coherent, auditable
+# capability rather than a special case.
+fn clear_display(r :: t.Robot) -> [net, sense, actuate] t.Outcome {
+  if grant.skill_allowed(r.grant, "clear_display") {
+    match client.call(r.sidecar_url, "clear_display", "{}") {
+      Err(e) => Stalled(e),
+      Ok(resp) => parse_outcome(resp),
+    }
+  } else {
+    Denied("skill clear_display not in grant")
+  }
+}
+
 # Drive the holonomic base to (x, y) on the floor (z ignored, kept 0). Gated by
 # the BASE grant: target inside the permitted floor area, speed clamped to the
 # granted ceiling (never amplified) before the command leaves the box.
