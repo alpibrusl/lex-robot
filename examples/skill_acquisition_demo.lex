@@ -23,8 +23,8 @@
 # invoke an unknown one, then try to sneak an undeclared effect into a
 # SECOND registration and watch it get refused before it's ever runnable.
 #
-# The geocoding call itself hits a local STUB (geocode_stub.py) rather than
-# the real https://nominatim.openstreetmap.org/search — this sandbox's
+# The geocoding call itself hits a local STUB (skills_api_stub.py) rather
+# than the real https://nominatim.openstreetmap.org/search — this sandbox's
 # egress policy blocks that host outright; the tool body is unchanged
 # either way; a real deployment swaps one URL.
 #
@@ -81,7 +81,7 @@ fn post_json(url :: Str, body :: Str) -> [net] Result[Str, Str] {
 # exact string is what gets registered and run under the declared [net]
 # effect, nothing more.
 fn geocode_tool_body(stub_url :: Str) -> Str {
-  str.join(["let q := str.replace(str.replace(input, \" \", \"+\"), \",\", \"%2C\")\n", "let url := str.join([\"", stub_url, "/search?format=json&limit=1&q=\", q], \"\")\n", "match net.get(url) {\n", "  Err(e) => str.join([\"error: \", e], \"\"),\n", "  Ok(body) => {\n", "    let parsed :: Result[List[{ lat :: Str, lon :: Str, display_name :: Str }], Str] := json.parse(body)\n", "    match parsed {\n", "      Err(e) => str.join([\"parse error: \", e], \"\"),\n", "      Ok(results) => match list.head(results) {\n", "        None => str.join([\"no results for: \", input], \"\"),\n", "        Some(r) => str.join([\"lat=\", r.lat, \" lon=\", r.lon, \" (\", r.display_name, \")\"], \"\"),\n", "      },\n", "    }\n", "  },\n", "}\n"], "")
+  str.join(["let q := str.replace(str.replace(input, \" \", \"+\"), \",\", \"%2C\")\n", "let url := str.join([\"", stub_url, "/geocode/search?format=json&limit=1&q=\", q], \"\")\n", "match net.get(url) {\n", "  Err(e) => str.join([\"error: \", e], \"\"),\n", "  Ok(body) => {\n", "    let parsed :: Result[List[{ lat :: Str, lon :: Str, display_name :: Str }], Str] := json.parse(body)\n", "    match parsed {\n", "      Err(e) => str.join([\"parse error: \", e], \"\"),\n", "      Ok(results) => match list.head(results) {\n", "        None => str.join([\"no results for: \", input], \"\"),\n", "        Some(r) => str.join([\"lat=\", r.lat, \" lon=\", r.lon, \" (\", r.display_name, \")\"], \"\"),\n", "      },\n", "    }\n", "  },\n", "}\n"], "")
 }
 
 fn register(registry_url :: Str, name :: Str, body :: Str, allowed_effects :: List[Str], allow_net_host :: List[Str]) -> [net] Result[Str, Str] {
