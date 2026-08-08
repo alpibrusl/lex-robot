@@ -30,16 +30,15 @@ import "./client" as client
 
 import "./sense" as sense
 
+import "./fleet_client" as fleet
+
 # ── JSON helpers (manual; scaffold avoids a json dep) ────────────────────────
 fn f(x :: Float) -> Str {
   flt.to_str(x)
 }
 
 fn pose_json(p :: t.Pose) -> Str {
-  str.join([
-    "{\"x\":", f(p.pos.x), ",\"y\":", f(p.pos.y), ",\"z\":", f(p.pos.z),
-    ",\"rx\":", f(p.rx), ",\"ry\":", f(p.ry), ",\"rz\":", f(p.rz), "}"
-  ], "")
+  str.join(["{\"x\":", f(p.pos.x), ",\"y\":", f(p.pos.y), ",\"z\":", f(p.pos.z), ",\"rx\":", f(p.rx), ",\"ry\":", f(p.ry), ",\"rz\":", f(p.rz), "}"], "")
 }
 
 # Minimal JSON string escape — every other skill's body only ever encodes
@@ -75,7 +74,9 @@ fn parse_outcome(resp :: Str) -> t.Outcome {
 # ── Tiny flat-JSON float extractor ───────────────────────────────────────────
 # Lives in ./sense (the [net, sense]-only module); a thin delegate keeps the
 # local name for this module's parsers.
-fn jfloat(json :: Str, key :: Str, dflt :: Float) -> Float { sense.jfloat(json, key, dflt) }
+fn jfloat(json :: Str, key :: Str, dflt :: Float) -> Float {
+  sense.jfloat(json, key, dflt)
+}
 
 # ── Step-wise control (lets the Lex grant vet each policy command) ───────────
 fn reset_episode(r :: t.Robot, name :: Str) -> [net] Result[Str, Str] {
@@ -108,10 +109,7 @@ fn reset_depot(r :: t.Robot) -> [net] Result[Str, Str] {
 fn read_inlet(r :: t.Robot) -> [net, sense] Result[t.Pose, Str] {
   match client.call(r.sidecar_url, "read_inlet", "{}") {
     Err(e) => Err(e),
-    Ok(s) => Ok({
-      pos: { x: jfloat(s, "\"x\":", 0.0), y: jfloat(s, "\"y\":", 0.0), z: jfloat(s, "\"z\":", 0.0) },
-      rx: jfloat(s, "\"rx\":", 0.0), ry: jfloat(s, "\"ry\":", 0.0), rz: jfloat(s, "\"rz\":", 0.0),
-    }),
+    Ok(s) => Ok({ pos: { x: jfloat(s, "\"x\":", 0.0), y: jfloat(s, "\"y\":", 0.0), z: jfloat(s, "\"z\":", 0.0) }, rx: jfloat(s, "\"rx\":", 0.0), ry: jfloat(s, "\"ry\":", 0.0), rz: jfloat(s, "\"rz\":", 0.0) }),
   }
 }
 
@@ -144,9 +142,13 @@ fn disconnect_charger(r :: t.Robot) -> [net, sense, actuate] t.Outcome {
 # The sensing half of the surface lives in ./sense ([net, sense] only), so a
 # sensing-only program can import it without inheriting this module's
 # [actuate] surface; delegates keep the public names for actuating programs.
-fn read_joints(r :: t.Robot) -> [net, sense] Result[Str, Str] { sense.read_joints(r) }
+fn read_joints(r :: t.Robot) -> [net, sense] Result[Str, Str] {
+  sense.read_joints(r)
+}
 
-fn read_camera(r :: t.Robot, name :: Str) -> [net, sense] Result[Str, Str] { sense.read_camera(r, name) }
+fn read_camera(r :: t.Robot, name :: Str) -> [net, sense] Result[Str, Str] {
+  sense.read_camera(r, name)
+}
 
 # Current position of the bystander/person in the workspace (normalized [0,1]).
 # Used by the dynamic keep-out demo to compute a live exclusion box each step.
@@ -188,7 +190,6 @@ fn grasp(r :: t.Robot, force :: Float) -> [net, sense, actuate] t.Outcome {
 # run_policy + its async polling live in ./policy (policy.lex) so the [time]
 # effect they need stays off the core skill surface — a plain move/grasp program
 # that imports this module does not inherit `time`.
-
 # Captures a LeRobotDataset episode: reads sensors ([sense]); the file write
 # happens in the sidecar (Python), so it is not a Lex [fs_write].
 fn record_episode(r :: t.Robot, task :: Str) -> [net, sense] Result[Str, Str] {
@@ -204,12 +205,7 @@ fn record_episode(r :: t.Robot, task :: Str) -> [net, sense] Result[Str, Str] {
 fn workpiece_status(r :: t.Robot) -> [net, sense] Result[t.WorkpieceStatus, Str] {
   match client.call(r.sidecar_url, "workpiece_status", "{}") {
     Err(e) => Err(e),
-    # Accept both compact (`"clamped":true`) and spaced (`"clamped": true`) JSON,
-    # so the parse doesn't depend on the sidecar's serializer spacing.
-    Ok(s) => Ok({
-      present: str.contains(s, "\"present\":true") or str.contains(s, "\"present\": true"),
-      clamped: str.contains(s, "\"clamped\":true") or str.contains(s, "\"clamped\": true"),
-    }),
+    Ok(s) => Ok({ present: str.contains(s, "\"present\":true") or str.contains(s, "\"present\": true"), clamped: str.contains(s, "\"clamped\":true") or str.contains(s, "\"clamped\": true") }),
   }
 }
 
@@ -230,21 +226,19 @@ fn clamp_workpiece(r :: t.Robot) -> [net, sense, actuate] t.Outcome {
 #   2. target.pos inside tool_lo..tool_hi (the workpiece bounding box)
 #   3. workpiece sensor reports clamped (re-read every call — no bypass)
 # Power is clamped to max_power before the command is sent.
-fn actuate_tool(r :: t.Robot, power :: Float, target :: t.Pose,
-                tool_lo :: t.Vec3, tool_hi :: t.Vec3, max_power :: Float)
-    -> [net, sense, actuate] t.Outcome {
+fn actuate_tool(r :: t.Robot, power :: Float, target :: t.Pose, tool_lo :: t.Vec3, tool_hi :: t.Vec3, max_power :: Float) -> [net, sense, actuate] t.Outcome {
   if grant.skill_allowed(r.grant, "actuate_tool") {
     if grant.in_box_3d(target.pos, tool_lo, tool_hi) {
       match workpiece_status(r) {
         Err(e) => Stalled(str.concat("workpiece sensor: ", e)),
         Ok(ws) => {
           if ws.clamped {
-            let safe_power := if power > max_power { max_power } else { power }
-            let body := str.join([
-              "{\"power\":", f(safe_power),
-              ",\"x\":", f(target.pos.x), ",\"y\":", f(target.pos.y), ",\"z\":", f(target.pos.z),
-              "}"
-            ], "")
+            let safe_power := if power > max_power {
+              max_power
+            } else {
+              power
+            }
+            let body := str.join(["{\"power\":", f(safe_power), ",\"x\":", f(target.pos.x), ",\"y\":", f(target.pos.y), ",\"z\":", f(target.pos.z), "}"], "")
             match client.call(r.sidecar_url, "fire_tool", body) {
               Err(e) => Stalled(e),
               Ok(resp) => parse_outcome(resp),
@@ -268,17 +262,12 @@ fn actuate_tool(r :: t.Robot, power :: Float, target :: t.Pose,
 # world frame). Rather than widen the Grant type, an XLeRobot program carries
 # two Grant instances — an arm grant and a base grant — both pointing at the
 # same sidecar (examples/xlerobot_demo.lex). Same primitives, per actuator group.
-
 # Move one arm ("left" | "right") to a pose in the arm frame. Gated exactly
 # like move_to: skill allowed + target inside the arm grant's workspace box.
 fn move_arm(r :: t.Robot, arm :: Str, target :: t.Pose) -> [net, sense, actuate] t.Outcome {
   if grant.skill_allowed(r.grant, "move_arm") {
     if grant.in_workspace(r.grant, target.pos) {
-      let body := str.join([
-        "{\"arm\":\"", arm,
-        "\",\"x\":", f(target.pos.x), ",\"y\":", f(target.pos.y), ",\"z\":", f(target.pos.z),
-        ",\"rx\":", f(target.rx), ",\"ry\":", f(target.ry), ",\"rz\":", f(target.rz), "}"
-      ], "")
+      let body := str.join(["{\"arm\":\"", arm, "\",\"x\":", f(target.pos.x), ",\"y\":", f(target.pos.y), ",\"z\":", f(target.pos.z), ",\"rx\":", f(target.rx), ",\"ry\":", f(target.ry), ",\"rz\":", f(target.rz), "}"], "")
       match client.call(r.sidecar_url, "move_arm", body) {
         Err(e) => Stalled(e),
         Ok(resp) => parse_outcome(resp),
@@ -426,14 +415,45 @@ fn move_base(r :: t.Robot, target :: t.Vec3, speed :: Float) -> [net, sense, act
   }
 }
 
+# Same as move_base, but ALSO requires the caller to already hold a live
+# fleet_traffic.lex zone claim (fleet_arbiter_server.lex's `fleet/check`)
+# covering the destination before the sidecar is ever contacted — the
+# physical-safety precondition epic #115 / issue #118 adds on top of the
+# grant's authority check. This is a SEPARATE gate from grant.in_workspace:
+# a destination can be inside the robot's own workspace Grant (authority:
+# "you're allowed to go there") while still lacking a zone claim (safety:
+# "nobody's confirmed the room is clear right now") — both must pass.
+#
+# Deliberately a NEW function rather than changing move_base itself: dozens
+# of existing callers (every non-fleet demo, every existing test) have no
+# fleet arbiter to talk to and shouldn't need one — move_base stays exactly
+# as it was, and only a fleet-aware caller opts into this stricter gate.
+fn move_base_claimed(r :: t.Robot, arbiter_url :: Str, robot_id :: Str, target :: t.Vec3, speed :: Float) -> [net, sense, actuate] t.Outcome {
+  let flat := { x: target.x, y: target.y, z: 0.0 }
+  match fleet.check(arbiter_url, robot_id, flat) {
+    Err(e) => Stalled(str.concat("fleet arbiter unreachable: ", e)),
+    Ok(false) => Denied("no zone claim for destination — call fleet/claim first"),
+    Ok(true) => move_base(r, target, speed),
+  }
+}
+
 # Microphone (grant-gated, privacy-sensitive) — see sense.listen.
-fn listen(r :: t.Robot, seconds :: Int) -> [net, sense] Result[Str, Str] { sense.listen(r, seconds) }
+fn listen(r :: t.Robot, seconds :: Int) -> [net, sense] Result[Str, Str] {
+  sense.listen(r, seconds)
+}
 
 # Base floor pose (refuses unparseable responses) — see sense.read_base.
-fn read_base(r :: t.Robot) -> [net, sense] Result[t.Vec3, Str] { sense.read_base(r) }
+fn read_base(r :: t.Robot) -> [net, sense] Result[t.Vec3, Str] {
+  sense.read_base(r)
+}
 
 # Vision-based object localization — see sense.locate_object.
-fn locate_object(r :: t.Robot, name :: Str) -> [net, sense] Result[t.Located, Str] { sense.locate_object(r, name) }
+fn locate_object(r :: t.Robot, name :: Str) -> [net, sense] Result[t.Located, Str] {
+  sense.locate_object(r, name)
+}
 
 # Re-project a world position into the current arm frame — see sense.transform_to_arm.
-fn transform_to_arm(r :: t.Robot, world :: t.Vec3) -> [net, sense] Result[t.Located, Str] { sense.transform_to_arm(r, world) }
+fn transform_to_arm(r :: t.Robot, world :: t.Vec3) -> [net, sense] Result[t.Located, Str] {
+  sense.transform_to_arm(r, world)
+}
+

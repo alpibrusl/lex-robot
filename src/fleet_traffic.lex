@@ -130,6 +130,53 @@ fn find_conflict(existing :: List[ZoneClaim], candidate :: ZoneClaim) -> Option[
   })
 }
 
+# ── Point-in-claim: does `robot_id` already hold live space covering a
+# single point (skills.lex's move_base_claimed checks a destination this
+# way, via fleet_arbiter_server.lex's `fleet/check`) ─────────────────────────
+# Containment, not overlap — the mirror image of cells_overlap's "do these
+# two regions share volume": this asks "is this one point inside".
+fn point_in_cell(p :: t.Vec3, c :: Cell) -> Bool
+  examples {
+    point_in_cell({ x: 0.5, y: 0.5, z: 0.0 }, { ws_min: { x: 0.0, y: 0.0, z: 0.0 }, ws_max: { x: 1.0, y: 1.0, z: 1.0 } }) => true,
+    point_in_cell({ x: 2.0, y: 0.5, z: 0.0 }, { ws_min: { x: 0.0, y: 0.0, z: 0.0 }, ws_max: { x: 1.0, y: 1.0, z: 1.0 } }) => false
+  }
+{
+  p.x >= c.ws_min.x and p.x <= c.ws_max.x and p.y >= c.ws_min.y and p.y <= c.ws_max.y and p.z >= c.ws_min.z and p.z <= c.ws_max.z
+}
+
+fn claim_covers(claim :: ZoneClaim, robot_id :: Str, p :: t.Vec3) -> Bool {
+  if claim.robot_id != robot_id {
+    false
+  } else {
+    list.fold(claim.cells, false, fn (acc :: Bool, c :: Cell) -> Bool {
+      if acc {
+        true
+      } else {
+        point_in_cell(p, c)
+      }
+    })
+  }
+}
+
+# `claims` should already be pruned to live (unexpired, unreleased) ones by
+# the caller (fleet_arbiter_server.lex's load_live_claims does this against
+# the real wall clock) — this function itself has no notion of "now".
+fn any_claim_covers(claims :: List[ZoneClaim], robot_id :: Str, p :: t.Vec3) -> Bool
+  examples {
+    any_claim_covers([], "r1", { x: 0.5, y: 0.5, z: 0.0 }) => false,
+    any_claim_covers([{ robot_id: "r1", cells: [{ ws_min: { x: 0.0, y: 0.0, z: 0.0 }, ws_max: { x: 1.0, y: 1.0, z: 1.0 } }], from_ms: 0, until_ms: 1000 }], "r1", { x: 0.5, y: 0.5, z: 0.0 }) => true,
+    any_claim_covers([{ robot_id: "r1", cells: [{ ws_min: { x: 0.0, y: 0.0, z: 0.0 }, ws_max: { x: 1.0, y: 1.0, z: 1.0 } }], from_ms: 0, until_ms: 1000 }], "r2", { x: 0.5, y: 0.5, z: 0.0 }) => false
+  }
+{
+  list.fold(claims, false, fn (acc :: Bool, c :: ZoneClaim) -> Bool {
+    if acc {
+      true
+    } else {
+      claim_covers(c, robot_id, p)
+    }
+  })
+}
+
 # The one function callers need: does `candidate` conflict with anything
 # already granted? Refuses outright on the first conflict found — no
 # preemption, no reassignment (see module comment).

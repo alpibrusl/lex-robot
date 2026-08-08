@@ -280,6 +280,28 @@ fn handle_release(db :: Db, req :: rpc.Request) -> [sql] rpc.Response {
   }
 }
 
+# `fleet/check` — the query skills.lex's move_base_claimed uses before
+# actuating: does `robotId` currently hold a LIVE claim covering `point`?
+# Always answers Ok (a query, not a mutation) — "not held" is a legitimate
+# result, not an error, so the caller can turn it into its own Denied
+# reason rather than this module inventing a domain-specific one.
+fn handle_check(db :: Db, req :: rpc.Request) -> [sql, time] rpc.Response {
+  match required_str(req.params, "robotId") {
+    Err(e) => rpc.fail(req.id, rpc.err_invalid_params(), e),
+    Ok(robot_id) => match required_vec3(req.params, "point") {
+      Err(e) => rpc.fail(req.id, rpc.err_invalid_params(), e),
+      Ok(point) => match init_fleet_tables(db) {
+        Err(e) => rpc.fail(req.id, rpc.err_internal(), e),
+        Ok(_) => {
+          let now := time.now_ms()
+          let claims := load_live_claims(db, now)
+          rpc.ok(req.id, JObj([("held", JBool(ft.any_claim_covers(claims, robot_id, point)))]))
+        },
+      },
+    },
+  }
+}
+
 fn handle_state(db :: Db, req :: rpc.Request) -> [sql, time] rpc.Response {
   match required_str(req.params, "robotId") {
     Err(e) => rpc.fail(req.id, rpc.err_invalid_params(), e),
@@ -321,7 +343,11 @@ fn handle_method(db :: Db, req :: rpc.Request) -> [sql, crypto, time] rpc.Respon
       if req.method == "fleet/state" {
         handle_state(db, req)
       } else {
-        rpc.fail(req.id, rpc.err_method_not_found(), str.concat("method not supported: ", req.method))
+        if req.method == "fleet/check" {
+          handle_check(db, req)
+        } else {
+          rpc.fail(req.id, rpc.err_method_not_found(), str.concat("method not supported: ", req.method))
+        }
       }
     }
   }
