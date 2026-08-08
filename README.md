@@ -967,7 +967,35 @@ calls — there is no unauthenticated bypass, even for the robot's own
 trusted planner; the operator's policy just needs to accept its identity
 (see that module's `open_client_session`, or `a2a_robot_auth.lex`'s module
 comment for the full model, what a public deployment must configure, and
-what this does **not** cover — no TLS, no per-request replay nonce).
+what this does **not** cover — no per-request replay nonce; for
+transport security, see the TLS section right below).
+
+#### TLS: terminate it in front, not inside
+
+`a2a_robot_server.lex` serves plain HTTP via `net.serve_fn` — checked
+directly against `lex-lang`'s builtins, `std.net`'s plain-HTTP path
+(`serve_fn` / `serve_fn_with`) has **no** TLS option at all. TLS in this
+toolchain is wired only to the QUIC/HTTP-3 transport (`net.serve_quic*`,
+backed by `std.tls`'s `TlsConfig`), and confirmed live in this repo's
+pinned `lex` release: `tls.self_signed(...)` errors at runtime with
+`lex-runtime was compiled without the 'quic' feature`, since that build
+doesn't ship the (heavy, opt-in) `--features quic` dependency set. Even
+with that feature on, switching the A2A door to QUIC would mean
+rebinding it from TCP to UDP and speaking HTTP/3 — breaking the "any
+standard A2A client, curl included" compatibility this endpoint exists
+for.
+
+So: don't put TLS inside the Lex process. Terminate it in front with a
+real reverse proxy and forward plain HTTP to the robot's loopback port
+— [`deploy/Caddyfile.example`](deploy/Caddyfile.example) is a ready-to-run
+Caddy config that does exactly this (automatic Let's Encrypt certs for a
+real domain, or a `tls internal` self-signed block for local testing).
+Point clients at the proxy's `https://` URL instead of
+`http://localhost:8766/`; `session/open`, `tasks/send`, and the
+AgentCard endpoint are all unchanged since the proxy just forwards
+bytes. Pair this with `ConsentPolicy.require_https: true` once your
+RobotCard's `endpoint` field is the `https://` address — that flag
+refuses a peer whose *own* declared endpoint is still `http://`.
 
 This is now genuinely built on the same primitives as the `a2a_*.lex`
 files elsewhere in `src/` (`a2a_card.lex`'s signed cards,
@@ -1164,10 +1192,15 @@ enforced.
   physical XLeRobot — no hardware in this repo's CI. Grasp is position-based
   (no current/force closed loop) and the base's position is dead-reckoned (no
   encoder/localization feedback). See SIDECAR.md's "Real hardware" section.
-- `a2a_robot_server.lex`'s `session/open` adds no TLS and no per-request
-  replay nonce (a captured card+signature stays valid for the session's
-  lifetime) — see `a2a_robot_auth.lex`'s module comment for the full list
-  of what it does and doesn't cover. `mcp.dispatch_skill`'s fallback skills
+- `a2a_robot_server.lex`'s `session/open` adds no per-request replay nonce
+  (a captured card+signature stays valid for the session's lifetime) — see
+  `a2a_robot_auth.lex`'s module comment for the full list of what it does
+  and doesn't cover. `mcp.dispatch_skill`'s fallback skills
   (move_to/grasp/connect_charger/read_joints/read_camera) get the session's
   narrowed skill list but still share `mcp_server.lex`'s original single
   global budget ledger, not a per-session one.
+- TLS is not implemented inside `a2a_robot_server.lex` (Lex's plain-HTTP
+  `std.net` path has no TLS option — see "TLS: terminate it in front, not
+  inside" above) — this is a deliberate, unfixable-in-process gap, not an
+  oversight; [`deploy/Caddyfile.example`](deploy/Caddyfile.example) is the
+  sanctioned mitigation for a real public deployment.

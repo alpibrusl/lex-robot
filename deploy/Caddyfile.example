@@ -1,0 +1,46 @@
+# deploy/Caddyfile.example — a real TLS terminator in front of
+# a2a_robot_server.lex's plain-HTTP A2A endpoint.
+#
+# Lex's std.net has no TLS option on the plain-HTTP serve path
+# (net.serve_fn / net.serve_fn_with) — TLS in this toolchain is wired
+# only to the QUIC/HTTP-3 transport (net.serve_quic*, backed by
+# std.tls), which most A2A clients (curl, ADK, LangGraph, CrewAI,
+# AutoGen...) don't speak, and which this project's pinned lex release
+# isn't even built with (`--features quic` is off by default). See
+# README.md's "Securing a public endpoint: session/open" section for
+# the full reasoning.
+#
+# The standard fix, used here: terminate TLS at a reverse proxy and
+# forward plain HTTP to the robot's A2A port on loopback. Caddy gets
+# you automatic Let's Encrypt certs for a real domain with no extra
+# config beyond this file.
+#
+# Usage:
+#   1. Point a2a-robot.example.com's DNS A/AAAA record at this host.
+#   2. Start the robot's A2A server as usual, e.g.:
+#        lex run --allow-effects io,time,crypto,random,sql,fs_read,fs_write,net,concurrent,sense,actuate \
+#          examples/a2a_robot_demo.lex run
+#   3. caddy run --config deploy/Caddyfile.example --adapter caddyfile
+#   4. Point clients at https://a2a-robot.example.com/ instead of
+#      http://localhost:8766/ — everything else (session/open,
+#      tasks/send, the AgentCard at /.well-known/agent.json) is
+#      unchanged, since Caddy just forwards the request bytes.
+#
+# `require_https` in ConsentPolicy (src/a2a_consent.lex) checks a
+# peer's own declared card endpoint, not the transport the incoming
+# request arrived over — set it once your RobotCard's `endpoint` field
+# is the https:// URL above, so a card that still advertises a plain
+# http:// endpoint gets refused.
+#
+# Replace the domain below with your own, or swap in the local/dev
+# block underneath for a self-signed cert with no public DNS needed.
+
+a2a-robot.example.com {
+    reverse_proxy localhost:8766
+}
+
+# --- local/dev alternative: self-signed cert, no public DNS needed ---
+# localhost:8443 {
+#     tls internal
+#     reverse_proxy localhost:8766
+# }
