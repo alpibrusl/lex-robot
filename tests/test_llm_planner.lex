@@ -67,7 +67,6 @@ import "../src/llm_planner" as planner
 #                                   verbatim into the final reply so the
 #                                   test can assert on what the REAL
 #                                   server actually said.
-
 fn tool_msg_contents(messages :: List[msg.Message]) -> List[Str] {
   list.fold(messages, [], fn (acc :: List[Str], m :: msg.Message) -> List[Str] {
     match m {
@@ -78,27 +77,23 @@ fn tool_msg_contents(messages :: List[msg.Message]) -> List[Str] {
 }
 
 fn mock_provider() -> prov.Provider {
-  {
-    name: "mock",
-    chat: fn (model :: prov.ModelRef, messages :: List[msg.Message], tools :: List[t.Tool]) -> [net, llm] Iter[d.Delta] {
-      let seen := tool_msg_contents(messages)
-      let n := list.len(seen)
-      let deltas := if n == 0 {
-        [ToolCallBegin("call_1", "move_base"), ToolArgChunk("call_1", "{\"x\":0.3,\"y\":0.2}"), FinishDelta("tool_calls")]
+  { name: "mock", chat: fn (model :: prov.ModelRef, messages :: List[msg.Message], tools :: List[t.Tool]) -> [net, llm] Iter[d.Delta] {
+    let seen := tool_msg_contents(messages)
+    let n := list.len(seen)
+    let deltas := if n == 0 {
+      [ToolCallBegin("call_1", "move_base"), ToolArgChunk("call_1", "{\"x\":0.3,\"y\":0.2}"), FinishDelta("tool_calls")]
+    } else {
+      if n == 1 {
+        [ToolCallBegin("call_2", "speak"), ToolArgChunk("call_2", "{\"text\":\"done\"}"), FinishDelta("tool_calls")]
       } else {
-        if n == 1 {
-          [ToolCallBegin("call_2", "speak"), ToolArgChunk("call_2", "{\"text\":\"done\"}"), FinishDelta("tool_calls")]
-        } else {
-          [TextChunk(str.concat("saw: ", str.join(seen, " || "))), FinishDelta("stop")]
-        }
+        [TextChunk(str.concat("saw: ", str.join(seen, " || "))), FinishDelta("stop")]
       }
-      iter.from_list(deltas)
-    },
-  }
+    }
+    iter.from_list(deltas)
+  } }
 }
 
 # ── Assertions ─────────────────────────────────────────────────────────────
-
 fn assert_contains(label :: Str, haystack :: Str, needle :: Str) -> Result[Unit, Str] {
   if str.contains(haystack, needle) {
     Ok(())
@@ -112,7 +107,7 @@ fn assert_contains(label :: Str, haystack :: Str, needle :: Str) -> Result[Unit,
 # BOTH a real "reached" from the granted move_base call AND a real
 # "denied: skill speak not in grant" from the ungranted speak call — proof
 # that a2a_robot_server.lex's actual grant, not a stand-in, decided both.
-fn test_tool_calls_reach_real_grant_gated_server() -> [net, llm, io, proc] Result[Unit, Str] {
+fn test_tool_calls_reach_real_grant_gated_server() -> [net, crypto, llm, io, proc] Result[Unit, Str] {
   let steps := planner.plan("http://localhost:8766", "mocktest-1", mock_provider(), prov.make_model_ref("mock", "mock-1"), "drive to (1,1.5) then say done")
   let final := planner.final_text(steps)
   match assert_contains("move_base result", final, "reached") {
@@ -121,9 +116,10 @@ fn test_tool_calls_reach_real_grant_gated_server() -> [net, llm, io, proc] Resul
   }
 }
 
-fn main() -> [net, llm, io, proc] Nil {
+fn main() -> [net, crypto, llm, io, proc] Nil {
   match test_tool_calls_reach_real_grant_gated_server() {
     Ok(_) => io.print("ALL PASS: llm_planner tool-dispatch reaches the real grant-gated server"),
     Err(reason) => io.print(str.concat("FAIL: ", reason)),
   }
 }
+

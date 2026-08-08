@@ -54,15 +54,7 @@ import "../src/sense" as sense
 import "../src/llm_planner" as planner
 
 fn sensor_robot() -> t.Robot {
-  {
-    sidecar_url: "http://localhost:8900",
-    grant: {
-      skills: ["listen"],
-      ws_min: { x: 0.0, y: 0.0, z: 0.0 }, ws_max: { x: 0.0, y: 0.0, z: 0.0 },
-      max_velocity: 0.0, max_force: 0.0, max_grip_force: 0.0,
-      budget_actions: 10, budget_wall_ms: 60000,
-    },
-  }
+  { sidecar_url: "http://localhost:8900", grant: { skills: ["listen"], ws_min: { x: 0.0, y: 0.0, z: 0.0 }, ws_max: { x: 0.0, y: 0.0, z: 0.0 }, max_velocity: 0.0, max_force: 0.0, max_grip_force: 0.0, budget_actions: 10, budget_wall_ms: 60000 } }
 }
 
 # Same shape xlerobot_voice_demo.lex uses — the sidecar's transcription JSON
@@ -92,14 +84,21 @@ fn goal_from_voice() -> [net, sense, io] Str {
   }
 }
 
-fn run_goal(goal_text :: Str) -> [net, llm, io, proc, env, stream] Unit {
-  let api_key := match env.get("OPENCODE_API_KEY") { None => "", Some(v) => v }
+fn run_goal(goal_text :: Str) -> [net, crypto, llm, io, proc, env, stream] Unit {
+  let api_key := match env.get("OPENCODE_API_KEY") {
+    None => "",
+    Some(v) => v,
+  }
   if str.is_empty(api_key) {
     io.print("error: OPENCODE_API_KEY not set — get one at opencode.ai/zen")
   } else {
     let model_name := match env.get("OPENCODE_MODEL") {
       None => planner.default_model(),
-      Some(v) => if str.is_empty(v) { planner.default_model() } else { v },
+      Some(v) => if str.is_empty(v) {
+        planner.default_model()
+      } else {
+        v
+      },
     }
     let __0 := io.print(str.concat("goal: ", goal_text))
     let __1 := io.print(str.concat("model: opencode-go/", model_name))
@@ -110,11 +109,12 @@ fn run_goal(goal_text :: Str) -> [net, llm, io, proc, env, stream] Unit {
 }
 
 # Spoken goal: listens first, then hands the transcript to run_goal.
-fn run() -> [net, sense, llm, io, proc, env, stream] Unit {
+fn run() -> [net, crypto, sense, llm, io, proc, env, stream] Unit {
   run_goal(goal_from_voice())
 }
 
 # Typed goal: skips listen entirely.
-fn run_text(goal_text :: Str) -> [net, llm, io, proc, env, stream] Unit {
+fn run_text(goal_text :: Str) -> [net, crypto, llm, io, proc, env, stream] Unit {
   run_goal(goal_text)
 }
+

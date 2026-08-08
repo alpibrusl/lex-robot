@@ -904,11 +904,17 @@ lex run --allow-effects io,time,crypto,random,sql,fs_read,fs_write,net,concurren
 
 curl -s localhost:8766/.well-known/agent.json   # AgentCard: move_arm, grasp_arm, move_base, ...
 
+# tasks/send now REQUIRES a session first (see "Securing a public endpoint"
+# below) — session/open takes an Ed25519-signed card and a signature; the
+# curl-only version of that needs real crypto tooling to build, so
+# src/llm_planner.lex's open_client_session (or the snippet below) is the
+# reference to copy rather than hand-rolling it. Once you have a real
+# contextId from session/open:
 curl -s localhost:8766/ -d '{"jsonrpc":"2.0","id":1,"method":"tasks/send","params":{
-  "id":"t_1","contextId":"ctx_1","skill":"move_arm",
+  "id":"t_1","contextId":"<contextId from session/open>","skill":"move_arm",
   "message":{"kind":"message","messageId":"m1","role":"user",
              "parts":[{"type":"data","data":{"arm":"left","x":0.3,"y":0.2,"z":0.2}}]}}}'
-#   {"jsonrpc":"2.0","id":1,"result":{"kind":"task","id":"t_1","contextId":"ctx_1",
+#   {"jsonrpc":"2.0","id":1,"result":{"kind":"task","id":"t_1","contextId":"...",
 #    "status":{"state":"completed"}, ...,
 #    "message":{...,"parts":[{"type":"data","data":{"skill":"move_arm","result":"reached"}}]}}}
 ```
@@ -925,14 +931,53 @@ for MCP, this reuses lex-agent's *pure* building blocks — `agent_card`,
 loop that calls straight into `skills.lex`, where the grant/budget/trail
 checks actually live. One skill surface, three front doors, no duplicated
 authority. The `a2a-grant` Makefile target (`bash scripts/demo.sh a2a_grant`)
-runs the deny/allow/clamp/budget-kill grant assertions — the A2A twin of
-`mcp-grant` — against the real A2A wire shape.
+runs the deny/allow/clamp/budget-kill/session grant assertions — the A2A
+twin of `mcp-grant` — against the real A2A wire shape.
 
-This is distinct from the `a2a_*.lex` files elsewhere in `src/` (peer
-handshake, consent, sessions) — those implement a separate, bespoke
-protocol for the agentic interaction demos below (QR-code bootstrap,
-budget-gated commerce), predating and orthogonal to this task-dispatch
-integration.
+### Securing a public endpoint: `session/open`
+
+A robot with a reachable A2A URL needs to answer one question before
+anything else: how do we stop a random agent from connecting and asking
+for nonsense — or worse, actually moving something? `tasks/send` refuses
+every call (sensing included) until the caller has opened a session:
+
+```sh
+curl -s localhost:8766/ -d '{"jsonrpc":"2.0","id":1,"method":"session/open","params":{
+  "card_json":"<canonical a2a_card.lex RobotCard JSON>",
+  "sig_b64":"<ed25519 signature over that exact string>"}}'
+#   {"jsonrpc":"2.0","id":1,"result":{"contextId":"...", "skills":["move_arm","read_base"]}}
+```
+
+The signature proves the caller controls the private key matching the
+card's own declared pubkey — it does **not** by itself prove they're
+anyone you should trust (a Sybil attacker mints a fresh keypair for free).
+Real access control is [`src/a2a_robot_auth.lex`](src/a2a_robot_auth.lex)'s
+`ConsentPolicy.allowed_pubkeys` — an operator-curated allowlist you MUST
+populate for a genuinely public deployment (an empty list means "any
+signed card is accepted," which `examples/a2a_robot_demo.lex` uses
+deliberately for a local, non-public smoke target — see that file's
+comment). Once accepted, [`src/a2a_consent.lex`](src/a2a_consent.lex)'s
+`escalate` computes the session's Grant as the **intersection** of what
+the card asked for and the operator's own ceiling Grant — it can only
+narrow, never widen — with its own budget, isolated per session so one
+caller exhausting their quota can't starve another's.
+
+`src/llm_planner.lex` goes through this exact same door for its own tool
+calls — there is no unauthenticated bypass, even for the robot's own
+trusted planner; the operator's policy just needs to accept its identity
+(see that module's `open_client_session`, or `a2a_robot_auth.lex`'s module
+comment for the full model, what a public deployment must configure, and
+what this does **not** cover — no TLS, no per-request replay nonce).
+
+This is now genuinely built on the same primitives as the `a2a_*.lex`
+files elsewhere in `src/` (`a2a_card.lex`'s signed cards,
+`a2a_consent.lex`'s decide/escalate) — but not `a2a_handshake.lex`'s
+fetch-then-verify state machine, which is a *pull* model (agent A fetches
+and verifies agent B's card from B's own endpoint after an out-of-band QR
+bootstrap) built for the peer-to-peer agentic demos below. A public HTTP
+door serving arbitrary inbound callers is a *push* model instead (the
+caller hands over its card directly), so `a2a_robot_auth.lex` reuses the
+card/consent primitives directly rather than that state machine.
 
 ## Agentic interactions: agents that meet, negotiate, and consent
 
@@ -1119,3 +1164,10 @@ enforced.
   physical XLeRobot — no hardware in this repo's CI. Grasp is position-based
   (no current/force closed loop) and the base's position is dead-reckoned (no
   encoder/localization feedback). See SIDECAR.md's "Real hardware" section.
+- `a2a_robot_server.lex`'s `session/open` adds no TLS and no per-request
+  replay nonce (a captured card+signature stays valid for the session's
+  lifetime) — see `a2a_robot_auth.lex`'s module comment for the full list
+  of what it does and doesn't cover. `mcp.dispatch_skill`'s fallback skills
+  (move_to/grasp/connect_charger/read_joints/read_camera) get the session's
+  narrowed skill list but still share `mcp_server.lex`'s original single
+  global budget ledger, not a per-session one.

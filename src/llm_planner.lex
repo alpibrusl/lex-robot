@@ -78,6 +78,8 @@ import "std.http" as http
 
 import "std.bytes" as bytes
 
+import "std.crypto" as crypto
+
 import "lex-schema/json_value" as jv
 
 import "lex-schema/error" as e
@@ -102,8 +104,9 @@ import "lex-trail/log" as trail
 
 import "./a2a_robot_server" as srv
 
-# ── OpenCode Zen provider ────────────────────────────────────────────────
+import "./a2a_card" as card
 
+# ── OpenCode Zen provider ────────────────────────────────────────────────
 fn opencode_zen_url() -> Str {
   "https://opencode.ai/zen/go/v1/chat/completions"
 }
@@ -123,7 +126,6 @@ fn opencode_model(model_name :: Str) -> prov.ModelRef {
 }
 
 # ── Robot tool calls: a thin A2A client — no [sense, actuate] anywhere ───
-
 # Dig the reply DataPart's "result" string out of a tasks/send response —
 # the exact shape a2a_robot_server.lex's handle_tasks_send produces
 # (message.parts[0].data.result; see task.lex's task_to_json).
@@ -142,6 +144,60 @@ fn task_result_text(tj :: jv.Json) -> Str {
         },
       },
       _ => "",
+    },
+  }
+}
+
+# ── Session establishment (a2a_robot_server.lex's session/open) ─────────
+# The planner authenticates like any other A2A caller — there is no special
+# unauthenticated path for the robot's own trusted software; the operator's
+# ConsentPolicy simply needs to accept this identity (examples/
+# a2a_robot_demo.lex's policy is open by design, precisely so this needs no
+# pre-shared setup — see that file's comment). The keypair is deterministic
+# from `session_id` (same "no [random] needed" reasoning identity.lex
+# documents for its own keypairs), so the same session_id always presents
+# the same identity to the server.
+fn planner_skill_names() -> List[Str] {
+  ["move_base", "move_arm", "grasp_arm", "locate_object", "transform_to_arm", "read_base", "speak"]
+}
+
+fn planner_card_json(pubkey_b64 :: Str) -> Str {
+  card.card_to_json({ name: "xlerobot-planner", endpoint: "https://xlerobot-planner.internal", pubkey_b64: pubkey_b64, tier: card.Extended, supports_extended: false, skills: list.map(planner_skill_names(), fn (n :: Str) -> card.AgentSkill {
+    { name: n, description: "" }
+  }) })
+}
+
+# Open a session and return the real contextId to use for every subsequent
+# tasks/send call. On ANY failure (network error, bad response shape, a
+# refused card) this falls back to the raw `session_id` string — every
+# following tool call then gets a clean, visible "no active session" error
+# from the server instead of a crash here, same category of outcome the
+# model already has to handle for a denied/killed/stalled skill result.
+fn open_client_session(peer_url :: Str, session_id :: Str) -> [net, crypto] Str {
+  let secret := crypto.sha256(bytes.from_str(str.concat("xlerobot-planner:", session_id)))
+  match crypto.ed25519_public_key(secret) {
+    Err(_) => session_id,
+    Ok(pk) => {
+      let cj := planner_card_json(crypto.base64url_encode(pk))
+      match card.sign_card(cj, secret) {
+        Err(_) => session_id,
+        Ok(sig) => {
+          let body := a2a_client.build_envelope("session/open", JObj([("card_json", JStr(cj)), ("sig_b64", JStr(sig))]), IdStr("session-open"))
+          match http.post(peer_url, bytes.from_str(body), "application/json") {
+            Err(_) => session_id,
+            Ok(resp) => match bytes.to_str(resp.body) {
+              Err(_) => session_id,
+              Ok(s) => match a2a_client.parse_response_body(s) {
+                Err(_) => session_id,
+                Ok(rj) => match jv.get_field(rj, "contextId") {
+                  Some(JStr(cid)) => cid,
+                  _ => session_id,
+                },
+              },
+            },
+          }
+        },
+      }
     },
   }
 }
@@ -188,39 +244,14 @@ fn robot_tool(peer_url :: Str, session_id :: Str, capability :: cap.Capability) 
 # tool list is also a more RELIABLE one; a model picks the right tool more
 # often from seven well-differentiated choices than from twelve.
 fn xlerobot_tools(peer_url :: Str, session_id :: Str) -> List[t.Tool] {
-  list.map([
-    srv.move_base_cap(), srv.move_arm_cap(), srv.grasp_arm_cap(),
-    srv.locate_object_cap(), srv.transform_to_arm_cap(),
-    srv.read_base_cap(), srv.speak_cap(),
-  ], fn (c :: cap.Capability) -> t.Tool {
+  list.map([srv.move_base_cap(), srv.move_arm_cap(), srv.grasp_arm_cap(), srv.locate_object_cap(), srv.transform_to_arm_cap(), srv.read_base_cap(), srv.speak_cap()], fn (c :: cap.Capability) -> t.Tool {
     robot_tool(peer_url, session_id, c)
   })
 }
 
 # ── Agent construction ───────────────────────────────────────────────────
-
 fn planner_goal() -> Str {
-  str.join([
-    "You control a real robot (XLeRobot: a dual-arm mobile base) through a ",
-    "fixed set of tools. Every tool call you make is independently checked ",
-    "by a safety grant on the SERVER before it does anything -- you have no ",
-    "authority beyond what that grant allows, so propose the plan you think ",
-    "is right and let the server tell you if it's refused.\n\n",
-    "Rules:\n",
-    "1) To fetch a named object, first call locate_object to find its real ",
-    "position -- never guess coordinates.\n",
-    "2) After driving the base, call transform_to_arm with the object's ",
-    "world position (the 'world' field locate_object returned) to get a ",
-    "fresh arm-frame target -- the base moving invalidates any earlier ",
-    "arm-frame offset, only the world position stays valid.\n",
-    "3) If a tool call comes back denied/killed/stalled, do not blindly ",
-    "retry the same thing -- read the reason, adjust if you reasonably can, ",
-    "or stop and explain the problem in your final reply.\n",
-    "4) Use speak only for a short, useful confirmation to the human -- ",
-    "typically once, near the end -- not for every intermediate step.\n",
-    "5) Finish with a brief plain-text summary of what happened, whether ",
-    "the goal was achieved, and why not if it wasn't."
-  ], "")
+  str.join(["You control a real robot (XLeRobot: a dual-arm mobile base) through a ", "fixed set of tools. Every tool call you make is independently checked ", "by a safety grant on the SERVER before it does anything -- you have no ", "authority beyond what that grant allows, so propose the plan you think ", "is right and let the server tell you if it's refused.\n\n", "Rules:\n", "1) To fetch a named object, first call locate_object to find its real ", "position -- never guess coordinates.\n", "2) After driving the base, call transform_to_arm with the object's ", "world position (the 'world' field locate_object returned) to get a ", "fresh arm-frame target -- the base moving invalidates any earlier ", "arm-frame offset, only the world position stays valid.\n", "3) If a tool call comes back denied/killed/stalled, do not blindly ", "retry the same thing -- read the reason, adjust if you reasonably can, ", "or stop and explain the problem in your final reply.\n", "4) Use speak only for a short, useful confirmation to the human -- ", "typically once, near the end -- not for every intermediate step.\n", "5) Finish with a brief plain-text summary of what happened, whether ", "the goal was achieved, and why not if it wasn't."], "")
 }
 
 # Provider/model are explicit params (not baked in) so a test can substitute
@@ -231,14 +262,7 @@ fn planner_goal() -> Str {
 # OpenCode API key. build_agent_opencode below is the convenience wrapper
 # real callers use.
 fn build_agent(peer_url :: Str, session_id :: Str, provider :: prov.Provider, model :: prov.ModelRef) -> ag.AgentLoop {
-  ag.make_agent(
-    "xlerobot-planner",
-    planner_goal(),
-    model,
-    provider,
-    xlerobot_tools(peer_url, session_id),
-    { temperature: Some(0.3), top_p: None, max_steps: Some(12), max_tokens: Some(2000) }
-  )
+  ag.make_agent("xlerobot-planner", planner_goal(), model, provider, xlerobot_tools(peer_url, session_id), { temperature: Some(0.3), top_p: None, max_steps: Some(12), max_tokens: Some(2000) })
 }
 
 fn build_agent_opencode(peer_url :: Str, session_id :: Str, api_key :: Str, model_name :: Str) -> ag.AgentLoop {
@@ -246,7 +270,6 @@ fn build_agent_opencode(peer_url :: Str, session_id :: Str, api_key :: Str, mode
 }
 
 # ── Running the loop ─────────────────────────────────────────────────────
-
 fn step_text(step :: d.Step) -> Str {
   match step {
     StepDone(AssistantMsg(text, _)) => text,
@@ -274,7 +297,11 @@ fn final_text(steps :: List[d.Step]) -> Str {
 fn step_line(step :: d.Step) -> Option[Str] {
   match step {
     StepToolExec(name, id) => Some(str.concat("  -> calling ", name)),
-    StepToolResult(id, ok) => Some(if ok { "     ok" } else { "     error" }),
+    StepToolResult(id, ok) => Some(if ok {
+      "     ok"
+    } else {
+      "     error"
+    }),
     StepDone(AssistantMsg(text, _)) => if str.is_empty(text) {
       None
     } else {
@@ -296,12 +323,13 @@ fn steps_to_lines(steps :: List[d.Step]) -> List[Str] {
 # Run the planner to completion against a live goal_text; returns the full
 # step trace (StepToolExec/StepToolResult/StepDone/StepDelta) for a caller
 # to render however it likes (steps_to_lines gives a ready-made summary).
-fn plan(peer_url :: Str, session_id :: Str, provider :: prov.Provider, model :: prov.ModelRef, goal_text :: Str) -> [net, llm, io, proc] List[d.Step] {
-  let agent := build_agent(peer_url, session_id, provider, model)
+fn plan(peer_url :: Str, session_id :: Str, provider :: prov.Provider, model :: prov.ModelRef, goal_text :: Str) -> [net, crypto, llm, io, proc] List[d.Step] {
+  let ctx_id := open_client_session(peer_url, session_id)
+  let agent := build_agent(peer_url, ctx_id, provider, model)
   iter.to_list(ag.run_loop(agent, [UserMsg(goal_text)]))
 }
 
-fn plan_opencode(peer_url :: Str, session_id :: Str, api_key :: Str, model_name :: Str, goal_text :: Str) -> [net, llm, io, proc] List[d.Step] {
+fn plan_opencode(peer_url :: Str, session_id :: Str, api_key :: Str, model_name :: Str, goal_text :: Str) -> [net, crypto, llm, io, proc] List[d.Step] {
   plan(peer_url, session_id, opencode_provider(api_key), opencode_model(model_name), goal_text)
 }
 
@@ -312,11 +340,13 @@ fn plan_opencode(peer_url :: Str, session_id :: Str, api_key :: Str, model_name 
 # actually did lives separately, inside a2a_robot_server.lex's own
 # trail.Log on the server side — the two are complementary, not the same
 # record twice.
-fn plan_traced(peer_url :: Str, session_id :: Str, provider :: prov.Provider, model :: prov.ModelRef, goal_text :: Str, log :: trail.Log, parent :: Option[Str]) -> [net, llm, io, proc, sql, time] List[d.Step] {
-  let agent := build_agent(peer_url, session_id, provider, model)
+fn plan_traced(peer_url :: Str, session_id :: Str, provider :: prov.Provider, model :: prov.ModelRef, goal_text :: Str, log :: trail.Log, parent :: Option[Str]) -> [net, crypto, llm, io, proc, sql, time] List[d.Step] {
+  let ctx_id := open_client_session(peer_url, session_id)
+  let agent := build_agent(peer_url, ctx_id, provider, model)
   iter.to_list(ag.run_loop_traced(agent, [UserMsg(goal_text)], log, parent))
 }
 
-fn plan_opencode_traced(peer_url :: Str, session_id :: Str, api_key :: Str, model_name :: Str, goal_text :: Str, log :: trail.Log, parent :: Option[Str]) -> [net, llm, io, proc, sql, time] List[d.Step] {
+fn plan_opencode_traced(peer_url :: Str, session_id :: Str, api_key :: Str, model_name :: Str, goal_text :: Str, log :: trail.Log, parent :: Option[Str]) -> [net, crypto, llm, io, proc, sql, time] List[d.Step] {
   plan_traced(peer_url, session_id, opencode_provider(api_key), opencode_model(model_name), goal_text, log, parent)
 }
+
