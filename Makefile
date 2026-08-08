@@ -2,7 +2,7 @@
 # python3 (no pip). The ML demos (keep-out / MuJoCo / learned policy) need the
 # Python deps in sidecar/requirements.txt — see the README dependency matrix.
 
-.PHONY: help check smoke demo grant task budget depot xlerobot xlerobot-task xlerobot-voice xlerobot-sim xlerobot-find xlerobot-find-sim keepout dynamic_keepout tool_fire mcp-grant a2a-grant xlerobot-rl-train xlerobot-rl-run xlerobot-rl-usage xlerobot-rl-finetune xlerobot-llm-mock xlerobot-llm fleet-clean-house deps clean
+.PHONY: help check smoke demo grant task budget depot xlerobot xlerobot-task xlerobot-voice xlerobot-sim xlerobot-find xlerobot-find-sim keepout dynamic_keepout tool_fire mcp-grant a2a-grant xlerobot-rl-train xlerobot-rl-run xlerobot-rl-usage xlerobot-rl-finetune xlerobot-llm-mock xlerobot-llm fleet-clean-house bazaar-visit deps clean
 
 help: ## Show this help
 	@grep -hE '^[a-z-]+:.*##' $(MAKEFILE_LIST) | sed -E 's/:.*## /\t/' | sort
@@ -104,6 +104,9 @@ xlerobot-rl-run: ## Trained-policy safe-RL/eval loop: train* -> roll out -> veri
 
 fleet-clean-house: ## Closed 5-robot home fleet claims one room each via the fleet_traffic arbiter (no ML deps)
 	@bash examples/fleet_clean_house_run.sh
+
+bazaar-visit: ## A robot claims physical space near a bazaar stall it's never met, then verifies+transacts (no ML deps)
+	@bash examples/bazaar_visit_demo_run.sh
 
 clean: ## Remove stray run artifacts
 	@rm -f MUJOCO_LOG.TXT /tmp/lex-robot-*.log
