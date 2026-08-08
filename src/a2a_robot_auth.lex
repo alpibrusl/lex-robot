@@ -36,7 +36,9 @@
 #     caller whose OWN advertised endpoint is http://, but does not stop the
 #     session/open request itself arriving over plaintext HTTP if the
 #     server is bound that way — put a real TLS terminator in front for a
-#     genuinely public deployment.
+#     genuinely public deployment (deploy/Caddyfile.example; README.md's
+#     "TLS: terminate it in front, not inside" has the full reasoning —
+#     std.net's plain-HTTP serve path has no TLS option in this toolchain).
 #   - Replay window: a captured (card_json, sig_b64) pair is valid for as
 #     long as the session it opens exists (until the operator restarts the
 #     db or the row is otherwise cleared) — there is no per-request nonce
