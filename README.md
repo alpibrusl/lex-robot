@@ -1049,6 +1049,62 @@ the LLM-driven ones additionally need a lex-llm provider configured.
 > **[lex-arena](https://github.com/alpibrusl/lex-arena)** along with the games
 > and the Magentic Bazaar — see below.
 
+## Multi-robot coordination: home fleets vs. open bazaars
+
+Two scenarios come up whenever more than one physical robot shares space:
+a **closed fleet** you own (5 robots at home, asked to clean the house
+together) and an **open bazaar** run by strangers (a robot visits a
+marketplace of stall-robots it's never met). Their *authority* models —
+"is this robot allowed to do X" — are intentionally different:
+
+| | closed fleet | open bazaar |
+|---|---|---|
+| trust model | pre-shared allowlist | fresh signed-card verification every time |
+| mechanism | `a2a_robot_auth.lex`'s `ConsentPolicy.allowed_pubkeys` populated with the fleet's own keys (see "Securing a public endpoint" above) | `a2a_bootstrap.lex` + `a2a_handshake.lex`'s PULL model — no pre-shared key, verified fresh from a scanned bootstrap blob |
+| demo | `make fleet-clean-house` (`examples/fleet_clean_house_demo.lex`) | `make bazaar-visit` (`examples/bazaar_visit_demo.lex`, reusing `examples/peer_meet.lex`'s handshake mechanics unmodified) |
+
+But underneath whichever authority model applies, both need the same
+**safety** property: two robots must not claim overlapping floor space at
+overlapping times. That's `src/fleet_traffic.lex` (pure conflict-check
+logic) and `src/fleet_arbiter_server.lex` (`fleet/claim` / `fleet/release`
+/ `fleet/check`, exposed over JSON-RPC) — deliberately **not** gated by
+either authority model above. A claim is data about occupancy, not a
+capability grant: refusing a stranger's collision-avoidance claim to
+"protect" one fleet would raise collision risk, not lower it, so
+`robotId` there is a bare, unverified string, checked only against other
+claims, never against an allowlist or a signed card.
+
+`skills.lex`'s `move_base_claimed` enforces this as a second, independent
+precondition on top of the existing grant/workspace check: a destination
+can be inside a robot's own workspace `Grant` (authority: "you're allowed
+to go there") while still lacking a live zone claim (safety: "nobody's
+confirmed the room is clear right now") — both must pass. `move_base`
+itself is unchanged; only a fleet-aware caller opts into the stricter
+gate, so none of the dozens of existing non-fleet demos need a traffic
+arbiter to run.
+
+`bazaar_visit_demo` makes the split concrete: the visiting robot claims
+its approach space with **no card and no consent policy** — purely
+because nothing else occupies it — and only afterward runs the existing
+signed-card handshake to verify the stall and transact. A failed or
+successful negotiation never touches the claim already granted, proven
+live in the demo, not just asserted.
+
+This is the same shape industrial fleets solve with
+[VDA5050](https://www.vda.de/en) (AGV fleet ↔ master-control) and the
+[MASS Robotics AMR Interoperability Standard](https://massrobotics.org/mass-robotics-standard/)
+(peer-to-peer traffic negotiation between different vendors' robots) —
+named here for context, not as a compliance claim; `fleet_traffic.lex`
+implements neither spec.
+
+**Known limitation:** `fleet_arbiter_server.lex` refuses a conflicting
+claim outright — there is no priority-based preemption, by design (see
+`fleet_traffic.lex`'s module comment: a resolver that can silently steal
+an in-progress claim from another robot is exactly the failure mode this
+exists to rule out). A claim also covers exactly one box; multi-cell path
+reservations are supported by `fleet_traffic.lex`'s pure `ZoneClaim` type
+but not yet wired into the arbiter's wire contract.
+
 ## Games and commerce moved to lex-arena
 
 The capability-gated turn games (tic-tac-toe, Bazaar Draft, Consent Match,
