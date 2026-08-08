@@ -27,7 +27,7 @@ lex tool-registry serve --port "${REGISTRY_PORT}" &
 REGISTRY_PID=$!
 
 echo "[skill_acquisition] starting the geocoding stub on :${STUB_PORT} ..."
-python3 "${REPO_DIR}/examples/geocode_stub.py" "${STUB_PORT}" &
+python3 "${REPO_DIR}/examples/skills_api_stub.py" "${STUB_PORT}" &
 STUB_PID=$!
 
 for i in $(seq 1 20); do

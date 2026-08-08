@@ -1137,6 +1137,33 @@ driving a physical arm. A skill needing `[actuate]` or `[sense]` — a new
 motion, a new sensor read — should stay a reviewed grant-widening
 decision, never a self-service registration.
 
+### The catalog: 10 skills, tiered by how directly they extend this repo
+
+`make skill-catalog` (`examples/skill_library.lex` +
+`examples/skill_catalog_demo.lex`) registers and calls all 10 candidate
+skills below against a real `lex tool-registry`, grouped by priority —
+proving the mechanism scales to a real backlog, not just one hand-picked
+example. Every entry is `[net]`-only against
+[`examples/skills_api_stub.py`](examples/skills_api_stub.py) (one
+consolidated local stand-in for the real public APIs named per skill;
+this sandbox's egress policy blocks the real hosts outright — swapping
+the stub's base URL is the only change a real deployment needs) — except
+`unit_convert`, deliberately registered with **zero** declared effects,
+proving "acquire a skill" doesn't mean "always grant net."
+
+| tier | skill | stands in for | why |
+|---|---|---|---|
+| 1 | `geocode_place` | Nominatim / Google Geocoding | resolves a place name for `llm_planner`'s "go to place X" goals |
+| 1 | `route_eta` | a directions/distance-matrix API | distance/ETA between two named places — never claims the robot can drive there |
+| 1 | `fair_price_lookup` | a market-price API | a reference price before a negotiation in `bazaar_visit_demo` / `logistics` / `trading` |
+| 2 | `currency_convert` | an FX-rate API | those same demos move "credits" today; real deployments need real currency |
+| 2 | `weather_lookup` | a weather API | gates whether an outdoor-adjacent task makes sense — the planner decides, never acts on it directly |
+| 2 | `web_search` | a web-search API | general knowledge grounding for a plan step the LLM can't answer alone |
+| 2 | `translate_text` | a translation API | useful on the `speak`/`listen` path for a non-native-language household or bazaar counterpart |
+| 3 | `reverse_geocode` | Nominatim / Google reverse geocoding | complement to `geocode_place` — a coordinate back to a name for `speak` |
+| 3 | `calendar_lookup` | a calendar API | a real constraint check for "clean the house before 5pm" instead of a hardcoded time |
+| 3 | `unit_convert` | *(pure — no API)* | km/mi, kg/lb, °C/°F; the deliberate zero-`[net]` example above |
+
 ## Games and commerce moved to lex-arena
 
 The capability-gated turn games (tic-tac-toe, Bazaar Draft, Consent Match,
