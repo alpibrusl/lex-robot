@@ -1105,6 +1105,38 @@ exists to rule out). A claim also covers exactly one box; multi-cell path
 reservations are supported by `fleet_traffic.lex`'s pure `ZoneClaim` type
 but not yet wired into the arbiter's wire contract.
 
+## On-demand skill acquisition (informational skills only)
+
+If a planner's goal needs a skill the robot doesn't have — resolving a
+place name to coordinates for a "go to place X" goal, say — does the
+robot need a source change and a redeploy, or can it acquire the skill on
+request? `make skill-acquisition` (`examples/skill_acquisition_demo.lex`)
+proves the latter, using two pieces already built into the `lex`
+toolchain rather than anything new in this repo:
+
+- **`lex agent-tool`** has an LLM emit a Lex tool body that only ever
+  runs under a declared, capped effect set — the type checker rejects
+  anything the body does beyond it, before a byte executes.
+- **`lex tool-registry serve`** puts that on a network: `POST /tools`
+  registers a body + its declared effects (checked at registration —
+  a 400 if it tries to do more), `POST /tools/{id}/invoke` calls it via
+  a stable endpoint from then on.
+
+The demo registers a `geocode_place` tool (hand-authored here in place of
+a real `--request` call, since no `ANTHROPIC_API_KEY` is assumed — same
+"mock model" precedent `xlerobot-llm-mock` sets elsewhere in this repo)
+declared `[net]`-only, calls it against a local geocoding stub for a
+known and an unknown place, then registers a second tool that CLAIMS
+`[net]` but actually calls `io.print` — refused at registration, before
+it's ever runnable.
+
+**This stays deliberately scoped to informational skills.** The type
+checker guarantees a tool can't exceed the effects it declared; it says
+nothing about whether an operator *wants* an LLM's own generated code
+driving a physical arm. A skill needing `[actuate]` or `[sense]` — a new
+motion, a new sensor read — should stay a reviewed grant-widening
+decision, never a self-service registration.
+
 ## Games and commerce moved to lex-arena
 
 The capability-gated turn games (tic-tac-toe, Bazaar Draft, Consent Match,
