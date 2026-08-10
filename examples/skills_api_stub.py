@@ -22,6 +22,12 @@ Endpoints:
   GET /search?q=                          stand-in for a web-search API
   GET /translate?text=&to=                stand-in for a translation API
   GET /calendar/lookup?query=             stand-in for a calendar API
+  POST /vision/describe {"image_b64": "..."}   stand-in for a multimodal
+                                                vision API (used by
+                                                src/skills.lex's
+                                                list_visible_items) --
+                                                genuinely can't see, always
+                                                returns the same canned list
   GET /health
 
 Deps: none (stdlib only). Run: python3 examples/skills_api_stub.py [port]
@@ -82,6 +88,13 @@ CALENDAR = {
     "tomorrow morning": {"busy": False, "note": "no events"},
 }
 
+# Stand-in for a multimodal vision API (e.g. an LLM's image-input endpoint).
+# A stub genuinely can't see, so /vision/describe ignores the image bytes it
+# receives and always returns this same canned list -- honest about what
+# it is (a fixed answer, not a real detector), same convention as every
+# other canned response above.
+VISION_ITEMS = ["milk carton", "a red tomato", "a tub of yogurt", "lettuce", "a wedge of cheese"]
+
 
 def _reverse_lookup(lat, lon):
     for name, entry in GAZETTEER.items():
@@ -135,6 +148,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._json(200, hit if hit else {})
         else:
             self._json(404, {"error": "not found"})
+
+    def do_POST(self):
+        if self.path != "/vision/describe":
+            return self._json(404, {"error": "not found"})
+        length = int(self.headers.get("Content-Length", "0"))
+        raw = self.rfile.read(length) if length else b"{}"
+        try:
+            body = json.loads(raw.decode("utf-8"))
+        except ValueError:
+            return self._json(400, {"error": "invalid json"})
+        if not body.get("image_b64"):
+            return self._json(400, {"error": "missing image_b64"})
+        self._json(200, {"items": VISION_ITEMS})
 
     def _json(self, status, payload):
         body = json.dumps(payload).encode("utf-8")

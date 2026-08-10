@@ -22,6 +22,14 @@ import "std.float" as flt
 
 import "std.list" as list
 
+import "std.bytes" as bytes
+
+import "std.http" as http
+
+import "std.map" as map
+
+import "lex-schema/json_value" as jv
+
 import "./types" as t
 
 import "./grant" as grant
@@ -391,6 +399,71 @@ fn clear_display(r :: t.Robot) -> [net, sense, actuate] t.Outcome {
     }
   } else {
     Denied("skill clear_display not in grant")
+  }
+}
+
+# Show a picture PLUS a findings list together — the composite kind none of
+# show_image/show_text alone can express (see the "fridge contents" example
+# in README's "On-demand skill acquisition" discussion). Same grant-gate /
+# client.call / parse_outcome shape as every other show_* skill; the sidecar
+# side is xlerobot_sidecar.py's DisplayState "report" kind.
+fn show_report(r :: t.Robot, image_source :: Str, items :: List[Str], caption :: Str) -> [net, sense, actuate] t.Outcome {
+  if grant.skill_allowed(r.grant, "show_report") {
+    let items_json := JList(list.map(items, fn (s :: Str) -> jv.Json {
+      JStr(s)
+    }))
+    let body := jv.stringify(JObj([("source", JStr(image_source)), ("items", items_json), ("caption", JStr(caption))]))
+    match client.call(r.sidecar_url, "show_report", body) {
+      Err(e) => Stalled(e),
+      Ok(resp) => parse_outcome(resp),
+    }
+  } else {
+    Denied("skill show_report not in grant")
+  }
+}
+
+fn http_err_str(e :: HttpError) -> Str {
+  match e {
+    TimeoutError => "timeout",
+    TlsError(m) => str.concat("tls: ", m),
+    NetworkError(m) => str.concat("net: ", m),
+    DecodeError(m) => str.concat("decode: ", m),
+  }
+}
+
+# Turn an already-captured image into a findings list, via an external
+# vision API (examples/skills_api_stub.py's /vision/describe stands in for
+# a real one). Deliberately [net] only, NOT [net, sense]: the camera read
+# that produced `image_b64` was the [sense] effect (read_camera); this is
+# judgment about data already in hand, the same distinction the
+# skill-catalog's informational skills draw (see skill_library.lex's module
+# comment). Not grant-checked internally, matching sense.lex's own
+# locate_object/transform_to_arm convention for trusted local callers — an
+# A2A caller gets gated at the door (a2a_robot_server.lex), same as those.
+fn list_visible_items(vision_url :: Str, image_b64 :: Str) -> [net] Result[List[Str], Str] {
+  let req_json := jv.stringify(JObj([("image_b64", JStr(image_b64))]))
+  let req0 := { method: "POST", url: str.join([vision_url, "/vision/describe"], ""), headers: map.new(), body: Some(bytes.from_str(req_json)), timeout_ms: None }
+  let req := http.with_header(http.with_timeout_ms(req0, 10000), "Content-Type", "application/json")
+  match http.send(req) {
+    Err(e) => Err(http_err_str(e)),
+    Ok(resp) => match http.text_body(resp) {
+      Err(e) => Err(http_err_str(e)),
+      Ok(s) => match jv.parse(s) {
+        Err(p) => Err(p.message),
+        Ok(j) => match jv.get_field(j, "items") {
+          None => Err("missing items in response"),
+          Some(v) => match jv.as_list(v) {
+            None => Err("items not a list"),
+            Some(xs) => Ok(list.map(xs, fn (x :: jv.Json) -> Str {
+              match jv.as_str(x) {
+                Some(s) => s,
+                None => "",
+              }
+            })),
+          },
+        },
+      },
+    },
   }
 }
 
