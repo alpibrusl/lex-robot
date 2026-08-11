@@ -23,6 +23,14 @@ mujoco
 # SIDECAR.md "Real hardware" for the env vars and bring-up steps. Not needed
 # for Tier-1/Tier-2 and not installed in CI (no hardware to test against).
 #   pip install "lerobot[feetech]"    # SO101Follower + FeetechMotorsBus (arms + diff base)
+#   pip install "lerobot[kinematics]" # placo -- move_arm's Cartesian IK/FK (needs
+#                                      # LEX_XLE_URDF_PATH too, see SIDECAR.md; lerobot no
+#                                      # longer builds this into the robot object for you).
+#                                      # No URDF ships with lerobot/placo -- sparse-clone
+#                                      # Simulation/SO101/so101_new_calib.urdf from
+#                                      # https://github.com/TheRobotStudio/SO-ARM100 (bench-
+#                                      # tested working; see SIDECAR.md "Real hardware" for
+#                                      # the clone command).
 #   pip install sounddevice           # mic capture for `listen`, speaker playback for `speak`
 #   pip install faster-whisper        # local speech-to-text for `listen`
 #   pip install kokoro                # local text-to-speech for `speak` (hexgrad/Kokoro-82M;

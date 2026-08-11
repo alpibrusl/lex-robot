@@ -55,23 +55,43 @@ inline from `run_policy`; the Lex side accepts either shape.
 
 `sidecar/xlerobot_sidecar.py` drives a physical XLeRobot 0.4.0 when
 `LEX_ROBOT_HW=1` is set, through LeRobot's own SO-101 (`SOFollower`) and
-motor-bus (`FeetechMotorsBus`) APIs. **This has not been run against
-physical hardware in this repo's CI or by its authors** — there is no
-XLeRobot in this loop to validate against, so treat it as a bench-test
-starting point (low torque, no load, hand on the e-stop) rather than a
-plug-and-drive certainty. Community XLeRobot software — especially the
-0.4.0 dual-wheel differential base — moves fast and isn't merged upstream
-into `lerobot`, so if your installed version's API doesn't match, the
-sidecar fails loudly at connect time (`SystemExit` naming the mismatch)
-rather than silently running with the wrong assumptions.
+motor-bus (`FeetechMotorsBus`) APIs. **One SO-101 arm has been bench-tested
+against this code** (single arm, `lerobot` 0.6.1, low torque, hand on the
+e-stop): serial connect, calibration, joint-space moves, and Cartesian
+`move_to` via `RobotKinematics`/`placo` all confirmed working. **Not yet
+exercised against real hardware**: the second arm, the dual-wheel base,
+the camera, and force-based grasp — those are still bench-test starting
+points, not plug-and-drive certainties. Community XLeRobot software —
+especially the 0.4.0 dual-wheel differential base — moves fast and isn't
+merged upstream into `lerobot`, so if your installed version's API doesn't
+match, the sidecar fails loudly at connect time (`SystemExit` naming the
+mismatch) rather than silently running with the wrong assumptions.
 
 What it does and doesn't do:
 - **Arms** — each SO-101 is brought up as a real `lerobot.robots.so_follower`
   `SO101Follower`; `move_arm`'s Cartesian target goes through LeRobot's own
   `robot_kinematic_processor` IK/FK, polled in a bounded closed loop until
-  the end-effector is within tolerance or a timeout. If your `lerobot`
-  install doesn't expose that kinematics module, `move_arm` fails loudly
-  per call rather than pretending to reach.
+  the end-effector is within tolerance or a timeout. IK/FK needs a
+  `RobotKinematics` model built from an on-disk URDF (`LEX_XLE_URDF_PATH`)
+  plus the `placo` solver (`pip install "lerobot[kinematics]"`) — lerobot
+  no longer builds this into the robot object for you, and no URDF ships
+  with `lerobot`/`placo`; the one bench-tested here came from
+  [TheRobotStudio/SO-ARM100](https://github.com/TheRobotStudio/SO-ARM100)'s
+  `Simulation/SO101/so101_new_calib.urdf` (sparse-clone it the same way as
+  the G1 assets below). If the URDF isn't configured, `placo` isn't
+  installed, or your `lerobot` install doesn't expose that kinematics
+  module, `move_arm` fails loudly per call rather than pretending to
+  reach. lerobot 0.6.1's `InverseKinematicsEEToJoints` is a pipeline
+  processor step, not a plain function — it must be invoked as
+  `step(lerobot.processor.create_transition(observation=obs, action=target))`
+  and read back via `TransitionKey.ACTION`, with the target keyed
+  `ee.x`/`ee.y`/`ee.z`/`ee.wx`/`ee.wy`/`ee.wz`/`ee.gripper_pos` (all six
+  required, including a passthrough `gripper_pos` even when not moving the
+  gripper); calling its `.action()` directly raises `Transition is not
+  set`. `compute_forward_kinematics_joints_to_ee` also mutates its input
+  joints dict in place (pops the `*.pos` keys, writes `ee.*` keys into the
+  same object) and returns `ee.x`/`ee.y`/`ee.z`, not bare `x`/`y`/`z` — the
+  sidecar passes it a defensive copy.
 - **Grasp** — position-based (gripper closed to a fraction of full-close
   scaled by the requested/firmware-capped force), *not* current/force
   closed-loop. `Present_Load` is read best-effort for the audit trail only
@@ -99,12 +119,24 @@ for the full, current list): `LEX_XLE_LEFT_PORT` / `LEX_XLE_RIGHT_PORT` /
 `LEX_XLE_BASE_PORT` (serial ports, required), `LEX_XLE_LEFT_ID` /
 `LEX_XLE_RIGHT_ID` (LeRobot calibration ids), `LEX_XLE_WHEEL_RADIUS_M` /
 `LEX_XLE_TRACK_WIDTH_M` (diff-base geometry), `LEX_XLE_MAX_REL_TARGET`
-(optional per-step joint clamp, defense in depth alongside the grant).
+(optional per-step joint clamp, defense in depth alongside the grant),
+`LEX_XLE_URDF_PATH` / `LEX_XLE_URDF_TARGET_FRAME` (Cartesian IK/FK — see
+"Arms" above).
 
 ```sh
-pip install "lerobot[feetech]" sounddevice faster-whisper pillow
+pip install "lerobot[feetech,kinematics]" sounddevice faster-whisper pillow
+
+# URDF isn't bundled with lerobot/placo -- sparse-clone just the Simulation
+# folder from the SO-ARM100 hardware repo (same pattern as the G1 assets
+# above):
+git clone --depth 1 --filter=blob:none --sparse \
+  https://github.com/TheRobotStudio/SO-ARM100.git /tmp/so-arm100
+git -C /tmp/so-arm100 sparse-checkout set Simulation
+
 LEX_XLE_LEFT_PORT=/dev/ttyACM0 LEX_XLE_RIGHT_PORT=/dev/ttyACM1 \
-  LEX_XLE_BASE_PORT=/dev/ttyACM2 LEX_ROBOT_HW=1 python3 sidecar/xlerobot_sidecar.py
+  LEX_XLE_BASE_PORT=/dev/ttyACM2 \
+  LEX_XLE_URDF_PATH=/tmp/so-arm100/Simulation/SO101/so101_new_calib.urdf \
+  LEX_ROBOT_HW=1 python3 sidecar/xlerobot_sidecar.py
 ```
 
 The pure kinematics helpers (`diff_drive_wheel_speeds`, `bearing_and_turn`,

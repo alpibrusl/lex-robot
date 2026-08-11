@@ -10,13 +10,15 @@ variables that wire the calibrated robot into `lex-robot` itself.
 Target hardware: [XLeRobot 0.4.0](https://github.com/Vector-Wangel/XLeRobot)
 (WowRobo kit) — two 5‑DOF SO‑101 arms (STS3215 servos) on a dual‑wheel
 differential base, head RGB camera, optional mic + speaker. Everything
-below was verified against `lerobot` 0.4.4's actual calibration/setup
-scripts (`lerobot-find-port`, `lerobot-setup-motors`, `lerobot-calibrate`)
-and the arm bring‑up code in `lerobot.robots.so_follower`, plus this
-repo's `sidecar/xlerobot_sidecar.py`. It has **not** been run against a
-physical XLeRobot in this repo's CI (see `SIDECAR.md`) — treat each
-step as a starting point to validate on your own unit, at low torque,
-no load.
+below was originally verified against `lerobot` 0.4.4's actual calibration/
+setup scripts (`lerobot-find-port`, `lerobot-setup-motors`,
+`lerobot-calibrate`) and the arm bring‑up code in `lerobot.robots.so_follower`,
+plus this repo's `sidecar/xlerobot_sidecar.py`; the CLI tools and API shapes
+were re-checked against `lerobot` 0.6.1 and the sidecar updated where they'd
+moved (Cartesian IK/FK now needs `LEX_XLE_URDF_PATH` + `placo` — see §6). It
+has **not** been run against a physical XLeRobot in this repo's CI (see
+`SIDECAR.md`) — treat each step as a starting point to validate on your own
+unit, at low torque, no load.
 
 ## 0. Safety first — read before powering anything
 

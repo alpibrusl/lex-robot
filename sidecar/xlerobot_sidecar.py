@@ -82,6 +82,16 @@ Arms (required when LEX_ROBOT_HW=1):
                                                 passed straight to SOFollowerConfig —
                                                 defense in depth independent of the grant
     LEX_XLE_ARM_TIMEOUT_S / LEX_XLE_ARM_TOL_M  closed-loop reach budget (default 8 / 0.01)
+    LEX_XLE_URDF_PATH                          path to the SO-101 URDF on disk — lerobot
+                                                >=0.5's RobotKinematics (used for move_arm's
+                                                Cartesian IK/FK) needs this explicitly; there
+                                                is no bundled URDF. Get one from the SO-ARM100/
+                                                XLeRobot hardware repo. Also needs `placo`
+                                                (`pip install "lerobot[kinematics]"`). Unset =
+                                                no Cartesian IK/FK (move_arm fails loudly).
+    LEX_XLE_URDF_TARGET_FRAME                  end-effector frame name in that URDF (default
+                                                "gripper_frame_link", lerobot's own default —
+                                                override if your URDF names it differently)
 
 Base — LEX_XLE_BASE=diff (default, XLeRobot 0.4.0) or =omni (0.3.0-era LeKiwi kit):
     diff:  LEX_XLE_BASE_PORT (required), LEX_XLE_BASE_LEFT_ID / _RIGHT_ID (default 1/2),
@@ -243,32 +253,62 @@ class _HwArm:
         self.config = SO101FollowerConfig(**cfg_kwargs)
         self.follower = SO101Follower(self.config)
         self.follower.connect(calibrate=False)
+        self._kinematics = self._make_kinematics()
         self._ik = self._make_ik()
+
+    def _make_kinematics(self):
+        """Best-effort: build lerobot's placo-based RobotKinematics for this
+        arm. lerobot >=0.5 no longer builds this into the robot object (it
+        was `self.follower.kinematics` on 0.4.4) — the caller now has to
+        supply a URDF explicitly, so this needs LEX_XLE_URDF_PATH and the
+        `placo` extra (`pip install "lerobot[kinematics]"`). Returns None
+        (no URDF configured, or this lerobot install's kinematics module
+        doesn't match) — _make_ik/_forward_kinematics_ee degrade from there."""
+        urdf_path = os.environ.get("LEX_XLE_URDF_PATH")
+        if not urdf_path:
+            return None
+        try:
+            from lerobot.model.kinematics import RobotKinematics
+            target_frame = os.environ.get("LEX_XLE_URDF_TARGET_FRAME", "gripper_frame_link")
+            return RobotKinematics(urdf_path=urdf_path, target_frame_name=target_frame, joint_names=ARM_JOINTS)
+        except Exception:
+            return None
 
     def _make_ik(self):
         """Best-effort: wire up LeRobot's own FK/IK processor for the arm so
-        move_arm can command Cartesian (x,y,z) targets. If the installed
-        lerobot's kinematics module doesn't match, IK is unavailable and
-        move_arm fails loudly per-call instead of silently no-op'ing."""
+        move_arm can command Cartesian (x,y,z) targets. If no kinematics
+        model was built (see _make_kinematics) or the installed lerobot's IK
+        module doesn't match, IK is unavailable and move_arm fails loudly
+        per-call instead of silently no-op'ing."""
+        if self._kinematics is None:
+            return None
         try:
             from lerobot.robots.so_follower.robot_kinematic_processor import (
                 InverseKinematicsEEToJoints,
             )
-            return InverseKinematicsEEToJoints(motor_names=ARM_JOINTS)
+            return InverseKinematicsEEToJoints(kinematics=self._kinematics, motor_names=ARM_JOINTS)
         except Exception:
             return None
 
     def _forward_kinematics_ee(self, joints):
-        """Best-effort FK for the settle check in move_to(). Returns an
-        (x, y, z) tuple, or None if this lerobot install's FK entry point
-        doesn't match what we tried — callers must degrade gracefully, not
-        assume this always succeeds."""
+        """Best-effort FK for the settle check in move_to(). *joints* must be
+        keyed like lerobot's own observations (f"{name}.pos" per ARM_JOINTS
+        entry). Returns an (x, y, z) tuple, or None if no kinematics model is
+        available or this lerobot install's FK entry point doesn't match what
+        we tried — callers must degrade gracefully, not assume this always
+        succeeds."""
+        if self._kinematics is None:
+            return None
         try:
             from lerobot.robots.so_follower.robot_kinematic_processor import (
                 compute_forward_kinematics_joints_to_ee,
             )
-            ee = compute_forward_kinematics_joints_to_ee(joints, self.follower.kinematics, ARM_JOINTS)
-            return float(ee["x"]), float(ee["y"]), float(ee["z"])
+            # compute_forward_kinematics_joints_to_ee mutates its input dict
+            # in place (pops the *.pos keys, writes ee.* keys back into the
+            # same object) -- pass a copy so callers keep their own dict
+            # intact.
+            ee = compute_forward_kinematics_joints_to_ee(dict(joints), self._kinematics, ARM_JOINTS)
+            return float(ee["ee.x"]), float(ee["ee.y"]), float(ee["ee.z"])
         except Exception:
             return None
 
@@ -281,22 +321,38 @@ class _HwArm:
     def move_to(self, x, y, z, rx, ry, rz, timeout_s, tol_m):
         if self._ik is None:
             raise HardwareError(
-                "no Cartesian IK available from this lerobot install — the "
-                "`robot_kinematic_processor.InverseKinematicsEEToJoints` import failed "
-                "at connect time. Either upgrade lerobot or drive the arm in joint space."
+                "no Cartesian IK available: either LEX_XLE_URDF_PATH isn't set, `placo` "
+                "isn't installed (`pip install \"lerobot[kinematics]\"`), or this lerobot "
+                "install's `robot_kinematic_processor.InverseKinematicsEEToJoints` doesn't "
+                "match what this sidecar expects. Fix one of those, or drive the arm in "
+                "joint space."
             )
         import time as _time
-        target = {"x": x, "y": y, "z": z, "wx": rx, "wy": ry, "wz": rz, "gripper.pos": None}
+        from lerobot.processor import create_transition, TransitionKey
         deadline = _time.monotonic() + timeout_s
         last_dist = None
         fk_available = True
         while _time.monotonic() < deadline:
             obs = self.follower.get_observation()
-            joint_action = self._ik.action({**target, **obs})
+            # gripper.pos is a required field on the IK step's action dict
+            # (it raises if any of the six ee.* fields is None) even though
+            # move_to doesn't touch the gripper -- feed back the arm's own
+            # current reading so it's a no-op passthrough, not a command.
+            target = {
+                "ee.x": x, "ee.y": y, "ee.z": z,
+                "ee.wx": rx, "ee.wy": ry, "ee.wz": rz,
+                "ee.gripper_pos": obs["gripper.pos"],
+            }
+            # InverseKinematicsEEToJoints is a pipeline step: it reads
+            # self.transition (set by __call__, not by calling .action()
+            # directly) to get at the observation, so it must be invoked as
+            # ik(transition), not ik.action(...).
+            transition = create_transition(observation=obs, action=target)
+            joint_action = self._ik(transition)[TransitionKey.ACTION]
             self.follower.send_action(joint_action)
             _time.sleep(0.05)
             obs = self.follower.get_observation()
-            joints = {j: obs.get(f"{j}.pos", 0.0) for j in ARM_JOINTS}
+            joints = {f"{j}.pos": obs[f"{j}.pos"] for j in ARM_JOINTS}
             ee = self._forward_kinematics_ee(joints)
             if ee is None:
                 fk_available = False
