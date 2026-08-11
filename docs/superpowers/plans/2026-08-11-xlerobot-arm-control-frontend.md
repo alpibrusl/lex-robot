@@ -278,13 +278,89 @@ git commit -m "xlerobot: multi-camera support (head/left/right slots, fix read_c
 ### Task 4: `/control` page
 
 **Files:**
-- Modify: `sidecar/xlerobot_sidecar.py` — add `CONTROL_PAGE_HTML` constant (near `DISPLAY_PAGE_HTML`, currently defined at line 737), add the `/control` route in `Handler.do_GET` (near line 1108-1109).
+- Modify: `sidecar/xlerobot_sidecar.py` — make `LEX_XLE_BASE_PORT` optional in `_bring_up_hardware` (see Step 1), add `CONTROL_PAGE_HTML` constant (near `DISPLAY_PAGE_HTML`, currently defined at line 737), add the `/control` route in `Handler.do_GET` (near line 1108-1109).
 
 **Interfaces:**
 - Consumes: `read_joints`, `read_arm_pose` (Tasks 1-2), `read_camera` (Task 3 — called with `{"name": arm}`, i.e. `"left"`/`"right"`, matching the camera slot names Task 3 wires up), `move_arm`, `grasp_arm`, `release_arm` (existing skills) — all via `POST /skill/<name>`, same-origin `fetch()`.
 - Produces: `GET /control` — serves the page. No other code depends on this.
 
-- [ ] **Step 1: Add the `CONTROL_PAGE_HTML` constant**
+Amendment 2026-08-11: Task 3's implementer confirmed a real, previously-flagged
+risk — `_bring_up_hardware` unconditionally requires `LEX_XLE_BASE_PORT`, and
+this rig has no base motor controller attached at all (only the two arm
+serial ports exist), so the sidecar cannot start in hardware mode without
+Step 1 below. This is the one place in the whole plan that genuinely needs a
+live running server (Step 7 has the user open a real browser against it) —
+unlike Tasks 2-3, there's no direct-component-testing substitute for that.
+
+- [ ] **Step 1: Make `LEX_XLE_BASE_PORT` optional**
+
+Base drive/control stays out of scope for this plan either way (per Global
+Constraints) — this only stops a missing base from blocking sidecar startup,
+matching the same best-effort pattern Task 3 already applied to cameras.
+`read_base`/`move_base` still assume `self._hw_base` is set and will raise
+`AttributeError` if called with no base configured — that's a pre-existing,
+known, still-open gap this step does not fix (out of scope), not something
+to silently paper over.
+
+In `sidecar/xlerobot_sidecar.py`, find `_bring_up_hardware` (currently around
+line 825). Change:
+
+```python
+        left_port = os.environ.get("LEX_XLE_LEFT_PORT")
+        right_port = os.environ.get("LEX_XLE_RIGHT_PORT")
+        base_port = os.environ.get("LEX_XLE_BASE_PORT")
+        if not left_port or not right_port or not base_port:
+            raise SystemExit(
+                "LEX_ROBOT_HW=1 requires LEX_XLE_LEFT_PORT, LEX_XLE_RIGHT_PORT and "
+                "LEX_XLE_BASE_PORT (serial ports for the two SO-101 arms + the base) "
+                "— see SIDECAR.md."
+            )
+```
+
+to:
+
+```python
+        left_port = os.environ.get("LEX_XLE_LEFT_PORT")
+        right_port = os.environ.get("LEX_XLE_RIGHT_PORT")
+        base_port = os.environ.get("LEX_XLE_BASE_PORT")
+        if not left_port or not right_port:
+            raise SystemExit(
+                "LEX_ROBOT_HW=1 requires LEX_XLE_LEFT_PORT and LEX_XLE_RIGHT_PORT "
+                "(serial ports for the two SO-101 arms) — see SIDECAR.md. "
+                "LEX_XLE_BASE_PORT is optional; without it, the base is unavailable "
+                "(read_base/move_base will fail if called)."
+            )
+```
+
+Then find where `self._hw_base` gets constructed a few lines below (the
+`if BASE_MODE == "omni": ... else: ...` block) and wrap it in
+`if base_port:` so it's skipped entirely when no base port is configured:
+
+```python
+            if base_port:
+                if BASE_MODE == "omni":
+                    self._hw_base = _HwOmniBase(base_port, os.environ.get("LEX_XLE_BASE_ID", "xle_base"))
+                else:
+                    self._hw_base = _HwDiffBase(
+                        base_port,
+                        int(os.environ.get("LEX_XLE_BASE_LEFT_ID", "1")),
+                        int(os.environ.get("LEX_XLE_BASE_RIGHT_ID", "2")),
+                        float(os.environ.get("LEX_XLE_WHEEL_RADIUS_M", "0.05")),
+                        float(os.environ.get("LEX_XLE_TRACK_WIDTH_M", "0.30")),
+                    )
+```
+
+(`self._hw_base` already defaults to `None` in `__init__`, before
+`_bring_up_hardware` runs — confirm this before assuming it, since the fix
+relies on that existing default rather than setting one here.)
+
+- [ ] **Step 2: Syntax-check and re-run the test suite**
+
+Run: `python3 -c "import ast; ast.parse(open('sidecar/xlerobot_sidecar.py').read())" && echo OK`
+Run: `cd sidecar && python3 -m pytest test_xlerobot_hw.py -v`
+Expected: `OK`, and all 20 tests still passing (this change isn't exercised by any stub-tier test, so the count shouldn't move).
+
+- [ ] **Step 3: Add the `CONTROL_PAGE_HTML` constant**
 
 In `sidecar/xlerobot_sidecar.py`, right after the `DISPLAY_PAGE_HTML = """..."""` constant closes (line 778), add:
 
@@ -509,7 +585,7 @@ setInterval(poll, 500);
 </body></html>"""
 ```
 
-- [ ] **Step 2: Register the route**
+- [ ] **Step 4: Register the route**
 
 In `Handler.do_GET`, right after:
 ```python
@@ -522,12 +598,12 @@ add:
             return self._send_bytes(200, "text/html; charset=utf-8", CONTROL_PAGE_HTML.encode())
 ```
 
-- [ ] **Step 3: Syntax-check**
+- [ ] **Step 5: Syntax-check**
 
 Run: `python3 -c "import ast; ast.parse(open('sidecar/xlerobot_sidecar.py').read())" && echo OK`
 Expected: `OK`
 
-- [ ] **Step 4: Smoke-test the route against the stub tier**
+- [ ] **Step 6: Smoke-test the route against the stub tier**
 
 ```bash
 cd /home/alpibru/workspace/alpibrusl/lex-robot && source .venv/bin/activate
@@ -549,7 +625,7 @@ Expected:
 - `{"outcome":"reached","detail":"left arm EE at (0.30,0.00,0.20)"}`
 - `{"width":640,"height":480,"jpeg_b64":""}` (stub tier's fixed placeholder — empty `jpeg_b64` is correct here, not a bug; the stub never encodes a real image)
 
-- [ ] **Step 5: Verify against real hardware, with the user watching**
+- [ ] **Step 7: Verify against real hardware, with the user watching**
 
 This is the one step that needs the user physically present, same as every other hardware test this session — do not run it unattended. Start the sidecar in hardware mode. This shell session's process predates the `video` group being added to this user (same issue as Task 3 Step 6) — wrap the whole thing in `sg video -c '...'`, or a fresh terminal works too:
 
@@ -568,7 +644,7 @@ LEX_XLE_LEFT_PORT=/dev/ttyACM0 LEX_XLE_RIGHT_PORT=/dev/ttyACM1 \
 
 Have the user open `http://127.0.0.1:8900/control`, confirm both connection dots go green, joint values update live, both camera panels show a live image (not the "camera unavailable" placeholder), then check "Enable control" and try one jog button and one gripper button on each arm while watching the physical arms — same "did you see it move" confirmation loop used throughout this session.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add sidecar/xlerobot_sidecar.py
@@ -623,6 +699,6 @@ git commit -m "docs: document read_arm_pose skill, multi-camera slots, and /cont
 ## Self-Review Notes
 
 - **Spec coverage:** `read_arm_pose` (Tasks 1-2), multi-camera backend (Task 3, added by the 2026-08-11 amendment), `/control` page with joints/pose/camera/jog/gripper/gate (Task 4), docs (Task 5) — all spec sections, including the amendment, have a task. Out-of-scope items (per-joint jog, base, new safety mechanisms) are explicitly excluded, not silently dropped. Camera was originally out of scope and is now in via the amendment — the plan's Global Constraints and this note both say so rather than silently absorbing the change.
-- **Placeholder scan:** clean — no TBD/TODO; the one open question (whether `LEX_XLE_BASE_PORT` is required by arg parsing even though the base is out of scope) is called out explicitly as something to check during Task 4 Step 5, not glossed over.
+- **Placeholder scan:** clean — no TBD/TODO. The `LEX_XLE_BASE_PORT` question flagged in the original plan turned out to be a real blocker (confirmed by Task 3's implementer: this rig has no base attached, so the sidecar couldn't start in hardware mode at all) — resolved by Task 4 Step 1, not left as an unresolved "check this" note.
 - **Type consistency:** `read_arm_pose` returns `{"ok": bool, "x","y","z"}` or `{"ok": False, "detail": str}` consistently across the stub (Task 1), hardware (Task 2), and frontend (Task 4, which checks `pose.ok` and reads `pose.detail`). `_HwArm.read_pose()` and `XLeRobot.read_arm_pose()` names match what Task 1's stub branch calls (`self._hw_arms[...].read_pose()`). `read_camera` returns `{"width","height","jpeg_b64"}` on success or `{"error": str}` on failure, reusing this file's existing error-shape convention rather than inventing a new one; Task 4's frontend checks `cam.jpeg_b64` truthiness and falls back to `cam.error`, consistent with that shape.
-- **New in this amendment:** Task 3 (multi-camera backend) is a real behavior change, not purely additive — hardware-tier startup no longer hard-fails if a configured camera can't open (best-effort per slot, matching the existing kinematics degrade pattern). This is called out explicitly in Task 3's body and the spec amendment, not slipped in silently.
+- **New in this amendment:** Task 3 (multi-camera backend) is a real behavior change, not purely additive — hardware-tier startup no longer hard-fails if a configured camera can't open (best-effort per slot, matching the existing kinematics degrade pattern). Task 4 Step 1 extends the same "don't hard-fail startup" treatment to the base port specifically to unblock real hardware verification on this rig. Both are called out explicitly, not slipped in silently. `read_base`/`move_base` still assume a base is configured and will `AttributeError` if called with none — a pre-existing, now-slightly-more-reachable gap, explicitly named as out of scope rather than fixed here.
