@@ -100,8 +100,15 @@ Base — LEX_XLE_BASE=diff (default, XLeRobot 0.4.0) or =omni (0.3.0-era LeKiwi 
            the real LeKiwi 3-omni-wheel base via lerobot.robots.lekiwi
     Both:  LEX_XLE_BASE_TIMEOUT_S (default 20)
 
-Camera:
-    LEX_XLE_CAMERA_INDEX   OpenCV camera index (default 0)
+Camera — up to three independent, best-effort slots ("head", "left", "right");
+each is only opened if its env var is set, and a slot that fails to open
+(missing device, wrong index, etc.) just stays unavailable rather than
+crashing the sidecar:
+    LEX_XLE_CAMERA_HEAD_INDEX   OpenCV index for the "head" camera
+    LEX_XLE_CAMERA_LEFT_INDEX   OpenCV index for the "left" camera
+    LEX_XLE_CAMERA_RIGHT_INDEX  OpenCV index for the "right" camera
+    LEX_XLE_CAMERA_INDEX        legacy alias for LEX_XLE_CAMERA_HEAD_INDEX
+                                 (used if LEX_XLE_CAMERA_HEAD_INDEX is unset)
 
 Mic + local transcription (only imported if `listen` is actually called):
     LEX_XLE_MIC_DEVICE     sounddevice input device index/name (default: system default)
@@ -799,7 +806,7 @@ class XLeRobot:
     def __init__(self):
         self._hw_arms = {}
         self._hw_base = None
-        self._hw_camera = None
+        self._hw_cameras = {}
         self.base = {"x": 0.0, "y": 0.0, "heading": 0.0}
         self.arms = {
             "left": {"positions": [0.0] * 6, "holding": False},
@@ -840,7 +847,6 @@ class XLeRobot:
                     float(os.environ.get("LEX_XLE_WHEEL_RADIUS_M", "0.05")),
                     float(os.environ.get("LEX_XLE_TRACK_WIDTH_M", "0.30")),
                 )
-            self._hw_camera = _HwCamera(int(os.environ.get("LEX_XLE_CAMERA_INDEX", "0")))
         except HardwareError as e:
             self._disconnect_partial()
             raise SystemExit(f"XLeRobot hardware bring-up failed: {e}") from e
@@ -848,14 +854,28 @@ class XLeRobot:
             self._disconnect_partial()
             raise
 
+        self._hw_cameras = {}
+        camera_env_vars = {
+            "head": os.environ.get("LEX_XLE_CAMERA_HEAD_INDEX", os.environ.get("LEX_XLE_CAMERA_INDEX")),
+            "left": os.environ.get("LEX_XLE_CAMERA_LEFT_INDEX"),
+            "right": os.environ.get("LEX_XLE_CAMERA_RIGHT_INDEX"),
+        }
+        for cam_name, index_str in camera_env_vars.items():
+            if index_str is None:
+                continue
+            try:
+                self._hw_cameras[cam_name] = _HwCamera(int(index_str))
+            except Exception as e:
+                print(f"[xlerobot] camera '{cam_name}' (index {index_str}) unavailable: {e}")
+
     def _disconnect_partial(self):
         """Leave nothing energized behind on a failed bring-up."""
         for a in self._hw_arms.values():
             a.disconnect()
         if self._hw_base is not None:
             self._hw_base.disconnect()
-        if self._hw_camera is not None:
-            self._hw_camera.disconnect()
+        for c in self._hw_cameras.values():
+            c.disconnect()
 
     def reset(self):
         self.base = {"x": 0.0, "y": 0.0, "heading": 0.0}
@@ -889,7 +909,10 @@ class XLeRobot:
 
     def read_camera(self, name):
         if USE_HW:
-            return self._hw_camera.read()
+            cam = self._hw_cameras.get(name)
+            if cam is None:
+                return {"error": f"camera '{name}' not configured or unavailable"}
+            return cam.read()
         return {"width": 640, "height": 480, "jpeg_b64": ""}
 
     def listen(self, seconds):
@@ -925,8 +948,15 @@ class XLeRobot:
 
     def scan_qr(self):
         if USE_HW:
+            cam = self._hw_cameras.get("head")
+            if cam is None:
+                # Same "nothing found" outcome shape _hw_scan_qr itself
+                # returns (payload/detail, no "error" key) rather than a new
+                # error shape — see read_camera's "not configured" case for
+                # the /skill/read_camera-side wording of the same fact.
+                return {"payload": "", "detail": "camera 'head' not configured or unavailable"}
             timeout_s = float(os.environ.get("LEX_XLE_QR_SCAN_TIMEOUT_S", "5"))
-            return _hw_scan_qr(self._hw_camera, timeout_s)
+            return _hw_scan_qr(cam, timeout_s)
         return {"payload": self._qr_payload}
 
     # ---- general-purpose display (image/video/webpage/text) --------------
