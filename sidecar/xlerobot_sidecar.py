@@ -797,6 +797,225 @@ poll();
 setInterval(poll, 1000);
 </script></body></html>"""
 
+CONTROL_PAGE_HTML = """<!doctype html>
+<html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>lex-robot arm control</title>
+<style>
+  :root {
+    --bg:#0a0a1a; --bg2:#0f0f2a; --bg3:#141430; --border:#1e2050;
+    --text:#d0d8f0; --muted:#5a6080; --cyan:#22d3ee; --yellow:#fbbf24;
+    --lime:#4ade80; --red:#f87171;
+  }
+  * { box-sizing: border-box; }
+  html,body { margin:0; padding:0; background:var(--bg); color:var(--text);
+              font-family:'Courier New',Courier,monospace; font-size:13px; }
+  header { background:var(--bg2); border-bottom:1px solid var(--border);
+           padding:10px 16px; display:flex; align-items:center; gap:12px; }
+  header h1 { font-size:14px; color:var(--cyan); letter-spacing:.08em; margin:0; }
+  #gate { margin-left:auto; display:flex; align-items:center; gap:6px; }
+  #notice { padding:8px 16px; color:var(--muted); font-size:11px; border-bottom:1px solid var(--border); }
+  #arms { display:grid; grid-template-columns:1fr 1fr; gap:1px; background:var(--border); }
+  @media (max-width: 700px) { #arms { grid-template-columns:1fr; } }
+  .panel { background:var(--bg); padding:14px 16px; }
+  .panel h2 { font-size:13px; color:var(--cyan); margin:0 0 10px; display:flex; align-items:center; gap:8px; }
+  .dot { width:8px; height:8px; border-radius:50%; background:var(--red); flex-shrink:0; }
+  .dot.ok { background:var(--lime); }
+  table.joints { width:100%; border-collapse:collapse; margin-bottom:12px; }
+  table.joints td { padding:2px 4px; border-bottom:1px solid var(--border); font-size:12px; }
+  table.joints td:first-child { color:var(--muted); }
+  .pose { margin-bottom:12px; font-size:12px; }
+  .pose .unavail { color:var(--yellow); }
+  .axis-row { display:flex; align-items:center; gap:8px; margin-bottom:6px; }
+  .axis-row label { width:14px; color:var(--muted); }
+  .axis-row button { width:28px; height:24px; background:var(--bg3); color:var(--text);
+                      border:1px solid var(--border); cursor:pointer; }
+  .axis-row button:disabled { opacity:.35; cursor:not-allowed; }
+  .step-row, .gripper-row { display:flex; align-items:center; gap:8px; margin:10px 0; }
+  .step-row input, .gripper-row input { width:64px; background:var(--bg3); color:var(--text);
+                                         border:1px solid var(--border); padding:2px 4px; }
+  .gripper-row button { background:var(--bg3); color:var(--text); border:1px solid var(--border);
+                         padding:4px 10px; cursor:pointer; }
+  .gripper-row button:disabled { opacity:.35; cursor:not-allowed; }
+  .status { margin-top:10px; font-size:11px; color:var(--muted); min-height:14px; }
+  .camera { width:100%; aspect-ratio:4/3; background:var(--bg3); border:1px solid var(--border);
+            margin-bottom:12px; display:flex; align-items:center; justify-content:center;
+            overflow:hidden; }
+  .camera img { width:100%; height:100%; object-fit:contain; display:block; }
+  .camera .unavail { color:var(--muted); font-size:11px; padding:8px; text-align:center; }
+</style></head>
+<body>
+<header>
+  <h1>XLEROBOT ARM CONTROL</h1>
+  <div id="gate"><input type="checkbox" id="enable"><label for="enable">Enable control</label></div>
+</header>
+<div id="notice">"Enable control" only gates this page's buttons -- it is not a
+  safety system. The sidecar's own joint clamp, Lex grants, and the hardware
+  e-stop are the real safety boundary.</div>
+<div id="arms">
+  <div class="panel" data-arm="left">
+    <h2><span class="dot" id="dot-left"></span>LEFT ARM</h2>
+    <div class="camera" id="camera-left"><span class="unavail">camera: --</span></div>
+    <table class="joints" id="joints-left"></table>
+    <div class="pose" id="pose-left">pose: --</div>
+    <div id="jog-left"></div>
+    <div class="step-row">step (m) <input type="number" id="step-left" value="0.01" step="0.005" min="0.001"></div>
+    <div class="gripper-row">
+      <button id="open-left" disabled>Open</button>
+      <button id="close-left" disabled>Close</button>
+      force (N) <input type="number" id="force-left" value="10" min="0">
+    </div>
+    <div class="status" id="status-left"></div>
+  </div>
+  <div class="panel" data-arm="right">
+    <h2><span class="dot" id="dot-right"></span>RIGHT ARM</h2>
+    <div class="camera" id="camera-right"><span class="unavail">camera: --</span></div>
+    <table class="joints" id="joints-right"></table>
+    <div class="pose" id="pose-right">pose: --</div>
+    <div id="jog-right"></div>
+    <div class="step-row">step (m) <input type="number" id="step-right" value="0.01" step="0.005" min="0.001"></div>
+    <div class="gripper-row">
+      <button id="open-right" disabled>Open</button>
+      <button id="close-right" disabled>Close</button>
+      force (N) <input type="number" id="force-right" value="10" min="0">
+    </div>
+    <div class="status" id="status-right"></div>
+  </div>
+</div>
+<script>
+const ARMS = ["left", "right"];
+const AXES = ["x", "y", "z"];
+let enabled = false;
+let lastPose = {left: null, right: null};
+let busy = {left: false, right: false};
+
+document.getElementById('enable').addEventListener('change', (e) => {
+  enabled = e.target.checked;
+  updateButtonStates();
+});
+
+function updateButtonStates() {
+  for (const arm of ARMS) {
+    const disable = !enabled || busy[arm] || !lastPose[arm];
+    document.querySelectorAll(`#jog-${arm} button`).forEach(b => b.disabled = disable);
+    document.getElementById(`open-${arm}`).disabled = !enabled || busy[arm];
+    document.getElementById(`close-${arm}`).disabled = !enabled || busy[arm];
+  }
+}
+
+function buildJogControls() {
+  for (const arm of ARMS) {
+    const container = document.getElementById(`jog-${arm}`);
+    for (const axis of AXES) {
+      const row = document.createElement('div');
+      row.className = 'axis-row';
+      row.innerHTML = `<label>${axis}</label>` +
+        `<button data-axis="${axis}" data-dir="-1" disabled>-</button>` +
+        `<button data-axis="${axis}" data-dir="1" disabled>+</button>`;
+      container.appendChild(row);
+    }
+    container.querySelectorAll('button').forEach(btn => {
+      btn.addEventListener('click', () => jog(arm, btn.dataset.axis, parseFloat(btn.dataset.dir)));
+    });
+  }
+}
+
+async function jog(arm, axis, dir) {
+  if (!enabled || busy[arm] || !lastPose[arm]) return;
+  const step = parseFloat(document.getElementById(`step-${arm}`).value) || 0.01;
+  const target = {x: lastPose[arm].x, y: lastPose[arm].y, z: lastPose[arm].z};
+  target[axis] += dir * step;
+  busy[arm] = true; updateButtonStates();
+  try {
+    const r = await fetch('/skill/move_arm', {
+      method: 'POST',
+      body: JSON.stringify({arm, x: target.x, y: target.y, z: target.z}),
+    });
+    const j = await r.json();
+    document.getElementById(`status-${arm}`).textContent = `${j.outcome}: ${j.detail || ''}`;
+  } catch (e) {
+    document.getElementById(`status-${arm}`).textContent = 'command failed (sidecar unreachable)';
+  } finally {
+    busy[arm] = false; updateButtonStates();
+  }
+}
+
+async function gripperCmd(arm, action) {
+  if (!enabled || busy[arm]) return;
+  busy[arm] = true; updateButtonStates();
+  try {
+    let body, skill;
+    if (action === 'open') {
+      skill = 'release_arm'; body = {arm};
+    } else {
+      skill = 'grasp_arm';
+      const force = parseFloat(document.getElementById(`force-${arm}`).value) || 10;
+      body = {arm, force};
+    }
+    const r = await fetch(`/skill/${skill}`, {method: 'POST', body: JSON.stringify(body)});
+    const j = await r.json();
+    document.getElementById(`status-${arm}`).textContent = `${j.outcome}: ${j.detail || ''}`;
+  } catch (e) {
+    document.getElementById(`status-${arm}`).textContent = 'command failed (sidecar unreachable)';
+  } finally {
+    busy[arm] = false; updateButtonStates();
+  }
+}
+
+for (const arm of ARMS) {
+  document.getElementById(`open-${arm}`).addEventListener('click', () => gripperCmd(arm, 'open'));
+  document.getElementById(`close-${arm}`).addEventListener('click', () => gripperCmd(arm, 'close'));
+}
+
+async function pollArm(arm) {
+  try {
+    const [jr, pr, cr] = await Promise.all([
+      fetch('/skill/read_joints', {method: 'POST', body: JSON.stringify({arm})}),
+      fetch('/skill/read_arm_pose', {method: 'POST', body: JSON.stringify({arm})}),
+      fetch('/skill/read_camera', {method: 'POST', body: JSON.stringify({name: arm})}),
+    ]);
+    const joints = await jr.json();
+    const pose = await pr.json();
+    const cam = await cr.json();
+
+    document.getElementById(`dot-${arm}`).classList.add('ok');
+
+    const table = document.getElementById(`joints-${arm}`);
+    table.innerHTML = joints.names.map((n, i) =>
+      `<tr><td>${n}</td><td>${joints.positions[i].toFixed(2)}</td></tr>`).join('');
+
+    const poseEl = document.getElementById(`pose-${arm}`);
+    if (pose.ok) {
+      poseEl.innerHTML = `pose: x=${pose.x.toFixed(3)} y=${pose.y.toFixed(3)} z=${pose.z.toFixed(3)}`;
+      lastPose[arm] = pose;
+    } else {
+      poseEl.innerHTML = `<span class="unavail">pose unavailable: ${pose.detail || 'n/a'}</span>`;
+      lastPose[arm] = null;
+    }
+
+    const camEl = document.getElementById(`camera-${arm}`);
+    if (cam.jpeg_b64) {
+      camEl.innerHTML = `<img src="data:image/jpeg;base64,${cam.jpeg_b64}">`;
+    } else {
+      camEl.innerHTML = `<span class="unavail">camera unavailable: ${cam.error || 'no frame'}</span>`;
+    }
+  } catch (e) {
+    document.getElementById(`dot-${arm}`).classList.remove('ok');
+    lastPose[arm] = null;
+  }
+  updateButtonStates();
+}
+
+function poll() {
+  for (const arm of ARMS) pollArm(arm);
+}
+
+buildJogControls();
+poll();
+setInterval(poll, 500);
+</script>
+</body></html>"""
+
 
 class XLeRobot:
     """Thin wrapper around either the real hardware (arms/base/camera/mic) or
@@ -826,27 +1045,29 @@ class XLeRobot:
         left_port = os.environ.get("LEX_XLE_LEFT_PORT")
         right_port = os.environ.get("LEX_XLE_RIGHT_PORT")
         base_port = os.environ.get("LEX_XLE_BASE_PORT")
-        if not left_port or not right_port or not base_port:
+        if not left_port or not right_port:
             raise SystemExit(
-                "LEX_ROBOT_HW=1 requires LEX_XLE_LEFT_PORT, LEX_XLE_RIGHT_PORT and "
-                "LEX_XLE_BASE_PORT (serial ports for the two SO-101 arms + the base) "
-                "— see SIDECAR.md."
+                "LEX_ROBOT_HW=1 requires LEX_XLE_LEFT_PORT and LEX_XLE_RIGHT_PORT "
+                "(serial ports for the two SO-101 arms) — see SIDECAR.md. "
+                "LEX_XLE_BASE_PORT is optional; without it, the base is unavailable "
+                "(read_base/move_base will fail if called)."
             )
         max_rel = os.environ.get("LEX_XLE_MAX_REL_TARGET")
         max_rel = float(max_rel) if max_rel else None
         try:
             self._hw_arms["left"] = _HwArm("left", left_port, os.environ.get("LEX_XLE_LEFT_ID", "xle_left"), max_rel)
             self._hw_arms["right"] = _HwArm("right", right_port, os.environ.get("LEX_XLE_RIGHT_ID", "xle_right"), max_rel)
-            if BASE_MODE == "omni":
-                self._hw_base = _HwOmniBase(base_port, os.environ.get("LEX_XLE_BASE_ID", "xle_base"))
-            else:
-                self._hw_base = _HwDiffBase(
-                    base_port,
-                    int(os.environ.get("LEX_XLE_BASE_LEFT_ID", "1")),
-                    int(os.environ.get("LEX_XLE_BASE_RIGHT_ID", "2")),
-                    float(os.environ.get("LEX_XLE_WHEEL_RADIUS_M", "0.05")),
-                    float(os.environ.get("LEX_XLE_TRACK_WIDTH_M", "0.30")),
-                )
+            if base_port:
+                if BASE_MODE == "omni":
+                    self._hw_base = _HwOmniBase(base_port, os.environ.get("LEX_XLE_BASE_ID", "xle_base"))
+                else:
+                    self._hw_base = _HwDiffBase(
+                        base_port,
+                        int(os.environ.get("LEX_XLE_BASE_LEFT_ID", "1")),
+                        int(os.environ.get("LEX_XLE_BASE_RIGHT_ID", "2")),
+                        float(os.environ.get("LEX_XLE_WHEEL_RADIUS_M", "0.05")),
+                        float(os.environ.get("LEX_XLE_TRACK_WIDTH_M", "0.30")),
+                    )
         except HardwareError as e:
             self._disconnect_partial()
             raise SystemExit(f"XLeRobot hardware bring-up failed: {e}") from e
@@ -1159,6 +1380,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"ok": True, "hardware": USE_HW, "base": ROBOT.base})
         if path == "/display":
             return self._send_bytes(200, "text/html; charset=utf-8", DISPLAY_PAGE_HTML.encode())
+        if path == "/control":
+            return self._send_bytes(200, "text/html; charset=utf-8", CONTROL_PAGE_HTML.encode())
         if path == "/display/state":
             return self._send(200, ROBOT.display.to_json())
         if path == "/display/content":
