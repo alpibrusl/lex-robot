@@ -978,8 +978,14 @@ async function pollArm(arm) {
     // concurrently (it isn't thread-safe on hardware).
     const jr = await fetch('/skill/read_joints', {method: 'POST', body: JSON.stringify({arm})});
     const joints = await jr.json();
+    // Re-check busy[arm] between each bus-touching call: a jog/gripper click
+    // can land after this tick already started (busy[arm] is set
+    // synchronously at click time), so bail before issuing another request
+    // into the same arm's bus while a move/grasp/release is now in flight.
+    if (busy[arm]) return;
     const pr = await fetch('/skill/read_arm_pose', {method: 'POST', body: JSON.stringify({arm})});
     const pose = await pr.json();
+    if (busy[arm]) return;
     const cr = await fetch('/skill/read_camera', {method: 'POST', body: JSON.stringify({name: arm})});
     const cam = await cr.json();
 
