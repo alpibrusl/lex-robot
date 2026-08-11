@@ -133,3 +133,20 @@ def test_render_qr_feeds_the_shared_display_on_stub_tier_too():
     robot = XLeRobot()
     robot.render_qr("payload")
     assert robot.display.kind == "blank"
+
+
+def test_read_arm_pose_stub_matches_last_moved_position():
+    robot = XLeRobot()
+    robot.move_arm("left", 0.3, 0.1, 0.2)
+    assert robot.read_arm_pose("left") == {"ok": True, "x": 0.3, "y": 0.1, "z": 0.2}
+
+
+def test_read_arm_pose_stub_unknown_arm_falls_back_to_left():
+    robot = XLeRobot()
+    robot.move_arm("left", 0.25, 0.05, 0.15)
+    assert robot.read_arm_pose("nonsense") == {"ok": True, "x": 0.25, "y": 0.05, "z": 0.15}
+
+
+def test_read_arm_pose_stub_defaults_to_origin_before_any_move():
+    robot = XLeRobot()
+    assert robot.read_arm_pose("right") == {"ok": True, "x": 0.0, "y": 0.0, "z": 0.0}

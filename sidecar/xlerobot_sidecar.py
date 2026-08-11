@@ -806,6 +806,13 @@ class XLeRobot:
             "velocities": [0.0] * 6,
         }
 
+    def read_arm_pose(self, arm):
+        if USE_HW:
+            return self._hw_arms[arm if arm in self._hw_arms else "left"].read_pose()
+        a = self.arms.get(arm, self.arms["left"])
+        x, y, z = a["positions"][:3]
+        return {"ok": True, "x": x, "y": y, "z": z}
+
     def read_base(self):
         if USE_HW:
             return self._hw_base.read()
@@ -970,6 +977,8 @@ def handle_skill(name, args):
         return ROBOT.reset()
     if name == "read_joints":
         return ROBOT.read_joints(args.get("arm", "left"))
+    if name == "read_arm_pose":
+        return ROBOT.read_arm_pose(args.get("arm", "left"))
     if name == "read_base":
         return ROBOT.read_base()
     if name == "read_camera":
