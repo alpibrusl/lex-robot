@@ -320,7 +320,7 @@ class _HwArm:
 
     def read_pose(self):
         obs = self.follower.get_observation()
-        joints = {f"{j}.pos": obs[f"{j}.pos"] for j in ARM_JOINTS}
+        joints = {f"{j}.pos": obs.get(f"{j}.pos", 0.0) for j in ARM_JOINTS}
         ee = self._forward_kinematics_ee(joints)
         if ee is None:
             return {
