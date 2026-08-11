@@ -27,11 +27,15 @@ Out of scope (explicitly deferred, not because they're hard, but to keep this
 change small and reviewable):
 - Per-joint jogging (would need a new `move_joint` skill — the existing skill
   surface only does Cartesian moves; see DESIGN.md's XLeRobot section).
-- Base drive controls and the camera feed.
+- Base drive controls.
 - Any new physical safety mechanism (e-stop skill, etc.) — this UI is a
   convenience layer on top of the sidecar's existing defense-in-depth
   (`LEX_XLE_MAX_REL_TARGET` clamp, Lex grants, hardware e-stop), not a
   replacement for it.
+
+(The camera feed was originally deferred too, but see the amendment below —
+the user connected two cameras mid-implementation and asked for them to be
+shown on the page, so this is now in scope.)
 
 ## Backend change: `read_arm_pose`
 
@@ -114,3 +118,67 @@ change this session was verified), then manually drive the `/control` page
 in a browser against the live sidecar (both arms, jog on a few axes, open/
 close gripper, reload mid-session to confirm the poll loop and the disabled-
 by-default gate both behave) before calling it done.
+
+## Amendment 2026-08-11: multi-camera support
+
+The user connected two USB cameras (via a hub, alongside the two arms) mid-
+implementation and asked for their images to be shown on the control page.
+XLeRobot's canonical hardware has up to three cameras (left arm, right arm,
+head/center); this rig has left+right physically connected now (confirmed
+working: `/dev/video4` and `/dev/video6`, both real UVC capture nodes —
+`/dev/video5`/`/dev/video7` are secondary nodes on the same two physical
+cameras, not separate cameras), no head camera yet.
+
+This is a genuine scope change from the original design, not an extension of
+something already planned — the original brainstorming Q&A explicitly chose
+"arms only" and deferred the camera. It's accepted here because the user
+asked for it directly and it fits naturally into the same page.
+
+**A real gap this surfaces:** the sidecar currently supports exactly one
+camera. `self._hw_camera` is built unconditionally from a single
+`LEX_XLE_CAMERA_INDEX` env var (default `"0"`) at hardware connect time —
+if that index can't open, the whole sidecar fails to start, not just the
+camera skill. `read_camera`'s `name` argument is accepted but completely
+ignored; it always returns that one camera regardless of what name was
+asked for. Supporting left/right (and future head) requires fixing this,
+not just adding an `<img>` tag.
+
+### Backend change: multi-camera slots
+
+Replace the single eager `self._hw_camera` with per-slot, best-effort
+construction — matching the pattern `_HwArm._make_kinematics()` already
+uses for degrading gracefully instead of crashing sidecar startup:
+
+- Three optional env vars: `LEX_XLE_CAMERA_HEAD_INDEX`,
+  `LEX_XLE_CAMERA_LEFT_INDEX`, `LEX_XLE_CAMERA_RIGHT_INDEX`. None are
+  required. `LEX_XLE_CAMERA_INDEX` (the old single-camera var) is kept as a
+  fallback alias for `LEX_XLE_CAMERA_HEAD_INDEX`, for backward compatibility
+  with anyone already setting it.
+- `self._hw_cameras: dict[str, _HwCamera]`, populated only for slots whose
+  env var is actually set. A slot whose camera fails to open is logged and
+  skipped (best-effort), not a fatal error — one bad/missing camera must not
+  prevent the arms (or the other cameras) from working. This is a real
+  behavior change from today's "camera index 0 required or startup fails" —
+  worth calling out explicitly since it's a correctness fix riding along
+  with the feature, not purely additive.
+- `XLeRobot.read_camera(name)` dispatches to `self._hw_cameras.get(name)`.
+  Unknown/unconfigured/unavailable name returns `{"error": "camera '<name>'
+  not configured or unavailable"}` — reusing this file's existing
+  `{"error": ...}` convention (already used for unknown skill names in
+  `handle_skill`) rather than inventing a new response shape. The success
+  shape (`{"width","height","jpeg_b64"}`) is unchanged.
+- Stub tier is unchanged (already ignores `name` and returns a fixed
+  placeholder — consistent with the honest-simulation pattern used
+  elsewhere at this tier; no per-camera distinction needed there).
+
+### Frontend change: camera panels
+
+Each arm panel on `/control` gains a small image element showing that
+camera's most recent frame (`<img>` with a `data:image/jpeg;base64,...`
+src), polled at the same 500ms cadence as `read_joints`/`read_arm_pose` for
+that arm. If `read_camera` returns `{"error": ...}` (camera not connected —
+expected for "head", always, on this rig), the panel shows that detail
+as text instead of a broken image, the same fail-soft spirit as the
+connection dot. This does not add a third "head" panel — only left/right
+are wired into the page layout for now; head can be added later the same
+way once that camera exists.

@@ -15,7 +15,12 @@
 - `read_arm_pose` must work on all three tiers the sidecar supports (stub, and hardware — MuJoCo sim isn't part of this file, so only those two matter here).
 - The page's "Enable control" checkbox is a **client-side-only** convenience gate, not a safety system — the page must say so explicitly in visible text. It must not be implemented as, or described as, a substitute for the sidecar's existing `LEX_XLE_MAX_REL_TARGET` clamp, Lex grants, or hardware e-stop.
 - Docs (`SIDECAR.md`, the module docstring) are updated last, after the code is written and verified — not before (this repo's established convention: code first, then docs, no aspirational doc edits).
-- Per-joint jogging, base controls, and the camera feed are explicitly out of scope — don't add them.
+- Per-joint jogging and base controls are explicitly out of scope — don't add them.
+- **Amendment 2026-08-11** (see the spec's "Amendment" section): the camera
+  feed, originally deferred, is now in scope — the user connected left/right
+  cameras mid-implementation and asked for them on the page. This added
+  Task 3 (multi-camera backend) below and expanded what's now Task 4 (the
+  page) to include camera panels; the rest of the plan is unchanged.
 
 ---
 
@@ -166,13 +171,117 @@ git commit -m "xlerobot: add read_arm_pose skill (hardware tier)"
 
 ---
 
-### Task 3: `/control` page
+### Task 3: Multi-camera backend
+
+**Files:**
+- Modify: `sidecar/xlerobot_sidecar.py` — replace the single eager `self._hw_camera` with per-slot best-effort cameras; fix `read_camera` to dispatch by name.
+
+**Interfaces:**
+- Consumes: `_HwCamera` (existing class, unchanged — `_HwCamera(index)` raises on failure, `.read()` returns `{"width","height","jpeg_b64"}`, `.disconnect()`).
+- Produces: `XLeRobot.read_camera(self, name) -> dict` — `{"width","height","jpeg_b64"}` on success, `{"error": str}` when `name` isn't a configured/available camera. Consumed by Task 4's frontend.
+
+Amendment 2026-08-11 (see spec's "Amendment" section): this task exists
+because the user connected two real cameras and the existing single-camera
+code can't address them by name. This also fixes a latent fragility: today,
+hardware-tier startup unconditionally tries to open camera index 0 and
+crashes the whole sidecar if it fails — camera construction becomes
+best-effort per slot instead.
+
+- [ ] **Step 1: Replace the single-camera construction with per-slot best-effort construction**
+
+Find where `self._hw_camera` is currently built unconditionally (search for `self._hw_camera = _HwCamera(int(os.environ.get("LEX_XLE_CAMERA_INDEX", "0")))` — inside the `USE_HW` branch of `XLeRobot.__init__`, alongside where `self._hw_arms` and `self._hw_base` are built). Replace it with:
+
+```python
+        self._hw_cameras = {}
+        camera_env_vars = {
+            "head": os.environ.get("LEX_XLE_CAMERA_HEAD_INDEX", os.environ.get("LEX_XLE_CAMERA_INDEX")),
+            "left": os.environ.get("LEX_XLE_CAMERA_LEFT_INDEX"),
+            "right": os.environ.get("LEX_XLE_CAMERA_RIGHT_INDEX"),
+        }
+        for cam_name, index_str in camera_env_vars.items():
+            if index_str is None:
+                continue
+            try:
+                self._hw_cameras[cam_name] = _HwCamera(int(index_str))
+            except Exception as e:
+                print(f"[xlerobot] camera '{cam_name}' (index {index_str}) unavailable: {e}")
+```
+
+Find every other reference to `self._hw_camera` in the file (there is a disconnect path and a `scan_qr` path that use it — search for `_hw_camera` to find them) and update each: the disconnect path should iterate `self._hw_cameras.values()` calling `.disconnect()` on each; the `scan_qr` path (`_hw_scan_qr(self._hw_camera, ...)`) should use a specific named camera — use `self._hw_cameras.get("head")` there, and if that's `None`, return the same "not available" outcome shape `_hw_scan_qr` already returns when the camera itself fails (check `_hw_scan_qr`'s existing signature and current error handling before wiring this — match its existing conventions rather than inventing a new one).
+
+- [ ] **Step 2: Fix `read_camera` to dispatch by name**
+
+Find:
+```python
+    def read_camera(self, name):
+        if USE_HW:
+            return self._hw_camera.read()
+        return {"width": 640, "height": 480, "jpeg_b64": ""}
+```
+
+Replace with:
+```python
+    def read_camera(self, name):
+        if USE_HW:
+            cam = self._hw_cameras.get(name)
+            if cam is None:
+                return {"error": f"camera '{name}' not configured or unavailable"}
+            return cam.read()
+        return {"width": 640, "height": 480, "jpeg_b64": ""}
+```
+
+- [ ] **Step 3: Add the new env vars to the module docstring**
+
+Near the existing `LEX_XLE_CAMERA_INDEX` line in the module docstring, document the three new/renamed env vars (`LEX_XLE_CAMERA_HEAD_INDEX`, `LEX_XLE_CAMERA_LEFT_INDEX`, `LEX_XLE_CAMERA_RIGHT_INDEX`) and note `LEX_XLE_CAMERA_INDEX` still works as an alias for `LEX_XLE_CAMERA_HEAD_INDEX`.
+
+- [ ] **Step 4: Syntax-check**
+
+Run: `python3 -c "import ast; ast.parse(open('sidecar/xlerobot_sidecar.py').read())" && echo OK`
+Expected: `OK`
+
+- [ ] **Step 5: Run the full test suite to confirm no regressions**
+
+Run: `cd sidecar && python3 -m pytest test_xlerobot_hw.py -v`
+Expected: all pre-existing + Task 1's tests still pass (this task doesn't add stub-tier-testable behavior — the stub branch of `read_camera` is untouched).
+
+- [ ] **Step 6: Verify against the real cameras**
+
+```bash
+cd /home/alpibru/workspace/alpibrusl/lex-robot && source .venv/bin/activate
+sg video -c "bash -c '
+LEX_XLE_LEFT_PORT=/dev/ttyACM0 LEX_XLE_RIGHT_PORT=/dev/ttyACM1 \
+  LEX_XLE_URDF_PATH=/home/alpibru/.cache/lex-robot/so-arm100/Simulation/SO101/so101_new_calib.urdf \
+  LEX_XLE_CAMERA_LEFT_INDEX=4 LEX_XLE_CAMERA_RIGHT_INDEX=6 \
+  LEX_ROBOT_HW=1 python3 sidecar/xlerobot_sidecar.py &
+SIDECAR_PID=\$!
+sleep 2
+curl -s -X POST http://127.0.0.1:8900/skill/read_camera -d \"{\\\"name\\\":\\\"left\\\"}\" | head -c 200
+echo
+curl -s -X POST http://127.0.0.1:8900/skill/read_camera -d \"{\\\"name\\\":\\\"right\\\"}\" | head -c 200
+echo
+curl -s -X POST http://127.0.0.1:8900/skill/read_camera -d \"{\\\"name\\\":\\\"head\\\"}\"
+kill \$SIDECAR_PID
+'"
+```
+
+Expected: `left` and `right` each return `{"width":640,"height":480,"jpeg_b64":"..."}` with a long non-empty base64 string; `head` returns `{"error":"camera '"'"'head'"'"' not configured or unavailable"}` (no `LEX_XLE_CAMERA_HEAD_INDEX` set on this rig — expected, not a bug). Note the `sg video -c` wrapper: this shell session's process predates the `video` group being added to this user, so camera opens need the `sg video` wrapper (or a fresh terminal) exactly like the diagnostic session earlier — plain `bash -c` without it will fail with `Permission denied` on `/dev/video4`/`/dev/video6`, not a code problem.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add sidecar/xlerobot_sidecar.py
+git commit -m "xlerobot: multi-camera support (head/left/right slots, fix read_camera dispatch)"
+```
+
+---
+
+### Task 4: `/control` page
 
 **Files:**
 - Modify: `sidecar/xlerobot_sidecar.py` — add `CONTROL_PAGE_HTML` constant (near `DISPLAY_PAGE_HTML`, currently defined at line 737), add the `/control` route in `Handler.do_GET` (near line 1108-1109).
 
 **Interfaces:**
-- Consumes: `read_joints`, `read_arm_pose` (Tasks 1-2), `move_arm`, `grasp_arm`, `release_arm` (existing skills) — all via `POST /skill/<name>`, same-origin `fetch()`.
+- Consumes: `read_joints`, `read_arm_pose` (Tasks 1-2), `read_camera` (Task 3 — called with `{"name": arm}`, i.e. `"left"`/`"right"`, matching the camera slot names Task 3 wires up), `move_arm`, `grasp_arm`, `release_arm` (existing skills) — all via `POST /skill/<name>`, same-origin `fetch()`.
 - Produces: `GET /control` — serves the page. No other code depends on this.
 
 - [ ] **Step 1: Add the `CONTROL_PAGE_HTML` constant**
@@ -221,6 +330,11 @@ CONTROL_PAGE_HTML = """<!doctype html>
                          padding:4px 10px; cursor:pointer; }
   .gripper-row button:disabled { opacity:.35; cursor:not-allowed; }
   .status { margin-top:10px; font-size:11px; color:var(--muted); min-height:14px; }
+  .camera { width:100%; aspect-ratio:4/3; background:var(--bg3); border:1px solid var(--border);
+            margin-bottom:12px; display:flex; align-items:center; justify-content:center;
+            overflow:hidden; }
+  .camera img { width:100%; height:100%; object-fit:contain; display:block; }
+  .camera .unavail { color:var(--muted); font-size:11px; padding:8px; text-align:center; }
 </style></head>
 <body>
 <header>
@@ -233,6 +347,7 @@ CONTROL_PAGE_HTML = """<!doctype html>
 <div id="arms">
   <div class="panel" data-arm="left">
     <h2><span class="dot" id="dot-left"></span>LEFT ARM</h2>
+    <div class="camera" id="camera-left"><span class="unavail">camera: --</span></div>
     <table class="joints" id="joints-left"></table>
     <div class="pose" id="pose-left">pose: --</div>
     <div id="jog-left"></div>
@@ -246,6 +361,7 @@ CONTROL_PAGE_HTML = """<!doctype html>
   </div>
   <div class="panel" data-arm="right">
     <h2><span class="dot" id="dot-right"></span>RIGHT ARM</h2>
+    <div class="camera" id="camera-right"><span class="unavail">camera: --</span></div>
     <table class="joints" id="joints-right"></table>
     <div class="pose" id="pose-right">pose: --</div>
     <div id="jog-right"></div>
@@ -345,12 +461,14 @@ for (const arm of ARMS) {
 
 async function pollArm(arm) {
   try {
-    const [jr, pr] = await Promise.all([
+    const [jr, pr, cr] = await Promise.all([
       fetch('/skill/read_joints', {method: 'POST', body: JSON.stringify({arm})}),
       fetch('/skill/read_arm_pose', {method: 'POST', body: JSON.stringify({arm})}),
+      fetch('/skill/read_camera', {method: 'POST', body: JSON.stringify({name: arm})}),
     ]);
     const joints = await jr.json();
     const pose = await pr.json();
+    const cam = await cr.json();
 
     document.getElementById(`dot-${arm}`).classList.add('ok');
 
@@ -365,6 +483,13 @@ async function pollArm(arm) {
     } else {
       poseEl.innerHTML = `<span class="unavail">pose unavailable: ${pose.detail || 'n/a'}</span>`;
       lastPose[arm] = null;
+    }
+
+    const camEl = document.getElementById(`camera-${arm}`);
+    if (cam.jpeg_b64) {
+      camEl.innerHTML = `<img src="data:image/jpeg;base64,${cam.jpeg_b64}">`;
+    } else {
+      camEl.innerHTML = `<span class="unavail">camera unavailable: ${cam.error || 'no frame'}</span>`;
     }
   } catch (e) {
     document.getElementById(`dot-${arm}`).classList.remove('ok');
@@ -413,6 +538,7 @@ curl -s http://127.0.0.1:8900/control | grep -o '<title>[^<]*</title>'
 curl -s http://127.0.0.1:8900/control | grep -c 'id="enable"'
 curl -s -X POST http://127.0.0.1:8900/skill/read_arm_pose -d '{"arm":"left"}'
 curl -s -X POST http://127.0.0.1:8900/skill/move_arm -d '{"arm":"left","x":0.3,"y":0.0,"z":0.2}'
+curl -s -X POST http://127.0.0.1:8900/skill/read_camera -d '{"name":"left"}'
 kill $SIDECAR_PID
 ```
 
@@ -421,36 +547,40 @@ Expected:
 - `1` (the enable checkbox is present exactly once)
 - `{"ok":true,"x":0.0,"y":0.0,"z":0.0}` (fresh stub robot, arm never moved)
 - `{"outcome":"reached","detail":"left arm EE at (0.30,0.00,0.20)"}`
+- `{"width":640,"height":480,"jpeg_b64":""}` (stub tier's fixed placeholder — empty `jpeg_b64` is correct here, not a bug; the stub never encodes a real image)
 
 - [ ] **Step 5: Verify against real hardware, with the user watching**
 
-This is the one step that needs the user physically present, same as every other hardware test this session — do not run it unattended. Start the sidecar in hardware mode:
+This is the one step that needs the user physically present, same as every other hardware test this session — do not run it unattended. Start the sidecar in hardware mode. This shell session's process predates the `video` group being added to this user (same issue as Task 3 Step 6) — wrap the whole thing in `sg video -c '...'`, or a fresh terminal works too:
 
 ```bash
 cd /home/alpibru/workspace/alpibrusl/lex-robot && source .venv/bin/activate
+sg video -c "bash -c '
 LEX_XLE_LEFT_PORT=/dev/ttyACM0 LEX_XLE_RIGHT_PORT=/dev/ttyACM1 \
   LEX_XLE_URDF_PATH=/home/alpibru/.cache/lex-robot/so-arm100/Simulation/SO101/so101_new_calib.urdf \
   LEX_XLE_MAX_REL_TARGET=10 \
+  LEX_XLE_CAMERA_LEFT_INDEX=4 LEX_XLE_CAMERA_RIGHT_INDEX=6 \
   LEX_ROBOT_HW=1 python3 sidecar/xlerobot_sidecar.py
+'"
 ```
 
 (`LEX_XLE_BASE_PORT` is required by the module's arg parsing even though the base isn't in scope here — check whether it errors without one; if so, this step needs a placeholder/dummy value or the base wiring needs a quick look. Note this explicitly when running the step rather than silently working around it.)
 
-Have the user open `http://127.0.0.1:8900/control`, confirm both connection dots go green, joint values update live, then check "Enable control" and try one jog button and one gripper button on each arm while watching the physical arms — same "did you see it move" confirmation loop used throughout this session.
+Have the user open `http://127.0.0.1:8900/control`, confirm both connection dots go green, joint values update live, both camera panels show a live image (not the "camera unavailable" placeholder), then check "Enable control" and try one jog button and one gripper button on each arm while watching the physical arms — same "did you see it move" confirmation loop used throughout this session.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add sidecar/xlerobot_sidecar.py
-git commit -m "xlerobot: add /control page for browser-based arm jogging"
+git commit -m "xlerobot: add /control page for browser-based arm jogging + camera view"
 ```
 
 ---
 
-### Task 4: Docs
+### Task 5: Docs
 
 **Files:**
-- Modify: `SIDECAR.md` — add `read_arm_pose` to the skill table, mention `GET /control` alongside the existing `GET /display` writeup.
+- Modify: `SIDECAR.md` — add `read_arm_pose` to the skill table, mention `GET /control` alongside the existing `GET /display` writeup, document the new camera env vars.
 - Modify: `sidecar/xlerobot_sidecar.py` — update the module docstring's skill list (lines 16-26) to include `read_arm_pose`.
 
 **Interfaces:** None — doc-only, no code interfaces produced or consumed.
@@ -466,6 +596,8 @@ add directly after it:
     read_arm_pose {"arm":"left|right"}                 → { "ok": bool, "x","y","z", "detail"? }
 ```
 
+(The `LEX_XLE_CAMERA_HEAD_INDEX`/`LEX_XLE_CAMERA_LEFT_INDEX`/`LEX_XLE_CAMERA_RIGHT_INDEX` env vars were already documented in Task 3 Step 3 — confirm they're present rather than re-adding them.)
+
 - [ ] **Step 2: Update `SIDECAR.md`'s skill table**
 
 In the `| POST /skill/... | body | response |` table, add a row after `read_joints`:
@@ -473,19 +605,24 @@ In the `| POST /skill/... | body | response |` table, add a row after `read_join
 | `read_arm_pose` | `{ "arm": "left\|right" }` | `{ "ok": bool, "x","y","z", "detail"? }` |
 ```
 
-- [ ] **Step 3: Document `/control` in `SIDECAR.md`**
+Update the existing `read_camera` row's body column from `{ "name": "wrist" }` to reflect the real slot names now in use — `{ "name": "head\|left\|right" }` — since Task 3 made `name` an actual dispatch key instead of an ignored parameter.
 
-In the "Real hardware — XLeRobot Tier 3" section's "Arms" bullet, or as a new short bullet, add a sentence noting `GET /control` serves a browser jog/monitor page for both arms (same pattern as `GET /display`), gated behind a client-side "Enable control" toggle that is explicitly not a safety mechanism.
+- [ ] **Step 3: Document `/control` and multi-camera in `SIDECAR.md`**
+
+In the "Real hardware — XLeRobot Tier 3" section's "Arms" bullet, or as a new short bullet, add a sentence noting `GET /control` serves a browser jog/monitor page for both arms — including each arm's live camera view — same pattern as `GET /display`, gated behind a client-side "Enable control" toggle that is explicitly not a safety mechanism.
+
+In the existing "Camera" bullet, update it to describe the head/left/right multi-camera slots from Task 3 (each optional, best-effort — a missing/failed camera no longer prevents sidecar startup) instead of the old single always-required camera.
 
 - [ ] **Step 4: Commit**
 
 ```bash
 git add SIDECAR.md sidecar/xlerobot_sidecar.py
-git commit -m "docs: document read_arm_pose skill and /control page"
+git commit -m "docs: document read_arm_pose skill, multi-camera slots, and /control page"
 ```
 
 ## Self-Review Notes
 
-- **Spec coverage:** `read_arm_pose` (Tasks 1-2), `/control` page with joints/pose/jog/gripper/gate (Task 3), docs (Task 4) — all spec sections have a task. Out-of-scope items (per-joint jog, base, camera, new safety mechanisms) are explicitly excluded, not silently dropped.
-- **Placeholder scan:** clean — no TBD/TODO; the one open question (whether `LEX_XLE_BASE_PORT` is required by arg parsing even though the base is out of scope) is called out explicitly as something to check during Task 3 Step 5, not glossed over.
-- **Type consistency:** `read_arm_pose` returns `{"ok": bool, "x","y","z"}` or `{"ok": False, "detail": str}` consistently across the stub (Task 1), hardware (Task 2), and frontend (Task 3, which checks `pose.ok` and reads `pose.detail`). `_HwArm.read_pose()` and `XLeRobot.read_arm_pose()` names match what Task 1's stub branch calls (`self._hw_arms[...].read_pose()`).
+- **Spec coverage:** `read_arm_pose` (Tasks 1-2), multi-camera backend (Task 3, added by the 2026-08-11 amendment), `/control` page with joints/pose/camera/jog/gripper/gate (Task 4), docs (Task 5) — all spec sections, including the amendment, have a task. Out-of-scope items (per-joint jog, base, new safety mechanisms) are explicitly excluded, not silently dropped. Camera was originally out of scope and is now in via the amendment — the plan's Global Constraints and this note both say so rather than silently absorbing the change.
+- **Placeholder scan:** clean — no TBD/TODO; the one open question (whether `LEX_XLE_BASE_PORT` is required by arg parsing even though the base is out of scope) is called out explicitly as something to check during Task 4 Step 5, not glossed over.
+- **Type consistency:** `read_arm_pose` returns `{"ok": bool, "x","y","z"}` or `{"ok": False, "detail": str}` consistently across the stub (Task 1), hardware (Task 2), and frontend (Task 4, which checks `pose.ok` and reads `pose.detail`). `_HwArm.read_pose()` and `XLeRobot.read_arm_pose()` names match what Task 1's stub branch calls (`self._hw_arms[...].read_pose()`). `read_camera` returns `{"width","height","jpeg_b64"}` on success or `{"error": str}` on failure, reusing this file's existing error-shape convention rather than inventing a new one; Task 4's frontend checks `cam.jpeg_b64` truthiness and falls back to `cam.error`, consistent with that shape.
+- **New in this amendment:** Task 3 (multi-camera backend) is a real behavior change, not purely additive — hardware-tier startup no longer hard-fails if a configured camera can't open (best-effort per slot, matching the existing kinematics degrade pattern). This is called out explicitly in Task 3's body and the spec amendment, not slipped in silently.
