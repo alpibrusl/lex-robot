@@ -318,6 +318,19 @@ class _HwArm:
         return {"names": [f"{self.side}_{j}" for j in ARM_JOINTS], "positions": positions,
                 "velocities": [0.0] * len(ARM_JOINTS)}
 
+    def read_pose(self):
+        obs = self.follower.get_observation()
+        joints = {f"{j}.pos": obs[f"{j}.pos"] for j in ARM_JOINTS}
+        ee = self._forward_kinematics_ee(joints)
+        if ee is None:
+            return {
+                "ok": False,
+                "detail": "no Cartesian FK available (URDF/placo not configured, or this "
+                          "lerobot install's kinematics module doesn't match)",
+            }
+        x, y, z = ee
+        return {"ok": True, "x": x, "y": y, "z": z}
+
     def move_to(self, x, y, z, rx, ry, rz, timeout_s, tol_m):
         if self._ik is None:
             raise HardwareError(
