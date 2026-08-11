@@ -888,6 +888,7 @@ const AXES = ["x", "y", "z"];
 let enabled = false;
 let lastPose = {left: null, right: null};
 let busy = {left: false, right: false};
+let polling = {left: false, right: false};
 
 document.getElementById('enable').addEventListener('change', (e) => {
   enabled = e.target.checked;
@@ -968,14 +969,18 @@ for (const arm of ARMS) {
 }
 
 async function pollArm(arm) {
+  if (busy[arm]) return;
+  polling[arm] = true;
   try {
-    const [jr, pr, cr] = await Promise.all([
-      fetch('/skill/read_joints', {method: 'POST', body: JSON.stringify({arm})}),
-      fetch('/skill/read_arm_pose', {method: 'POST', body: JSON.stringify({arm})}),
-      fetch('/skill/read_camera', {method: 'POST', body: JSON.stringify({name: arm})}),
-    ]);
+    // Sequential, not Promise.all: never have more than one outstanding
+    // HTTP request for this arm in flight at once, so the sidecar never
+    // runs two handler threads against the same arm's serial bus
+    // concurrently (it isn't thread-safe on hardware).
+    const jr = await fetch('/skill/read_joints', {method: 'POST', body: JSON.stringify({arm})});
     const joints = await jr.json();
+    const pr = await fetch('/skill/read_arm_pose', {method: 'POST', body: JSON.stringify({arm})});
     const pose = await pr.json();
+    const cr = await fetch('/skill/read_camera', {method: 'POST', body: JSON.stringify({name: arm})});
     const cam = await cr.json();
 
     document.getElementById(`dot-${arm}`).classList.add('ok');
@@ -1001,13 +1006,19 @@ async function pollArm(arm) {
     }
   } catch (e) {
     document.getElementById(`dot-${arm}`).classList.remove('ok');
+    document.getElementById(`pose-${arm}`).innerHTML = `<span class="unavail">stale (last poll failed)</span>`;
+    document.getElementById(`camera-${arm}`).innerHTML = `<span class="unavail">stale (last poll failed)</span>`;
     lastPose[arm] = null;
+  } finally {
+    polling[arm] = false;
   }
   updateButtonStates();
 }
 
 function poll() {
-  for (const arm of ARMS) pollArm(arm);
+  for (const arm of ARMS) {
+    if (!polling[arm]) pollArm(arm);
+  }
 }
 
 buildJogControls();
