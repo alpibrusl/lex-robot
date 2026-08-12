@@ -16,7 +16,8 @@ only caller; it adds effect typing, grant enforcement, and the audit trail.
 | `POST /skill/...` | body | response |
 |---|---|---|
 | `read_joints` | `{}` | `{ "names": [...], "positions": [...], "velocities": [...] }` |
-| `read_camera` | `{ "name": "wrist" }` | `{ "width": N, "height": N, "jpeg_b64": "..." }` |
+| `read_arm_pose` | `{ "arm": "left\|right" }` | `{ "ok": bool, "x","y","z", "detail"? }` |
+| `read_camera` | `{ "name": "head\|left\|right" }` | `{ "width": N, "height": N, "jpeg_b64": "..." }` |
 | `move_to` | `{ "x","y","z","rx","ry","rz" }` | `{ "outcome": "reached\|stalled\|timeout", "detail": "" }` |
 | `grasp` | `{ "force": 12.0 }` | `{ "outcome": "...", "detail": "" }` |
 | `run_policy` | `{ "name","goal","budget_ms" }` | `{ "status": "started" }` (async — see below) |
@@ -91,12 +92,25 @@ What it does and doesn't do:
   set`. `compute_forward_kinematics_joints_to_ee` also mutates its input
   joints dict in place (pops the `*.pos` keys, writes `ee.*` keys into the
   same object) and returns `ee.x`/`ee.y`/`ee.z`, not bare `x`/`y`/`z` — the
-  sidecar passes it a defensive copy.
+  sidecar passes it a defensive copy. A browser jog/monitor interface is
+  served at `GET /control`, showing live joint state, end-effector pose
+  (via `read_arm_pose`), camera views, and buttons for manual jog and gripper
+  control — same pattern as `GET /display`. The "Enable control" toggle is
+  explicitly not a safety mechanism; it is UI convenience only.
 - **Grasp** — position-based (gripper closed to a fraction of full-close
   scaled by the requested/firmware-capped force), *not* current/force
   closed-loop. `Present_Load` is read best-effort for the audit trail only
   — it is never the pass/fail signal. A real force-feedback grasp is a
   known gap, not a hidden one.
+  
+  **Gripper direction troubleshooting:** If `grasp_arm`/`release_arm` seem to
+  do the opposite of what they say, the gripper motor's `drive_mode` field in
+  the arm's LeRobot calibration file (`~/.cache/huggingface/lerobot/calibration/robots/so_follower/<id>.json`)
+  may be inverted relative to the firmware. This is a per-arm calibration-data
+  quirk — lerobot's `lerobot-calibrate` sweep sets `drive_mode` based on
+  whichever physical direction the gripper happened to move, not a fixed "open"
+  convention. Fix by flipping the motor's `drive_mode` (0→1 or 1→0) in the
+  calibration JSON and restarting the sidecar.
 - **Base** — 0.4.0's dual-wheel differential base has no canonical
   `lerobot` Robot class yet, so this drives it directly over a
   `FeetechMotorsBus` in velocity mode (`LEX_XLE_BASE=diff`, the default).
@@ -107,9 +121,14 @@ What it does and doesn't do:
   so `reached` on the base is an estimate, not a guarantee. Wheel slip on
   a real floor will drift it; a future encoder/AprilTag localization pass
   is the fix.
-- **Camera** — `lerobot.cameras.opencv.OpenCVCamera`, JPEG-encoded via
-  Pillow if installed (falls back to an empty `jpeg_b64` if not — the frame
-  is still captured, just not encoded).
+- **Camera** — three independent, best-effort slots ("head", "left", "right")
+  via `lerobot.cameras.opencv.OpenCVCamera`. Each slot is opened only if its
+  corresponding env var is set (`LEX_XLE_CAMERA_HEAD_INDEX`, `LEX_XLE_CAMERA_LEFT_INDEX`,
+  or `LEX_XLE_CAMERA_RIGHT_INDEX`); a slot that fails to open (missing device, wrong
+  index, etc.) stays unavailable rather than crashing the sidecar. JPEG-encoded via
+  Pillow if installed (falls back to an empty `jpeg_b64` if not — the frame is still
+  captured, just not encoded). The `/control` page displays each available camera
+  view live.
 - **Mic (`listen`)** — records locally with `sounddevice` and transcribes
   locally with `faster-whisper`; raw audio never leaves the process, same
   as the stub's documented contract.

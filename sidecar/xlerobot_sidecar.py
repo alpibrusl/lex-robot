@@ -17,6 +17,7 @@ protocol (SIDECAR.md), plus XLeRobot's own skills:
     grasp_arm {"arm":"left|right", "force": N}        → outcome
     move_base {"x","y","speed"}                       → outcome
     read_base {}                                      → {"x","y","heading"}
+    read_arm_pose {"arm":"left|right"}                → { "ok": bool, "x","y","z", "detail"? }
     render_qr {"payload": "..."}                       → {"ok","payload","detail"}
     scan_qr   {}                                       → {"payload","detail"?}
     show_image {"source": "path-or-http(s)-url"}        → outcome
