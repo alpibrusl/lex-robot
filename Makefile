@@ -2,7 +2,7 @@
 # python3 (no pip). The ML demos (keep-out / MuJoCo / learned policy) need the
 # Python deps in sidecar/requirements.txt — see the README dependency matrix.
 
-.PHONY: help check smoke demo grant task budget depot xlerobot xlerobot-task xlerobot-voice xlerobot-sim xlerobot-find xlerobot-find-sim keepout dynamic_keepout tool_fire mcp-grant a2a-grant xlerobot-rl-train xlerobot-rl-run xlerobot-rl-usage xlerobot-rl-finetune xlerobot-llm-mock xlerobot-llm fleet-clean-house bazaar-visit skill-acquisition skill-catalog deps clean
+.PHONY: help check smoke demo grant task budget depot xlerobot xlerobot-task xlerobot-voice xlerobot-sim xlerobot-find xlerobot-find-sim keepout dynamic_keepout tool_fire mcp-grant a2a-grant xlerobot-rl-train xlerobot-rl-run xlerobot-rl-usage xlerobot-rl-finetune xlerobot-llm-mock xlerobot-llm fleet-clean-house bazaar-visit skill-acquisition skill-catalog fridge-report deps clean
 
 help: ## Show this help
 	@grep -hE '^[a-z-]+:.*##' $(MAKEFILE_LIST) | sed -E 's/:.*## /\t/' | sort
@@ -113,6 +113,9 @@ skill-acquisition: ## A robot registers + calls a new INFORMATIONAL skill at run
 
 skill-catalog: ## Registers + calls all 10 proposed informational skills from skill_library.lex (no ML deps)
 	@bash examples/skill_catalog_demo_run.sh
+
+fridge-report: ## "Go to the fridge and show me what's inside": navigate, perceive, show_report (no ML deps)
+	@bash examples/skill_fridge_report_demo_run.sh
 
 clean: ## Remove stray run artifacts
 	@rm -f MUJOCO_LOG.TXT /tmp/lex-robot-*.log

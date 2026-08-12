@@ -24,6 +24,7 @@ protocol (SIDECAR.md), plus XLeRobot's own skills:
     show_video {"source": "path-or-http(s)-url"}        → outcome
     show_url   {"url": "http(s)://..."}                 → outcome
     show_text  {"text": "..."}                          → outcome
+    show_report {"source","items","caption"?}           → outcome
     clear_display {}                                    → outcome
 
 `render_qr`/`scan_qr` are the QR half of src/a2a_bootstrap.lex's stranger
@@ -33,12 +34,15 @@ interactions" section). They work identically on every tier's `sidecar_url`,
 same as every other skill here — see "QR bootstrap" below for what's
 actually real on Tier 3 vs simulated on Tier 1/2.
 
-`show_image`/`show_video`/`show_url`/`show_text`/`clear_display` are a
-general-purpose sibling to `render_qr`: instead of one fixed QR image, a
-kiosk browser pointed at `GET /display` can be told to show any local
-file, any http(s) URL (image, video, or a full webpage via iframe), or
-plain text. Unlike the arm/base/camera skills, these are **not** gated by
-`LEX_ROBOT_HW` — see "Display" below for why.
+`show_image`/`show_video`/`show_url`/`show_text`/`show_report`/
+`clear_display` are a general-purpose sibling to `render_qr`: instead of
+one fixed QR image, a kiosk browser pointed at `GET /display` can be told
+to show any local file, any http(s) URL (image, video, or a full webpage
+via iframe), plain text, or `show_report` (a picture PLUS a findings
+list shown together — for "here's what I saw" moments a single image or
+text block can't express, e.g. `src/skills.lex`'s `list_visible_items` +
+`show_report` pair). Unlike the arm/base/camera skills, these are **not**
+gated by `LEX_ROBOT_HW` — see "Display" below for why.
 
 Out of the box it runs as a **stub** (stdlib only, no hardware, no pip): the
 base integrates kinematically toward the target, the arms report plausible
@@ -710,9 +714,11 @@ class DisplayState:
     """
 
     def __init__(self):
-        self.kind = "blank"  # blank | image | video | url | text
+        self.kind = "blank"  # blank | image | video | url | text | report
         self.content = ""  # <img>/<video> src, <iframe> src, or literal text
         self.local_path = None  # backing file for GET /display/content, if any
+        self.items = []  # report only: the findings list alongside the image
+        self.caption = ""  # report only: one-line context above the list
         self.version = 0  # bumped on every change; the kiosk page polls this
 
     def set_local_file(self, kind, path):
@@ -739,15 +745,37 @@ class DisplayState:
         self.content = text
         return {"outcome": "reached", "detail": f"showing {len(text)} chars of text"}
 
+    def set_report(self, source, items, caption):
+        # A picture plus what was found in it, shown together -- the
+        # composite kind show_image/show_text alone can't express. Same
+        # local-vs-http(s) branching show_image already uses for `source`.
+        self.version += 1
+        self.kind = "report"
+        self.items = list(items)
+        self.caption = caption
+        if source.startswith("http://") or source.startswith("https://"):
+            self.local_path = None
+            self.content = source
+        else:
+            self.local_path = source
+            self.content = f"/display/content?v={self.version}"
+        return {"outcome": "reached", "detail": f"showing report: {len(items)} item(s)"}
+
     def clear(self):
         self.local_path = None
         self.version += 1
         self.kind = "blank"
         self.content = ""
+        self.items = []
+        self.caption = ""
         return {"outcome": "reached", "detail": "display cleared"}
 
     def to_json(self):
-        return {"kind": self.kind, "content": self.content, "version": self.version}
+        base = {"kind": self.kind, "content": self.content, "version": self.version}
+        if self.kind == "report":
+            base["items"] = self.items
+            base["caption"] = self.caption
+        return base
 
 
 # Self-contained kiosk page: no external JS/CSS, so it works on an offline
@@ -766,6 +794,13 @@ DISPLAY_PAGE_HTML = """<!doctype html>
   #stage iframe{width:100%;height:100%;border:0}
   #stage .text{color:#fff;font:6vh/1.3 -apple-system,Helvetica,Arial,sans-serif;
                text-align:center;padding:4vw;white-space:pre-wrap}
+  #stage .report{width:90vw;height:90vh;display:flex;gap:3vw;align-items:center;
+                  font:3.2vh/1.4 -apple-system,Helvetica,Arial,sans-serif;color:#fff}
+  #stage .report img{max-width:45vw;max-height:80vh;object-fit:contain;border-radius:1vh}
+  #stage .report .panel{max-width:45vw}
+  #stage .report .caption{opacity:0.75;margin:0 0 1.5vh}
+  #stage .report ul{margin:0;padding-left:1.1em}
+  #stage .report li{margin-bottom:0.6vh}
 </style></head>
 <body><div id="stage"></div>
 <script>
@@ -784,6 +819,19 @@ function render(s) {
   } else if (s.kind === 'text') {
     const el = document.createElement('div'); el.className = 'text'; el.textContent = s.content;
     stage.appendChild(el);
+  } else if (s.kind === 'report') {
+    const wrap = document.createElement('div'); wrap.className = 'report';
+    const img = document.createElement('img'); img.src = s.content; wrap.appendChild(img);
+    const panel = document.createElement('div'); panel.className = 'panel';
+    if (s.caption) {
+      const cap = document.createElement('p'); cap.className = 'caption'; cap.textContent = s.caption;
+      panel.appendChild(cap);
+    }
+    const ul = document.createElement('ul');
+    (s.items || []).forEach(it => { const li = document.createElement('li'); li.textContent = it; ul.appendChild(li); });
+    panel.appendChild(ul);
+    wrap.appendChild(panel);
+    stage.appendChild(wrap);
   }
   // 'blank' -> stage stays empty
 }
@@ -1226,6 +1274,11 @@ class XLeRobot:
     def show_text(self, text):
         return self.display.set_text(text)
 
+    def show_report(self, source, items, caption):
+        if not source:
+            return {"outcome": "stalled", "detail": "show_report needs a non-empty image path or URL"}
+        return self.display.set_report(source, items, caption)
+
     def clear_display(self):
         return self.display.clear()
 
@@ -1337,6 +1390,8 @@ def handle_skill(name, args):
         return ROBOT.show_url(args.get("url", ""))
     if name == "show_text":
         return ROBOT.show_text(args.get("text", ""))
+    if name == "show_report":
+        return ROBOT.show_report(args.get("source", ""), args.get("items", []), args.get("caption", ""))
     if name == "clear_display":
         return ROBOT.clear_display()
     if name == "move_arm":
