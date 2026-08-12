@@ -150,3 +150,76 @@ def test_read_arm_pose_stub_unknown_arm_falls_back_to_left():
 def test_read_arm_pose_stub_defaults_to_origin_before_any_move():
     robot = XLeRobot()
     assert robot.read_arm_pose("right") == {"ok": True, "x": 0.0, "y": 0.0, "z": 0.0}
+
+
+# ---- grant enforcement (workspace box + grip-force ceiling) ----------------
+#
+# The default grant is manifests/xlerobot.capsule.json (loaded by absolute
+# path relative to this file's location, so it doesn't depend on CWD). One
+# test below checks that real file's actual shape loads correctly -- the
+# rest set robot._grant directly to a small, controlled dict so the
+# enforcement *logic* is tested in isolation from that file's specific
+# numbers, which could otherwise change out from under these tests.
+
+_TEST_GRANT = {
+    "arms": {
+        "left": {
+            "workspace_m": [
+                {"min": 0.0, "max": 1.0},
+                {"min": 0.0, "max": 1.0},
+                {"min": 0.0, "max": 1.0},
+            ],
+            "max_velocity_mps": 0.25,
+            "max_force_n": 15.0,
+        },
+    },
+    "grippers": {"left": {"max_grip_force_n": 10.0}},
+}
+
+
+def test_read_grant_stub_loads_the_real_default_capsule():
+    robot = XLeRobot()
+    result = robot.read_grant()
+    assert result["ok"] is True
+    assert result["arms"]["left"]["workspace_m"][0] == {"min": 0.05, "max": 0.45}
+    assert result["grippers"]["left"] == 15.0
+
+
+def test_move_arm_denied_outside_granted_workspace():
+    robot = XLeRobot()
+    robot._grant = _TEST_GRANT
+    result = robot.move_arm("left", 5.0, 0.5, 0.5)  # x=5.0 way outside [0,1]
+    assert result["outcome"] == "denied"
+    assert "x=5.000" in result["detail"]
+    # never applied -- the stub's tracked position is untouched
+    assert robot.read_arm_pose("left") == {"ok": True, "x": 0.0, "y": 0.0, "z": 0.0}
+
+
+def test_move_arm_reached_inside_granted_workspace():
+    robot = XLeRobot()
+    robot._grant = _TEST_GRANT
+    result = robot.move_arm("left", 0.5, 0.5, 0.5)
+    assert result["outcome"] == "reached"
+
+
+def test_move_arm_unrestricted_when_no_grant_configured():
+    robot = XLeRobot()
+    robot._grant = None
+    result = robot.move_arm("left", 999.0, 999.0, 999.0)
+    assert result["outcome"] == "reached"
+
+
+def test_grasp_arm_clamps_force_to_granted_max():
+    robot = XLeRobot()
+    robot._grant = _TEST_GRANT
+    result = robot.grasp_arm("left", 99.0)  # grant caps left gripper at 10.0N
+    assert result["outcome"] == "reached"
+    assert "10.0N" in result["detail"]
+
+
+def test_grasp_arm_unrestricted_when_no_grant_configured():
+    robot = XLeRobot()
+    robot._grant = None
+    result = robot.grasp_arm("left", 20.0)  # under HARD_GRIP_N, no grant to clamp it
+    assert result["outcome"] == "reached"
+    assert "20.0N" in result["detail"]

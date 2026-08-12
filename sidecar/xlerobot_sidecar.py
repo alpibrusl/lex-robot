@@ -18,6 +18,7 @@ protocol (SIDECAR.md), plus XLeRobot's own skills:
     move_base {"x","y","speed"}                       → outcome
     read_base {}                                      → {"x","y","heading"}
     read_arm_pose {"arm":"left|right"}                → { "ok": bool, "x","y","z", "detail"? }
+    read_grant {}                                      → { "ok": bool, "arms","grippers" }
     render_qr {"payload": "..."}                       → {"ok","payload","detail"}
     scan_qr   {}                                       → {"payload","detail"?}
     show_image {"source": "path-or-http(s)-url"}        → outcome
@@ -97,6 +98,16 @@ Arms (required when LEX_ROBOT_HW=1):
     LEX_XLE_URDF_TARGET_FRAME                  end-effector frame name in that URDF (default
                                                 "gripper_frame_link", lerobot's own default —
                                                 override if your URDF names it differently)
+
+Grant enforcement (all tiers, not just LEX_ROBOT_HW=1 — see SIDECAR.md
+"Grant enforcement" for why this exists):
+    LEX_XLE_GRANT_PATH                         path to a grant capsule JSON (default
+                                                manifests/xlerobot.capsule.json). move_arm
+                                                is denied outright outside the arm's
+                                                workspace_m box; grasp_arm's force is clamped
+                                                to the gripper's max_grip_force_n. Unset or
+                                                unreadable = no enforcement (best-effort, like
+                                                everything else optional in this file).
 
 Base — LEX_XLE_BASE=diff (default, XLeRobot 0.4.0) or =omni (0.3.0-era LeKiwi kit):
     diff:  LEX_XLE_BASE_PORT (required), LEX_XLE_BASE_LEFT_ID / _RIGHT_ID (default 1/2),
@@ -950,16 +961,43 @@ let enabled = false;
 let lastPose = {left: null, right: null};
 let busy = {left: false, right: false};
 let polling = {left: false, right: false};
+let grant = null;  // fetched once from read_grant; null = no grant configured
 
 document.getElementById('enable').addEventListener('change', (e) => {
   enabled = e.target.checked;
   updateButtonStates();
 });
 
+async function fetchGrant() {
+  try {
+    const r = await fetch('/skill/read_grant', {method: 'POST', body: '{}'});
+    const g = await r.json();
+    if (g.ok) {
+      grant = g;
+      for (const arm of ARMS) {
+        const maxForce = grant.grippers && grant.grippers[arm];
+        if (maxForce) document.getElementById(`force-${arm}`).max = maxForce;
+      }
+    }
+  } catch (e) { /* no grant available -- buttons just aren't workspace-limited */ }
+  updateButtonStates();
+}
+
 function updateButtonStates() {
   for (const arm of ARMS) {
-    const disable = !enabled || busy[arm] || !lastPose[arm];
-    document.querySelectorAll(`#jog-${arm} button`).forEach(b => b.disabled = disable);
+    const baseDisable = !enabled || busy[arm] || !lastPose[arm];
+    document.querySelectorAll(`#jog-${arm} button`).forEach(b => {
+      let disable = baseDisable;
+      if (!disable && grant && grant.arms && grant.arms[arm] && grant.arms[arm].workspace_m) {
+        const axis = b.dataset.axis;
+        const dir = parseFloat(b.dataset.dir);
+        const step = parseFloat(document.getElementById(`step-${arm}`).value) || 0.01;
+        const target = lastPose[arm][axis] + dir * step;
+        const bound = grant.arms[arm].workspace_m[AXES.indexOf(axis)];
+        if (target < bound.min || target > bound.max) disable = true;
+      }
+      b.disabled = disable;
+    });
     document.getElementById(`open-${arm}`).disabled = !enabled || busy[arm];
     document.getElementById(`close-${arm}`).disabled = !enabled || busy[arm];
   }
@@ -1027,6 +1065,10 @@ async function gripperCmd(arm, action) {
 for (const arm of ARMS) {
   document.getElementById(`open-${arm}`).addEventListener('click', () => gripperCmd(arm, 'open'));
   document.getElementById(`close-${arm}`).addEventListener('click', () => gripperCmd(arm, 'close'));
+  // Changing the step size changes which jog buttons would leave the
+  // workspace box, so re-evaluate button states right away rather than
+  // waiting for the next poll tick.
+  document.getElementById(`step-${arm}`).addEventListener('input', updateButtonStates);
 }
 
 async function pollArm(arm) {
@@ -1089,6 +1131,7 @@ function poll() {
 }
 
 buildJogControls();
+fetchGrant();
 poll();
 setInterval(poll, 500);
 </script>
@@ -1116,8 +1159,66 @@ class XLeRobot:
         # What GET /display's kiosk page should currently show — see
         # DisplayState's docstring for why this isn't USE_HW-gated.
         self.display = DisplayState()
+        # Best-effort, tier-independent: the same workspace-box/grip-force
+        # limits a Lex program's inline grant would enforce, applied here too
+        # so a direct caller (the /control page, curl, anything hitting this
+        # HTTP API without going through Lex) can't drive the arm outside
+        # them either. None if not configured -- move_arm/grasp_arm just
+        # skip the check in that case, same as every other optional piece
+        # of hardware in this file.
+        self._grant = self._load_grant()
         if USE_HW:
             self._bring_up_hardware()
+
+    def _load_grant(self):
+        default_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "manifests", "xlerobot.capsule.json")
+        path = os.environ.get("LEX_XLE_GRANT_PATH", default_path)
+        try:
+            with open(path) as f:
+                capsule = json.load(f)
+            return capsule.get("actuation")
+        except Exception as e:
+            print(f"[xlerobot] no grant loaded from '{path}': {e}")
+            return None
+
+    def _grant_workspace_violation(self, arm, x, y, z):
+        """None if there's no grant, the grant doesn't cover this arm, or the
+        target is inside its workspace box. Otherwise a detail string
+        explaining what's out of bounds -- the caller turns this into a
+        `denied` outcome and never sends anything to hardware, matching how
+        a Lex program's own grant check refuses an out-of-envelope move
+        before it's ever sent (see examples/xlerobot_demo.lex)."""
+        if not self._grant:
+            return None
+        arm_grant = self._grant.get("arms", {}).get(arm)
+        bounds = arm_grant.get("workspace_m") if arm_grant else None
+        if not bounds or len(bounds) != 3:
+            return None
+        for val, axis, b in zip((x, y, z), "xyz", bounds):
+            if not (b["min"] <= val <= b["max"]):
+                return (f"{axis}={val:.3f} outside granted workspace "
+                        f"[{b['min']:.2f},{b['max']:.2f}] for {arm} arm")
+        return None
+
+    def _grant_max_grip_force(self, arm):
+        if not self._grant:
+            return None
+        g = self._grant.get("grippers", {}).get(arm)
+        return g.get("max_grip_force_n") if g else None
+
+    def read_grant(self):
+        if not self._grant:
+            return {"ok": False, "detail": "no grant configured (LEX_XLE_GRANT_PATH not set or unreadable)"}
+        arms = {
+            side: {
+                "workspace_m": cfg.get("workspace_m"),
+                "max_velocity_mps": cfg.get("max_velocity_mps"),
+                "max_force_n": cfg.get("max_force_n"),
+            }
+            for side, cfg in self._grant.get("arms", {}).items()
+        }
+        grippers = {side: cfg.get("max_grip_force_n") for side, cfg in self._grant.get("grippers", {}).items()}
+        return {"ok": True, "arms": arms, "grippers": grippers}
 
     def _bring_up_hardware(self):
         left_port = os.environ.get("LEX_XLE_LEFT_PORT")
@@ -1324,6 +1425,12 @@ class XLeRobot:
     def move_arm(self, arm, x, y, z):
         if arm not in ("left", "right"):
             return {"outcome": "stalled", "detail": f"unknown arm '{arm}' (use left|right)"}
+        # Grant workspace box: refused outright, same as a Lex program's own
+        # grant check -- a position can't be safely "clamped" into an
+        # envelope the way a scalar force/speed can, so this is never sent.
+        denial = self._grant_workspace_violation(arm, x, y, z)
+        if denial is not None:
+            return {"outcome": "denied", "detail": denial}
         if USE_HW:
             timeout_s = float(os.environ.get("LEX_XLE_ARM_TIMEOUT_S", "8"))
             tol_m = float(os.environ.get("LEX_XLE_ARM_TOL_M", "0.01"))
@@ -1333,6 +1440,12 @@ class XLeRobot:
         return {"outcome": "reached", "detail": f"{arm} arm EE at ({x:.2f},{y:.2f},{z:.2f})"}
 
     def grasp_arm(self, arm, force):
+        # Grant grip-force ceiling: clamped, never amplified -- a second,
+        # independent layer above the HARD_GRIP_N firmware floor below it,
+        # same two-layer defense-in-depth as everywhere else in this file.
+        granted_max = self._grant_max_grip_force(arm)
+        if granted_max is not None:
+            force = min(force, granted_max)
         if force > HARD_GRIP_N:
             return {"outcome": "stalled", "detail": f"grip {force:.0f}N exceeds firmware limit {HARD_GRIP_N:.0f}N"}
         if arm not in ("left", "right"):
@@ -1382,6 +1495,8 @@ def handle_skill(name, args):
         return ROBOT.read_joints(args.get("arm", "left"))
     if name == "read_arm_pose":
         return ROBOT.read_arm_pose(args.get("arm", "left"))
+    if name == "read_grant":
+        return ROBOT.read_grant()
     if name == "read_base":
         return ROBOT.read_base()
     if name == "read_camera":

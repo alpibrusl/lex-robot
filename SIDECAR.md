@@ -17,6 +17,7 @@ only caller; it adds effect typing, grant enforcement, and the audit trail.
 |---|---|---|
 | `read_joints` | `{}` | `{ "names": [...], "positions": [...], "velocities": [...] }` |
 | `read_arm_pose` | `{ "arm": "left\|right" }` | `{ "ok": bool, "x","y","z", "detail"? }` |
+| `read_grant` | `{}` | `{ "ok": bool, "arms": {...}, "grippers": {...} }` — the loaded grant's workspace/force limits, see "Grant enforcement" below |
 | `read_camera` | `{ "name": "head\|left\|right" }` | `{ "width": N, "height": N, "jpeg_b64": "..." }` |
 | `move_to` | `{ "x","y","z","rx","ry","rz" }` | `{ "outcome": "reached\|stalled\|timeout", "detail": "" }` |
 | `grasp` | `{ "force": 12.0 }` | `{ "outcome": "...", "detail": "" }` |
@@ -37,8 +38,37 @@ inline from `run_policy`; the Lex side accepts either shape.
 
 ### Outcome vocabulary
 `reached` → goal met · `stalled` → could not progress (detail explains) ·
-`timeout` → budget exhausted. The Lex side maps these to the `Outcome` ADT
-(`parse_outcome` in `skills.lex`); anything unrecognised becomes `Stalled(raw)`.
+`timeout` → budget exhausted · `denied` → refused by a loaded grant, never
+sent to hardware (see "Grant enforcement" below). The Lex side maps these to
+the `Outcome` ADT (`parse_outcome` in `skills.lex`), which already has a
+`Denied` variant; anything unrecognised becomes `Stalled(raw)`.
+
+### Grant enforcement (workspace box + grip-force ceiling)
+Normally the *Lex* layer is what checks a command against a grant, before
+the request ever reaches the sidecar (`grant.lex`, see "Division of
+responsibility" below) — the sidecar itself has historically trusted its
+caller. Any caller that talks to the sidecar directly instead of through Lex
+(the `GET /control` browser page, a raw `curl`, anything hitting this HTTP
+API on its own) bypasses that check entirely, so the sidecar now *also*
+loads the same grant and applies the two checks that matter most for a
+directly-actuated arm:
+- **`move_arm`**: the target is checked against that arm's `workspace_m` box.
+  Outside it → `{"outcome": "denied", ...}`, **nothing is sent to
+  hardware** — a position can't be safely "clamped" into an envelope the way
+  a scalar can, so this is a refusal, not an adjustment (same philosophy as
+  `examples/xlerobot_demo.lex`'s inline grant).
+- **`grasp_arm`**: the requested force is **clamped** (never amplified) to
+  that arm's granted `max_grip_force_n` — a second, independent layer above
+  the existing `HARD_GRIP_N` firmware floor.
+
+The grant is loaded from `manifests/xlerobot.capsule.json` by default
+(override with `LEX_XLE_GRANT_PATH`); if it can't be read, these checks are
+simply skipped — best-effort, same degrade-gracefully pattern as every other
+optional piece of hardware in this file, not a hard requirement to run. This
+applies at every tier (stub included), not just real hardware. `GET
+/control` reads the same limits via `read_grant` and greys out jog buttons
+that would leave the box, so an operator gets instant feedback instead of a
+round-trip "denied".
 
 ## Division of responsibility
 
@@ -47,7 +77,7 @@ inline from `run_policy`; the Lex side accepts either shape.
 | Motor bus, cameras, drivers (SO-101/Koch/ALOHA) | sidecar (LeRobot) |
 | Learned policy inference + the 30–1000 Hz loop | sidecar (LeRobot) |
 | LeRobotDataset recording | sidecar, triggered by `record_episode` |
-| **Capability/grant enforcement** | **Lex (`grant.lex`)** + lex-os supervisor |
+| **Capability/grant enforcement** | **Lex (`grant.lex`)** + lex-os supervisor, primarily — the sidecar also applies the workspace-box/grip-force part of the same grant as a second layer for callers that bypass Lex (see "Grant enforcement" above); it does not replace effect typing, budget, or the audit trail |
 | **Effect typing of skills** | **Lex (`skills.lex`)** |
 | **Audit trail** | **Lex (lex-trail), later** |
 | Budget / liveness / kill / reprovision | lex-os supervisor (outside the box) |
