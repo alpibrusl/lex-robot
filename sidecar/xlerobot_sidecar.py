@@ -420,16 +420,20 @@ class _HwArm:
         return {"outcome": "timeout",
                 "detail": f"{self.side} arm did not settle within {timeout_s}s (last dist {last_dist})"}
 
-    def grasp(self, force_n, max_force_n):
-        # Position-based close, scaled by the requested/firmware-capped force
-        # as a fraction of the arm's rated max. Present_Load is read
-        # best-effort for the audit trail only — see module docstring: this
-        # is NOT a closed-loop force controller.
-        frac = clamp(force_n / max(max_force_n, 1e-6), 0.0, 1.0)
+    def grasp(self, force_n, scale_max_n):
+        # Position-based close, scaled by the requested force as a fraction
+        # of `scale_max_n` -- the caller's choice of "what counts as 100%
+        # closed": the granted max_grip_force_n when a grant is configured,
+        # else the firmware floor (HARD_GRIP_N). Scaling against the
+        # firmware floor even when a lower grant is active would make full
+        # closure mathematically unreachable at any grant-permitted force.
+        # Present_Load is read best-effort for the audit trail only — see
+        # module docstring: this is NOT a closed-loop force controller.
+        frac = clamp(force_n / max(scale_max_n, 1e-6), 0.0, 1.0)
         gripper_pos = frac * 100.0  # SO-101 gripper.pos is roughly 0 (open) .. 100 (closed)
         self.follower.send_action({"gripper.pos": gripper_pos})
         sensed = self._read_gripper_load()
-        detail = f"{self.side} gripper closed at requested {force_n:.1f}N (firmware-capped)"
+        detail = f"{self.side} gripper closed at requested {force_n:.1f}N (of {scale_max_n:.0f}N max)"
         if sensed is not None:
             detail += f", sensed load {sensed:.0f}"
         return {"outcome": "reached", "detail": detail}
@@ -1450,8 +1454,13 @@ class XLeRobot:
             return {"outcome": "stalled", "detail": f"grip {force:.0f}N exceeds firmware limit {HARD_GRIP_N:.0f}N"}
         if arm not in ("left", "right"):
             return {"outcome": "stalled", "detail": f"unknown arm '{arm}' (use left|right)"}
+        # Position scales against the granted max when one is configured,
+        # not the (usually higher) firmware floor -- otherwise full closure
+        # would be mathematically unreachable at any grant-permitted force
+        # whenever the grant caps grip force below HARD_GRIP_N.
+        scale_max = granted_max if granted_max is not None else HARD_GRIP_N
         if USE_HW:
-            return self._hw_arms[arm].grasp(force, HARD_GRIP_N)
+            return self._hw_arms[arm].grasp(force, scale_max)
         a = self.arms[arm]
         a["holding"] = True
         a["positions"][5] = 1.0
