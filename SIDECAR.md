@@ -56,12 +56,14 @@ inline from `run_policy`; the Lex side accepts either shape.
 
 `sidecar/xlerobot_sidecar.py` drives a physical XLeRobot 0.4.0 when
 `LEX_ROBOT_HW=1` is set, through LeRobot's own SO-101 (`SOFollower`) and
-motor-bus (`FeetechMotorsBus`) APIs. **One SO-101 arm has been bench-tested
-against this code** (single arm, `lerobot` 0.6.1, low torque, hand on the
-e-stop): serial connect, calibration, joint-space moves, and Cartesian
-`move_to` via `RobotKinematics`/`placo` all confirmed working. **Not yet
-exercised against real hardware**: the second arm, the dual-wheel base,
-the camera, and force-based grasp — those are still bench-test starting
+motor-bus (`FeetechMotorsBus`) APIs. **Both SO-101 arms and both left/right
+cameras have been bench-tested against this code** (`lerobot` 0.6.1, low
+torque, hand on the e-stop): serial connect, calibration, joint-space moves,
+Cartesian `move_to` via `RobotKinematics`/`placo`, `read_arm_pose`,
+multi-camera capture, and the `GET /control` browser page (jog + gripper,
+live joint/pose/camera view) all confirmed working end-to-end, including a
+live browser session. **Not yet exercised against real hardware**: the
+dual-wheel base and force-based grasp — those are still bench-test starting
 points, not plug-and-drive certainties. Community XLeRobot software —
 especially the 0.4.0 dual-wheel differential base — moves fast and isn't
 merged upstream into `lerobot`, so if your installed version's API doesn't
