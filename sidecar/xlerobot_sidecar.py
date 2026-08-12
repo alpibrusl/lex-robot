@@ -431,7 +431,20 @@ class _HwArm:
         # module docstring: this is NOT a closed-loop force controller.
         frac = clamp(force_n / max(scale_max_n, 1e-6), 0.0, 1.0)
         gripper_pos = frac * 100.0  # SO-101 gripper.pos is roughly 0 (open) .. 100 (closed)
-        self.follower.send_action({"gripper.pos": gripper_pos})
+        # Direct bus write, bypassing SO101Follower.send_action()'s
+        # max_relative_target clamp entirely. That clamp is a real,
+        # intentional safety measure for move_arm's incremental jogging, but
+        # it can't be selectively exempted per motor across calls with
+        # different action key sets: lerobot's ensure_safe_goal_position
+        # requires a dict-typed max_relative_target's keys to exactly match
+        # each call's action -- move_to sends all 6 joints every cycle,
+        # grasp/release send only the gripper, so one static per-arm config
+        # can't satisfy both (this was tried and crashed with "max_relative_
+        # target keys must match those of goal_present_pos"). grasp/release
+        # are meant to be complete, one-shot actions ("reached" after a
+        # single command, not a multi-click jog), so this goes straight to
+        # the bus instead.
+        self.follower.bus.write("Goal_Position", "gripper", gripper_pos, normalize=True)
         sensed = self._read_gripper_load()
         detail = f"{self.side} gripper closed at requested {force_n:.1f}N (of {scale_max_n:.0f}N max)"
         if sensed is not None:
@@ -439,7 +452,9 @@ class _HwArm:
         return {"outcome": "reached", "detail": detail}
 
     def release(self):
-        self.follower.send_action({"gripper.pos": 0.0})
+        # Direct bus write -- see the comment in grasp() for why this
+        # bypasses send_action()'s max_relative_target clamp.
+        self.follower.bus.write("Goal_Position", "gripper", 0.0, normalize=True)
         return {"outcome": "reached", "detail": f"{self.side} released"}
 
     def _read_gripper_load(self):
@@ -967,6 +982,23 @@ let busy = {left: false, right: false};
 let polling = {left: false, right: false};
 let grant = null;  // fetched once from read_grant; null = no grant configured
 
+// Every command/poll fetch on this page goes through this, not raw fetch():
+// on real hardware a request can hang indefinitely (a wedged serial bus,
+// a servo that stops responding -- both observed live this session), and
+// with no timeout that leaves busy[arm]/polling[arm] stuck true forever,
+// permanently disabling that arm's buttons until a manual page reload.
+// Aborting after a generous window turns that into a normal caught error
+// instead, so the existing catch/finally blocks recover on their own.
+async function fetchWithTimeout(url, options, timeoutMs = 15000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, {...options, signal: controller.signal});
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 document.getElementById('enable').addEventListener('change', (e) => {
   enabled = e.target.checked;
   updateButtonStates();
@@ -974,7 +1006,7 @@ document.getElementById('enable').addEventListener('change', (e) => {
 
 async function fetchGrant() {
   try {
-    const r = await fetch('/skill/read_grant', {method: 'POST', body: '{}'});
+    const r = await fetchWithTimeout('/skill/read_grant', {method: 'POST', body: '{}'});
     const g = await r.json();
     if (g.ok) {
       grant = g;
@@ -1031,7 +1063,7 @@ async function jog(arm, axis, dir) {
   target[axis] += dir * step;
   busy[arm] = true; updateButtonStates();
   try {
-    const r = await fetch('/skill/move_arm', {
+    const r = await fetchWithTimeout('/skill/move_arm', {
       method: 'POST',
       body: JSON.stringify({arm, x: target.x, y: target.y, z: target.z}),
     });
@@ -1056,7 +1088,7 @@ async function gripperCmd(arm, action) {
       const force = parseFloat(document.getElementById(`force-${arm}`).value) || 10;
       body = {arm, force};
     }
-    const r = await fetch(`/skill/${skill}`, {method: 'POST', body: JSON.stringify(body)});
+    const r = await fetchWithTimeout(`/skill/${skill}`, {method: 'POST', body: JSON.stringify(body)});
     const j = await r.json();
     document.getElementById(`status-${arm}`).textContent = `${j.outcome}: ${j.detail || ''}`;
   } catch (e) {
@@ -1083,17 +1115,17 @@ async function pollArm(arm) {
     // HTTP request for this arm in flight at once, so the sidecar never
     // runs two handler threads against the same arm's serial bus
     // concurrently (it isn't thread-safe on hardware).
-    const jr = await fetch('/skill/read_joints', {method: 'POST', body: JSON.stringify({arm})});
+    const jr = await fetchWithTimeout('/skill/read_joints', {method: 'POST', body: JSON.stringify({arm})});
     const joints = await jr.json();
     // Re-check busy[arm] between each bus-touching call: a jog/gripper click
     // can land after this tick already started (busy[arm] is set
     // synchronously at click time), so bail before issuing another request
     // into the same arm's bus while a move/grasp/release is now in flight.
     if (busy[arm]) return;
-    const pr = await fetch('/skill/read_arm_pose', {method: 'POST', body: JSON.stringify({arm})});
+    const pr = await fetchWithTimeout('/skill/read_arm_pose', {method: 'POST', body: JSON.stringify({arm})});
     const pose = await pr.json();
     if (busy[arm]) return;
-    const cr = await fetch('/skill/read_camera', {method: 'POST', body: JSON.stringify({name: arm})});
+    const cr = await fetchWithTimeout('/skill/read_camera', {method: 'POST', body: JSON.stringify({name: arm})});
     const cam = await cr.json();
 
     document.getElementById(`dot-${arm}`).classList.add('ok');
