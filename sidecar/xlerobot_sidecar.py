@@ -331,7 +331,10 @@ class _HwArm:
                 "velocities": [0.0] * len(ARM_JOINTS)}
 
     def read_pose(self):
-        obs = self.follower.get_observation()
+        try:
+            obs = self.follower.get_observation()
+        except Exception as e:
+            return {"ok": False, "detail": f"transient hardware read error: {e}"}
         joints = {f"{j}.pos": obs.get(f"{j}.pos", 0.0) for j in ARM_JOINTS}
         ee = self._forward_kinematics_ee(joints)
         if ee is None:
@@ -358,27 +361,36 @@ class _HwArm:
         last_dist = None
         fk_available = True
         while _time.monotonic() < deadline:
-            obs = self.follower.get_observation()
-            # gripper.pos is a required field on the IK step's action dict
-            # (it raises if any of the six ee.* fields is None) even though
-            # move_to doesn't touch the gripper -- feed back the arm's own
-            # current reading so it's a no-op passthrough, not a command.
-            target = {
-                "ee.x": x, "ee.y": y, "ee.z": z,
-                "ee.wx": rx, "ee.wy": ry, "ee.wz": rz,
-                "ee.gripper_pos": obs["gripper.pos"],
-            }
-            # InverseKinematicsEEToJoints is a pipeline step: it reads
-            # self.transition (set by __call__, not by calling .action()
-            # directly) to get at the observation, so it must be invoked as
-            # ik(transition), not ik.action(...).
-            transition = create_transition(observation=obs, action=target)
-            joint_action = self._ik(transition)[TransitionKey.ACTION]
-            self.follower.send_action(joint_action)
-            _time.sleep(0.05)
-            obs = self.follower.get_observation()
-            joints = {f"{j}.pos": obs[f"{j}.pos"] for j in ARM_JOINTS}
-            ee = self._forward_kinematics_ee(joints)
+            try:
+                obs = self.follower.get_observation()
+                # gripper.pos is a required field on the IK step's action dict
+                # (it raises if any of the six ee.* fields is None) even though
+                # move_to doesn't touch the gripper -- feed back the arm's own
+                # current reading so it's a no-op passthrough, not a command.
+                target = {
+                    "ee.x": x, "ee.y": y, "ee.z": z,
+                    "ee.wx": rx, "ee.wy": ry, "ee.wz": rz,
+                    "ee.gripper_pos": obs["gripper.pos"],
+                }
+                # InverseKinematicsEEToJoints is a pipeline step: it reads
+                # self.transition (set by __call__, not by calling .action()
+                # directly) to get at the observation, so it must be invoked as
+                # ik(transition), not ik.action(...).
+                transition = create_transition(observation=obs, action=target)
+                joint_action = self._ik(transition)[TransitionKey.ACTION]
+                self.follower.send_action(joint_action)
+                _time.sleep(0.05)
+                obs = self.follower.get_observation()
+                joints = {f"{j}.pos": obs[f"{j}.pos"] for j in ARM_JOINTS}
+                ee = self._forward_kinematics_ee(joints)
+            except Exception as e:
+                # A transient bus glitch (serial noise, a concurrent reader
+                # stepping on this arm's port, etc.) must not abort the whole
+                # move or crash the HTTP connection -- skip this cycle and
+                # keep trying until the deadline, same as slow physical
+                # progress toward the target would look from the outside.
+                print(f"[xlerobot] {self.side} arm: transient read/write error, retrying: {e}")
+                continue
             if ee is None:
                 fk_available = False
                 break  # can't verify arrival on this install; degrade below
