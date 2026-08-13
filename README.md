@@ -608,152 +608,19 @@ vocabulary). The JSONL file verifies anywhere:
 program against the MuJoCo sidecar produces a physically-earned trail with
 the identical verdict, and the smoke checks gate all of this in CI.
 
-**The safe-RL/eval loop, closed** (`examples/xlerobot_policy_run.sh`): the
-mission above is a fixed, hand-written script. This closes the loop the gym
-env (`gym_env/xlerobot_env.py`, `LexXLeRobotFetch-v0`) was built for — **train,
-roll out through the grant gate, verify, earn reputation**:
-
-```sh
-examples/xlerobot_policy_run.sh /path/to/venv/bin/python   # or no arg: replays the committed fixture
-#   [replay] move_base(2.61,1.10) reached
-#   [replay] move_arm(0.33,-0.15,0.46) reached
-#   [replay] grasp(15N) reached
-#   [replay] move_base(0.5,1.5) reached
-#   [verify] {"verified":true,"legal":true,"goal_met":true,"score":142}
-#   reputation: did:lex:agent:xlerobot-reach-greedy  score=142  apps=['robot']  (credited=1, rejected=0)
-```
-
-`gym_env/xlerobot_policy_eval.py` runs a **closed-loop** policy — a reactive
-geometric controller today, but state-in/action-out exactly like a trained one
-would be — against the same physics core the gym wraps: it *observes* the
-cup's position and the base's actual post-drive pose (a differential-drive
-base doesn't land on a fixed heading), then *computes* the arm-reach target
-from that observation, rather than replaying memorized waypoints. Its rollout
-— the skill calls it chose, in the same units/frame the governed skills expect
-— is then **replayed through the actual grant gate**
-(`examples/xlerobot_policy_rollout.lex`, reusing `skills.move_base` /
-`move_arm` / `grasp_arm`): the policy doesn't get a bypass — an out-of-grant
-arm target in the rollout is denied at the capability layer exactly as it
-would be for the fixed mission. The resulting trail is verified by the same
-`robot_task` referee, and a verified run is **signed and folded into the
-durable `did:lex` reputation registry** (`examples/agent_registry.lex`,
-the identity + control-plane kernel — see below). Any future policy, hand-coded
-or trained, earns reputation the same way: by producing a rollout that
-survives the grant gate and replays clean.
-
-**The "train" step, closed for real** (`sidecar/xlerobot_rl_train.py` +
-`gym_env/xlerobot_rl_eval.py`): the loop above used a scripted controller
-standing in for "a future RL-trained policy" — this is that policy. Standard
-PPO (stable-baselines3), off the shelf, trained against the same
-`LexXLeRobotFetch-v0` env with no changes to it, the grant, or the governed
-skill surface — the env's action/observation spaces and reward
-(`-distance + a lift bonus`) were already RL-shaped; the trainer was the
-missing piece:
-
-```sh
-pip install stable-baselines3          # + mujoco numpy gymnasium
-python3 sidecar/xlerobot_rl_train.py --timesteps 300000 --out /tmp/xlerobot_ppo.zip
-python3 gym_env/xlerobot_rl_eval.py --stochastic /tmp/xlerobot_ppo.zip /tmp/rollout.json
-#   RL policy eval: SUCCESS — 181 env ticks, 17 governed rollout steps (downsampled every 25 ticks), episode return -109.91
-examples/xlerobot_rl_run.sh /path/to/venv/bin/python   # roll out -> verify -> reputation
-#   [replay] move_base(0.67,1.41) reached
-#   [replay] move_arm(0.50,-0.33,0.33) denied: left arm target outside granted workspace
-#   [replay] move_base(0.87,1.38) reached
-#   [replay] move_arm(1.00,-0.47,0.35) denied: left arm target outside granted workspace
-#   ...
-#   [replay] grasp(15N) reached
-#   ...
-#   [verify] {"verified":true,"legal":true,"goal_met":true,"actions":17,"denials":8,"score":91}
-#   reputation: did:lex:policy:xlerobot-ppo-trained  score=91  apps=['robot']
-```
-
-That output is real, from an actual 300k-timestep training run (measured
-locally; not CI-gated — see below), and it makes the governance property
-vivid rather than theoretical: this policy genuinely **solves the task in
-raw physics** (it lifts the cup — `SUCCESS` above is MuJoCo ground truth,
-not a claim) — and if it had been deployed ungoverned, every one of its arm
-reaches would have executed as commanded. Every single `move_arm` call in
-this rollout lands outside the granted workspace box (the policy's EE
-offset just accumulates in whatever direction reduces distance to the cup,
-unconstrained during training) and is **denied before it reaches the
-sidecar** — only `move_base` and the single `grasp` are admitted. A
-genuinely successful policy, entirely ungoverned by construction, caught
-the same way the keep-out zone demo's synthetic one is. Training doesn't
-earn a bypass.
-
-Mechanics: the raw per-tick trajectory is downsampled into governed
-`move_base`/`move_arm`/`grasp` calls (finer-grained than the fixed
-mission's four waypoints — see `gym_env/xlerobot_rl_eval.py`'s docstring
-for exactly how and why). `examples/xlerobot_rl_run.sh` (no venv/model
-available) replays the **committed fixture**
-(`examples/fixtures/xlerobot_rl_rollout.json` — literally the run shown
-above) instead of training+evaluating, mirroring
-`examples/xlerobot_policy_run.sh`'s fallback; the ML steps are out-of-band
-like the other ML demos, not CI-gated. Two honest caveats: first, 300k
-timesteps of default-hyperparameter PPO is a smoke test of the *training
-loop*, not a mastered policy — the **deterministic** policy (`model.predict`
-without `--stochastic`) reliably fails on this same seed; only sampled
-rollouts found the solution the training run converged toward, so success
-here is real but not yet robust. Second, the trail's `verify` event is
-unconditional (`xlerobot_policy_rollout.lex` always emits "outcome reached"
-after replaying every step, regardless of what physically happened) — the
-real success/failure signal is the eval script's own printed line above
-(`SUCCESS`/`FAILED`, from the sim), not the referee's `goal_met`.
-
-**Retraining from actual usage data** (`gym_env/xlerobot_usage_log.py` +
-`gym_env/xlerobot_governed_env.py` + `sidecar/xlerobot_rl_finetune.py`):
-the policy above solved the task by drifting its arm reach wherever reduced
-distance to the cup, unconstrained — the training loop had no notion of the
-grant. This closes that gap using the **denial pattern from a real governed
-rollout** as the retraining signal, not a guess:
-
-```sh
-python3 gym_env/xlerobot_usage_log.py /tmp/xlerobot_policy_trail.jsonl --json > /tmp/usage.json
-#   {"total": 16, "denied": 8, "denial_rate": 0.5,
-#    "axis_weights": {"move_to.x": 2.69, "move_to.y": 0.23, "move_to.z": 0.08}}
-python3 sidecar/xlerobot_rl_finetune.py /tmp/xlerobot_ppo.zip \
-  --usage-log /tmp/usage.json --timesteps 250000 --out /tmp/xlerobot_ppo_v2.zip
-```
-
-`xlerobot_usage_log.py` reads the trail every governed replay already
-writes (nothing new needed there — `skill`, `args`, `grant`, `outcome` were
-already recorded) and computes, per axis, how often and how far it was
-denied. `xlerobot_governed_env.py` wraps `LexXLeRobotFetch-v0` with the
-*exact same bounds* the grant checks, clipping violations and applying a
-penalty weighted by those real per-axis numbers — an axis usage actually
-hit hardest (here, `move_to.x`, ~2.7x the average) gets the strongest
-training signal, not a uniform guess. `xlerobot_rl_finetune.py` warm-starts
-from the existing checkpoint and continues training against the governed
-env, so the retrained policy keeps its task-solving competence while
-(in principle) learning to stay inside the envelope it's actually held to.
-
-Honest result, not a success claim: the mechanism runs correctly end to
-end — verified in isolation (forcing max-delta actions drives `ee_off` to
-exactly the workspace boundary, never beyond) and through three real
-finetune attempts of increasing seriousness (a 30k-timestep smoke test, a
-250k-timestep run, and a second 250k-timestep run after fixing a real bug
-this work surfaced — the wrapper's reward was computed from the *pre-clip*
-position, so the dominant `-distance` term kept crediting the violation
-the penalty was trying to suppress; recomputing both from the corrected
-pose was a genuine, needed fix, landed regardless of what came next). None
-of the three converged to a policy that is both compliant *and* successful
-within these budgets: the first two keep solving the task by reaching
-outside the grant exactly as before (the penalty alone wasn't enough to
-change the strategy); the third — the reward-fixed one — stopped violating
-the box by *no longer solving the task either*, trading away its only
-learned strategy without discovering an in-bounds replacement.
-
-The likely reason, stated as a hypothesis rather than fixed: the cup's
-position may simply not be reachable from this base-approach strategy
-*within* the granted workspace box at all — compliance may require the
-policy to also change *where the base parks*, not just clamp how far the
-arm reaches from wherever it stopped, and nothing here rewards that
-joint change explicitly. Curriculum learning (gradually tightening the
-box), a base-positioning-aware reward term, or simply far more timesteps
-are the natural next things to try — none of which this PR claims to have
-done. What this delivers is the real thing asked for — an actual retraining
-mechanism driven by actual usage data, correctly implemented and honestly
-evaluated — not a converged compliant policy, which remains open work.
+**The safe-RL/eval loop, closed** (`examples/xlerobot_policy_run.sh` +
+`sidecar/xlerobot_rl_train.py` + `sidecar/xlerobot_rl_finetune.py`): a
+trained PPO policy (no joystick, no human demonstrations) rolls out
+through the same real grant gate every other skill call goes through — no
+bypass for being "trained" — and its real denial pattern becomes the
+signal for a usage-informed retraining pass. One run genuinely solved the
+task in raw physics while getting every out-of-grant arm reach denied;
+later runs measurably cut the denial rate by retraining against real
+usage data. Full writeup, real numbers from four separate runs, and the
+honest open problem (no run has yet converged to a policy that's both
+compliant *and* successful) are in
+[`docs/RL_TRAINING.md`](docs/RL_TRAINING.md) — kept out of this README so
+it doesn't turn into an RL lab notebook.
 
 ## Evidence-gated task graph (the lex-loom pattern)
 
