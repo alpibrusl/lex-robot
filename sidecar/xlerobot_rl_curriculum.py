@@ -38,10 +38,18 @@ def main() -> int:
     ap.add_argument("--final", type=float, default=0.85, help="fraction of training by which walls reach the grant box (default: 0.85)")
     ap.add_argument("--out", default="/tmp/xlerobot_ppo_curr.zip", help="where to save the trained policy")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--checkpoint-every", type=int, default=0,
+                    help="save a rolling checkpoint every N timesteps (0 = off)")
+    ap.add_argument("--resume-from", default=None,
+                    help="checkpoint .zip to continue from (pairs with --resume-step)")
+    ap.add_argument("--resume-step", type=int, default=0,
+                    help="total timesteps already trained by --resume-from; fast-forwards "
+                         "the wall-annealing schedule so the walls pick up where they were")
     args = ap.parse_args()
 
     try:
         from stable_baselines3 import PPO
+        from stable_baselines3.common.callbacks import CheckpointCallback
         from stable_baselines3.common.vec_env import DummyVecEnv
     except ImportError as e:
         print(f"error: stable-baselines3 not installed ({e}). `pip install stable-baselines3`.", file=sys.stderr)
@@ -51,16 +59,35 @@ def main() -> int:
 
     # Each env instance anneals against its own share of the budget, so N
     # lockstep copies reach the grant box at the same wall-clock point a
-    # single env would.
+    # single env would. The schedule is anchored to the FULL budget even on
+    # resume — resuming replays the remaining timesteps, not the whole run.
     horizon = args.timesteps // args.envs
-    env = DummyVecEnv([
-        (lambda: make_curriculum_env(horizon_steps=horizon, warmup_frac=args.warmup, final_frac=args.final))
-        for _ in range(args.envs)
-    ])
+    start_n = args.resume_step // args.envs
+
+    def make_one():
+        e = make_curriculum_env(horizon_steps=horizon, warmup_frac=args.warmup, final_frac=args.final)
+        e.n_steps = start_n
+        e._apply_schedule()
+        return e
+
+    env = DummyVecEnv([make_one for _ in range(args.envs)])
     env.seed(args.seed)
 
-    model = PPO("MlpPolicy", env, verbose=1, seed=args.seed)
-    model.learn(total_timesteps=args.timesteps, progress_bar=False)
+    if args.resume_from:
+        model = PPO.load(args.resume_from, env=env)
+        print(f"resumed from {args.resume_from} at ~{args.resume_step} timesteps "
+              f"(schedule progress {env.envs[0].progress():.2f})")
+    else:
+        model = PPO("MlpPolicy", env, verbose=1, seed=args.seed)
+
+    callback = None
+    if args.checkpoint_every > 0:
+        ckpt_dir = str(Path(args.out).parent)
+        callback = CheckpointCallback(save_freq=max(1, args.checkpoint_every // args.envs),
+                                      save_path=ckpt_dir, name_prefix="curr_ckpt")
+    remaining = args.timesteps - args.resume_step
+    model.learn(total_timesteps=max(1, remaining), progress_bar=False, callback=callback,
+                reset_num_timesteps=not args.resume_from)
     model.save(args.out)
     print(f"saved curriculum-trained policy: {args.out}")
     print(f"evaluate it: python3 gym_env/xlerobot_rl_eval.py {args.out} /tmp/xlerobot_rl_rollout.json")
