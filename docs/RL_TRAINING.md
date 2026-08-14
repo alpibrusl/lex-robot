@@ -151,12 +151,13 @@ learning to stay inside the envelope it's actually held to.
 
 The mechanism runs correctly end to end — verified in isolation (forcing
 max-delta actions drives `ee_off` to exactly the workspace boundary,
-never beyond) — and has been run for real six times so far, at
+never beyond) — and has been run for real seven times so far, at
 increasing seriousness. None has yet converged to a policy that is both
 compliant *and* successful within the budget used: attempt 5 settled
-the "is the budget the problem?" half of the question, and attempt 6
+the "is the budget the problem?" half of the question, attempt 6
 settled the "does the finetune just need a competent starting point?"
-half.
+half, and attempt 7 (curriculum) is the first to keep the task solved
+while eliminating whole axes of violation.
 
 | # | train | finetune | denial rate before → after | notes |
 |---|---|---|---|---|
@@ -166,6 +167,7 @@ half.
 | 4 | 200k timesteps (fresh) | 100k timesteps | 69% (33/48) → 50% (24/48) | see below — real improvement this time, still not solved |
 | 5 | **2M timesteps (fresh)** | none yet | 44–50% (4/8–4/9) | see below — **first policy to solve the task on the deterministic eval**; compliance still open |
 | 6 | 2M timesteps (fresh, replicates 5) | **500k timesteps from the competent baseline** | 50% → 50%, task competence **lost** | see below — the strongest evidence yet for the geometric hypothesis |
+| 7 | **3M timesteps, curriculum (walls anneal wide → grant)** | (single run, no separate finetune) | 50%, but y violations **eliminated**, z at 2cm noise | see below — task competence **kept** (det SUCCESS); residual is x-only "leaning on the wall" |
 
 **Attempt 3's bug, fixed regardless of what came next**: the wrapper's
 reward was computed from the *pre-clip* position, so the dominant
@@ -284,27 +286,54 @@ reproduced from a genuinely competent start. Even with real competence
 to preserve, 500k timesteps of clip-and-penalize destroyed the lift
 without buying a single point of denial rate.
 
-### The geometric hypothesis, now strongly supported, and what's next
+**Attempt 7 — curriculum: walls wide first, annealed to the grant box
+(`sidecar/xlerobot_rl_curriculum.py` + `gym_env/xlerobot_curriculum_env.py`)**:
+the first structural candidate, built and run: one continuous 3M-timestep
+PPO session where the arm box starts wide enough for attempt 5's winning
+ungoverned strategy, holds there for the first 35% of training, anneals
+linearly to the *exact* grant bounds by 85%, and stays there. (Building
+this surfaced a second latent bug, fixed on its own merits: the governed
+wrapper's base-clip wrote `qvel` at a `qpos` address — the cup freejoint
+takes 7 qpos slots but 6 DOFs — crashing the first time a training run's
+base actually crossed the floor bounds, which attempts 1–6 never did.)
 
-The hypothesis (attempts 1–5): the cup may simply not be reachable
-*within* the granted workspace box from where the trained base-approach
-parks — compliance requires changing *where the base parks*, not
-clamping how far the arm reaches from wherever it stopped, and nothing
-in the current reward targets that joint change. Attempt 6 is the
-strongest evidence yet: the two cheap explanations ("not enough
-timesteps" — killed by attempt 5; "nothing worth preserving in the
-starting policy" — killed by attempt 6) are both now tested and dead.
-The penalty can only *suppress* the out-of-box reach; it cannot
-*redirect* the strategy, because inside the box there is (apparently)
-no rewarding alternative from that base position.
+```
+== deterministic eval ==   SUCCESS — 98 ticks, return -94.57   (competence KEPT)
+== stochastic eval ==      SUCCESS — 372 ticks, return -218.94
+== grant-gate replay ==    9 governed steps, 4/8 denied (50%)
+  move_to.x: 4 violations, mean overshoot 0.789m, max 1.509m
+  move_to.z: 2 violations, mean overshoot 0.021m   (2cm — boundary noise)
+  move_to.y: 0 violations                          (was 4 in attempt 5)
+```
 
-That leaves the two structural candidates, both requiring real code
-changes rather than more runs: **curriculum learning** (train
-ungoverned until the task is solved, then anneal the box bounds toward
-the grant over training, so the policy adapts its base positioning
-while it still remembers how to lift) and a **base-positioning-aware
-reward term** (reward parking spots from which the cup is in-box
-reachable). What exists today is the real thing that was asked for — an
-actual training loop and an actual usage-driven retraining mechanism,
-correctly implemented and honestly evaluated across six real runs — not
-yet a converged compliant policy, which remains the open work.
+Read honestly, this is the first genuinely mixed-positive result:
+unlike attempt 6, the curriculum **kept the task solved** while training
+against the real box, and it **eliminated the y-axis violations
+entirely** (z is 2cm noise). The residual is one axis, x — and its shape
+is diagnostic: the replayed `move_arm` targets march x outward
+0.5 → 1.0 → 1.5 → 1.96 while y/z stay in-box. The policy learned to
+**lean on the wall**: during training the clip absorbs the excess
+(overshoot per step is capped at one EE_DMAX = 2cm, so the penalty per
+step is tiny) and the *effective* clipped position is good enough to
+lift from — but at deploy time the real gate doesn't clip, it **denies**
+(refuse, don't downgrade), so the same commanded targets bounce.
+
+### What's next: make training-time denial mean what the gate means
+
+The curriculum killed the geometric excuse for y and z, which sharpens
+the remaining gap to a semantics mismatch: the training wrapper models a
+violation as "clipped to the boundary" (you get most of what you asked
+for), while the real gate models it as "denied — target unreached" (you
+get nothing; the arm stays where it was). Leaning on the wall is only a
+viable strategy under the first semantics. The natural next experiment
+is a **deny-mode wrapper**: on violation, reject the entire arm delta
+for that step instead of clipping — pushing at the wall then freezes
+the arm and stalls the distance term, which is a real gradient toward
+backing off the commanded target, not just a small tax on it. (Raising
+`PENALTY_SCALE` is the cheaper knob but taxes the same wrong margin.)
+A base-positioning-aware reward term remains on the shelf after that.
+What exists today is the real thing that was asked for — an actual
+training loop, a usage-driven retraining mechanism, and a curriculum
+trainer, correctly implemented and honestly evaluated across seven real
+runs — not yet a converged compliant policy, which remains the open
+work.
