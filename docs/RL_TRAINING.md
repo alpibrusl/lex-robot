@@ -151,10 +151,12 @@ learning to stay inside the envelope it's actually held to.
 
 The mechanism runs correctly end to end — verified in isolation (forcing
 max-delta actions drives `ee_off` to exactly the workspace boundary,
-never beyond) — and has been run for real five times so far, at
+never beyond) — and has been run for real six times so far, at
 increasing seriousness. None has yet converged to a policy that is both
-compliant *and* successful within the budget used, though attempt 5
-settled the "is the budget the problem?" half of the question.
+compliant *and* successful within the budget used: attempt 5 settled
+the "is the budget the problem?" half of the question, and attempt 6
+settled the "does the finetune just need a competent starting point?"
+half.
 
 | # | train | finetune | denial rate before → after | notes |
 |---|---|---|---|---|
@@ -163,6 +165,7 @@ settled the "is the budget the problem?" half of the question.
 | 3 | (same checkpoint) | 250k timesteps, **after a reward bug fix** | flat, but stopped violating | see bug note below — stopped violating the box by no longer solving the task either, trading away its only learned strategy without finding an in-bounds replacement |
 | 4 | 200k timesteps (fresh) | 100k timesteps | 69% (33/48) → 50% (24/48) | see below — real improvement this time, still not solved |
 | 5 | **2M timesteps (fresh)** | none yet | 44–50% (4/8–4/9) | see below — **first policy to solve the task on the deterministic eval**; compliance still open |
+| 6 | 2M timesteps (fresh, replicates 5) | **500k timesteps from the competent baseline** | 50% → 50%, task competence **lost** | see below — the strongest evidence yet for the geometric hypothesis |
 
 **Attempt 3's bug, fixed regardless of what came next**: the wrapper's
 reward was computed from the *pre-clip* position, so the dominant
@@ -256,22 +259,52 @@ strategy *better*, not legal. Same temp-file experiment protocol as
 attempt 4 (nothing committed); reproducible with the attempt-4 commands
 plus `--timesteps 2000000`.
 
-### The likely reason compliance hasn't converged, and what's next
+**Attempt 6 — the finetune, finally given a competent starting point**:
+attempts 1–4 finetuned weak policies, so "it traded away the task"
+(attempt 3) was ambiguous — maybe there was just nothing worth
+preserving. This run removed that ambiguity: a fresh 2M-timestep
+baseline (replicating attempt 5 almost exactly — deterministic
+`SUCCESS`, 50% denial, x 0.749m / y 0.476m mean overshoot), then a
+500k-timestep usage-informed finetune warm-started from it, with
+penalty weights from the baseline's own real denial trail (x 1.22x,
+y 0.78x). The result is unambiguous — and negative:
 
-Stated as a hypothesis, not fixed fact: the cup's position may simply not
-be reachable from the trained base-approach strategy *within* the
-granted workspace box at all — compliance may require the policy to also
-change *where the base parks*, not just clamp how far the arm reaches
-from wherever it stopped, and nothing in the current reward rewards that
-joint change explicitly. Attempt 5 sharpens this: "just more timesteps"
-is now tested and does **not** produce compliance on its own, so the
-remaining candidates are curriculum learning (train ungoverned until the
-task is solved, then gradually tighten the box toward the grant) and a
-base-positioning-aware reward term. The natural next experiment is the
-usage-informed finetune (attempts 1–4's mechanism) warm-started from
-attempt 5's checkpoint — for the first time it would start from a policy
-with real competence to preserve, which is the regime that mechanism was
-designed for. What exists today is the real thing that was asked for —
-an actual training loop and an actual usage-driven retraining mechanism,
-correctly implemented and honestly evaluated across five real runs — not
+```
+== baseline (2M) ==       SUCCESS (det), 50% denial (4/8), 9 governed steps
+== after finetune ==      FAILED det (-218.62) and stochastic (-243.77), full 600 ticks
+actions: 48  denied: 24  denial rate: 50%
+  move_to.y: 20 violations, mean overshoot 0.603m  (was 0.476m — worse)
+  move_to.x: 19 violations, mean overshoot 0.358m  (was 0.749m — better)
+  move_to.z:  9 violations, mean overshoot 0.010m  (negligible)
+```
+
+The finetuned policy parks the base at one spot and oscillates its arm
+out-of-bounds without ever lifting — exactly attempt 3's failure mode,
+reproduced from a genuinely competent start. Even with real competence
+to preserve, 500k timesteps of clip-and-penalize destroyed the lift
+without buying a single point of denial rate.
+
+### The geometric hypothesis, now strongly supported, and what's next
+
+The hypothesis (attempts 1–5): the cup may simply not be reachable
+*within* the granted workspace box from where the trained base-approach
+parks — compliance requires changing *where the base parks*, not
+clamping how far the arm reaches from wherever it stopped, and nothing
+in the current reward targets that joint change. Attempt 6 is the
+strongest evidence yet: the two cheap explanations ("not enough
+timesteps" — killed by attempt 5; "nothing worth preserving in the
+starting policy" — killed by attempt 6) are both now tested and dead.
+The penalty can only *suppress* the out-of-box reach; it cannot
+*redirect* the strategy, because inside the box there is (apparently)
+no rewarding alternative from that base position.
+
+That leaves the two structural candidates, both requiring real code
+changes rather than more runs: **curriculum learning** (train
+ungoverned until the task is solved, then anneal the box bounds toward
+the grant over training, so the policy adapts its base positioning
+while it still remembers how to lift) and a **base-positioning-aware
+reward term** (reward parking spots from which the cup is in-box
+reachable). What exists today is the real thing that was asked for — an
+actual training loop and an actual usage-driven retraining mechanism,
+correctly implemented and honestly evaluated across six real runs — not
 yet a converged compliant policy, which remains the open work.
