@@ -305,7 +305,7 @@ fn trade_result_str(tr :: TradeResult) -> Str {
 # ── Generic trader function ────────────────────────────────────────────────────
 # Runs one trader at one market via LLM-driven tool loop.
 # Returns (result_str, new_parent, new_used).
-fn run_trader(trader :: Str, market :: baz.StallInfo, budget :: Int, policy :: consent.ConsentPolicy, log :: tlog.Log, parent :: Str, used :: List[Str], now :: Int, provider :: prov.Provider, model :: prov.ModelRef, dash :: Str) -> [net, sql, time, llm, io, proc] (Str, Str, List[Str]) {
+fn run_trader(trader :: Str, market :: baz.StallInfo, budget :: Int, policy :: consent.ConsentPolicy, log :: tlog.Log, parent :: Str, used :: List[Str], now :: Int, provider :: prov.Provider, model :: prov.ModelRef, dash :: Str) -> [net, sql, time, llm, io, proc, approval] (Str, Str, List[Str]) {
   let nonce := str.concat("n-", str.concat(trader, market.name))
   let session_name := str.concat(trader, "-session")
   let blob := { endpoint: market.url, ephemeral_token: "trading-token", peer_pubkey: market.pubkey_b64, nonce: nonce, expires_at: now + 300000 }
@@ -343,7 +343,7 @@ fn run_trader(trader :: Str, market :: baz.StallInfo, budget :: Int, policy :: c
 type TraderState = { parent :: Str, used :: List[Str] }
 
 # ── Entry point ────────────────────────────────────────────────────────────────
-fn run() -> [net, io, sql, fs_write, sense, time, env, llm, proc] Unit {
+fn run() -> [net, io, sql, fs_write, sense, time, env, llm, proc, approval] Unit {
   let trail_path := "/tmp/lex-trading-demo.db"
   let dash := "http://localhost:8900"
 
@@ -397,10 +397,10 @@ fn run() -> [net, io, sql, fs_write, sense, time, env, llm, proc] Unit {
                       let traders := ["Axon", "Byte", "Coil", "Dusk"]
                       let init_state := { parent: root.id, used: [] }
 
-                      let _final := list.fold(traders, init_state, fn (tstate :: TraderState, trader :: Str) -> [net, sql, time, llm, io, proc] TraderState {
+                      let _final := list.fold(traders, init_state, fn (tstate :: TraderState, trader :: Str) -> [net, sql, time, llm, io, proc, approval] TraderState {
                         let _ts := post_ui(dash, str.join(["{\"kind\":\"trader_start\",\"trader\":\"", trader, "\"}"], ""))
                         let _tp := io.print(str.join(["── ", trader, " entering the floor ──────────────────────────────"], ""))
-                        let market_state := list.fold(markets, tstate, fn (mstate :: TraderState, market :: baz.StallInfo) -> [net, sql, time, llm, io, proc] TraderState {
+                        let market_state := list.fold(markets, tstate, fn (mstate :: TraderState, market :: baz.StallInfo) -> [net, sql, time, llm, io, proc, approval] TraderState {
                           let _uiv := post_ui(dash, str.join(["{\"kind\":\"visit\",\"trader\":\"", trader, "\",\"market\":\"", market.name, "\"}"], ""))
                           let _vi := io.print(str.join(["  [", trader, "] → ", market.name], ""))
                           let _slv := time.sleep_ms(1500)

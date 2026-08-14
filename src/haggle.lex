@@ -30,7 +30,7 @@ type BuyerMove  = BOffer(Int) | BAccept | BWalk
 type Deal = { closed :: Bool, price :: Int, rounds :: Int, reason :: Str }
 
 # ── one LLM turn (no tools, one short reply) ──────────────────────────────────
-fn one_turn(provider :: prov.Provider, model :: prov.ModelRef, system_msg :: Str, user_msg :: Str) -> [net, llm, io, proc] Str {
+fn one_turn(provider :: prov.Provider, model :: prov.ModelRef, system_msg :: Str, user_msg :: Str) -> [net, llm, io, proc, approval] Str {
   let opts  := { temperature: Some(0.6), top_p: None, max_steps: Some(1), max_tokens: Some(64) }
   let agent := llm_agent.make_agent("haggle", system_msg, model, provider, [], opts)
   let steps := iter.to_list(llm_agent.run_loop(agent, [UserMsg(user_msg)]))
@@ -71,7 +71,7 @@ fn seller_system(persona :: Str) -> Str {
     "ACCEPT as soon as the offer clears your cost; a modest margin secured beats holding out for one more credit."], "")
 }
 
-fn seller_turn(provider :: prov.Provider, model :: prov.ModelRef, persona :: Str, item :: Str, base :: Int, offer :: Int, prev_ask :: Int) -> [net, llm, io, proc] SellerMove {
+fn seller_turn(provider :: prov.Provider, model :: prov.ModelRef, persona :: Str, item :: Str, base :: Int, offer :: Int, prev_ask :: Int) -> [net, llm, io, proc, approval] SellerMove {
   let u := if offer < 0 {
     str.join(["Item: \"", item, "\". Your base cost: ", int.to_str(base), ". The buyer hasn't offered yet — state your opening ASK:<int>."], "")
   } else {
@@ -92,7 +92,7 @@ fn buyer_system() -> Str {
     "You genuinely want the item: ACCEPT a fair ask that sits well within budget rather than lose the deal over a credit or two."], "")
 }
 
-fn buyer_turn(provider :: prov.Provider, model :: prov.ModelRef, item :: Str, budget :: Int, ask :: Int, prev_offer :: Int) -> [net, llm, io, proc] BuyerMove {
+fn buyer_turn(provider :: prov.Provider, model :: prov.ModelRef, item :: Str, budget :: Int, ask :: Int, prev_offer :: Int) -> [net, llm, io, proc, approval] BuyerMove {
   let u := str.join(["Item: \"", item, "\". Your secret max budget: ", int.to_str(budget), ". The seller's current ask is ", int.to_str(ask), ". Respond OFFER:<int> / ACCEPT / WALK."], "")
   parse_buyer(one_turn(provider, model, buyer_system(), u), prev_offer)
 }
@@ -107,7 +107,7 @@ fn mn(a :: Int, b :: Int) -> Int { if a < b { a } else { b } }
 fn mx(a :: Int, b :: Int) -> Int { if a > b { a } else { b } }
 fn lohi(v :: Int, lo :: Int, hi :: Int) -> Int { if v < lo { lo } else { if v > hi { hi } else { v } } }
 
-fn loop(provider :: prov.Provider, model :: prov.ModelRef, persona :: Str, item :: Str, base :: Int, budget :: Int, max_rounds :: Int, ask :: Int, last_offer :: Int, round :: Int) -> [net, llm, io, proc] Deal {
+fn loop(provider :: prov.Provider, model :: prov.ModelRef, persona :: Str, item :: Str, base :: Int, budget :: Int, max_rounds :: Int, ask :: Int, last_offer :: Int, round :: Int) -> [net, llm, io, proc, approval] Deal {
   if round > max_rounds {
     { closed: false, price: 0, rounds: round - 1, reason: "impasse — no deal after the round cap" }
   } else {
@@ -150,7 +150,7 @@ fn loop(provider :: prov.Provider, model :: prov.ModelRef, persona :: Str, item 
 }
 
 # Negotiate one item at one stall. `stall` selects the seller's personality.
-fn negotiate(provider :: prov.Provider, model :: prov.ModelRef, stall :: Str, item :: Str, base :: Int, budget :: Int, max_rounds :: Int) -> [net, llm, io, proc] Deal {
+fn negotiate(provider :: prov.Provider, model :: prov.ModelRef, stall :: Str, item :: Str, base :: Int, budget :: Int, max_rounds :: Int) -> [net, llm, io, proc, approval] Deal {
   let persona := sllm.stall_personality(stall)
   let _ := io.print(str.join(["── haggle: \"", item, "\" at ", stall, "  (base cost ", int.to_str(base), ", buyer max ", int.to_str(budget), ", ≤", int.to_str(max_rounds), " rounds) ──"], ""))
   let open := seller_turn(provider, model, persona, item, base, 0 - 1, base)

@@ -84,7 +84,7 @@ fn goal_from_voice() -> [net, sense, io] Str {
   }
 }
 
-fn run_goal(goal_text :: Str) -> [net, crypto, llm, io, proc, env, stream] Unit {
+fn run_goal(goal_text :: Str) -> [net, crypto, llm, io, proc, env, stream, approval] Unit {
   let api_key := match env.get("OPENCODE_API_KEY") {
     None => "",
     Some(v) => v,
@@ -109,12 +109,12 @@ fn run_goal(goal_text :: Str) -> [net, crypto, llm, io, proc, env, stream] Unit 
 }
 
 # Spoken goal: listens first, then hands the transcript to run_goal.
-fn run() -> [net, crypto, sense, llm, io, proc, env, stream] Unit {
+fn run() -> [net, crypto, sense, llm, io, proc, env, stream, approval] Unit {
   run_goal(goal_from_voice())
 }
 
 # Typed goal: skips listen entirely.
-fn run_text(goal_text :: Str) -> [net, crypto, llm, io, proc, env, stream] Unit {
+fn run_text(goal_text :: Str) -> [net, crypto, llm, io, proc, env, stream, approval] Unit {
   run_goal(goal_text)
 }
 

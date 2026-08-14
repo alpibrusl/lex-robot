@@ -109,7 +109,7 @@ fn memory_note(regard :: Int, grudge :: Str) -> Str {
 # transcript so far, and their memory of this broker (regard + any grudge),
 # produce their one-line in-character contribution. Falls back to a static —
 # but still memory-colored — line if no LLM is configured or nothing parses.
-fn line_for(id :: Str, request :: Str, transcript_so_far :: Str, regard :: Int, grudge :: Str, token :: Str, project :: Str, location :: Str, base_url :: Str, model_name :: Str) -> [net, llm, io, proc] Str {
+fn line_for(id :: Str, request :: Str, transcript_so_far :: Str, regard :: Int, grudge :: Str, token :: Str, project :: Str, location :: Str, base_url :: Str, model_name :: Str) -> [net, llm, io, proc, approval] Str {
   let fallback := memory_fallback(id, regard, grudge)
   let use_opencode := base_url == "opencode" and not str.is_empty(token)
   let use_local    := not use_opencode and not str.is_empty(base_url)

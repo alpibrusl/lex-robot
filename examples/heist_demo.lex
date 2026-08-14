@@ -393,7 +393,7 @@ fn emit_step_events(steps :: List[d.Step], area_name :: Str, dash :: Str, robot 
 }
 
 # ── Scout: infiltrates the Lobby ───────────────────────────────────────────────
-fn run_scout(area :: baz.StallInfo, policy :: consent.ConsentPolicy, log :: tlog.Log, parent :: Str, used :: List[Str], now :: Int, provider :: prov.Provider, model :: prov.ModelRef, dash :: Str) -> [net, sql, time, llm, io, proc] (Str, Str, List[Str]) {
+fn run_scout(area :: baz.StallInfo, policy :: consent.ConsentPolicy, log :: tlog.Log, parent :: Str, used :: List[Str], now :: Int, provider :: prov.Provider, model :: prov.ModelRef, dash :: Str) -> [net, sql, time, llm, io, proc, approval] (Str, Str, List[Str]) {
   let blob := { endpoint: area.url, ephemeral_token: "heist-token", peer_pubkey: area.pubkey_b64, nonce: str.concat("n-scout-", area.name), expires_at: now + 300000 }
   let _qr := emit_qr_meet(dash, "Scout", area.name, area.url, area.pubkey_b64, blob.nonce)
   match audit.run_audited(blob, policy, now, log, parent, used) {
@@ -430,7 +430,7 @@ fn run_scout(area :: baz.StallInfo, policy :: consent.ConsentPolicy, log :: tlog
 }
 
 # ── Hacker: disables cameras and spoofs keycard in Security Room ───────────────
-fn run_hacker(area :: baz.StallInfo, policy :: consent.ConsentPolicy, log :: tlog.Log, parent :: Str, used :: List[Str], now :: Int, provider :: prov.Provider, model :: prov.ModelRef, dash :: Str) -> [net, sql, time, llm, io, proc] (Str, Str, List[Str]) {
+fn run_hacker(area :: baz.StallInfo, policy :: consent.ConsentPolicy, log :: tlog.Log, parent :: Str, used :: List[Str], now :: Int, provider :: prov.Provider, model :: prov.ModelRef, dash :: Str) -> [net, sql, time, llm, io, proc, approval] (Str, Str, List[Str]) {
   let blob := { endpoint: area.url, ephemeral_token: "heist-token", peer_pubkey: area.pubkey_b64, nonce: str.concat("n-hacker-", area.name), expires_at: now + 300000 }
   let _qr := emit_qr_meet(dash, "Hacker", area.name, area.url, area.pubkey_b64, blob.nonce)
   match audit.run_audited(blob, policy, now, log, parent, used) {
@@ -467,7 +467,7 @@ fn run_hacker(area :: baz.StallInfo, policy :: consent.ConsentPolicy, log :: tlo
 }
 
 # ── Muscle: cracks credentials and downloads the vault blueprint ───────────────
-fn run_muscle(area :: baz.StallInfo, policy :: consent.ConsentPolicy, log :: tlog.Log, parent :: Str, used :: List[Str], now :: Int, provider :: prov.Provider, model :: prov.ModelRef, dash :: Str) -> [net, sql, time, llm, io, proc] (Str, Str, List[Str]) {
+fn run_muscle(area :: baz.StallInfo, policy :: consent.ConsentPolicy, log :: tlog.Log, parent :: Str, used :: List[Str], now :: Int, provider :: prov.Provider, model :: prov.ModelRef, dash :: Str) -> [net, sql, time, llm, io, proc, approval] (Str, Str, List[Str]) {
   let blob := { endpoint: area.url, ephemeral_token: "heist-token", peer_pubkey: area.pubkey_b64, nonce: str.concat("n-muscle-", area.name), expires_at: now + 300000 }
   let _qr := emit_qr_meet(dash, "Muscle", area.name, area.url, area.pubkey_b64, blob.nonce)
   match audit.run_audited(blob, policy, now, log, parent, used) {
@@ -504,7 +504,7 @@ fn run_muscle(area :: baz.StallInfo, policy :: consent.ConsentPolicy, log :: tlo
 }
 
 # ── Extractor: opens the vault (must ask human for the code first) ─────────────
-fn run_extractor(area :: baz.StallInfo, policy :: consent.ConsentPolicy, log :: tlog.Log, parent :: Str, used :: List[Str], now :: Int, provider :: prov.Provider, model :: prov.ModelRef, dash :: Str) -> [net, sql, time, llm, io, proc] (Str, Str, List[Str]) {
+fn run_extractor(area :: baz.StallInfo, policy :: consent.ConsentPolicy, log :: tlog.Log, parent :: Str, used :: List[Str], now :: Int, provider :: prov.Provider, model :: prov.ModelRef, dash :: Str) -> [net, sql, time, llm, io, proc, approval] (Str, Str, List[Str]) {
   let blob := { endpoint: area.url, ephemeral_token: "heist-token", peer_pubkey: area.pubkey_b64, nonce: str.concat("n-extractor-", area.name), expires_at: now + 300000 }
   let _qr := emit_qr_meet(dash, "Extractor", area.name, area.url, area.pubkey_b64, blob.nonce)
   match audit.run_audited(blob, policy, now, log, parent, used) {
@@ -516,7 +516,7 @@ fn run_extractor(area :: baz.StallInfo, policy :: consent.ConsentPolicy, log :: 
 
         # detonate_device is offered as a tool but NOT granted by the vault, so
         # the grant layer will refuse it — the on-screen "GRANT DENIED" moment.
-        let tools := [make_scan_tool(session, now, dash, "Extractor"), make_vault_tool(session, now, dash, "Extractor"), make_detonate_tool(session, now, dash, "Extractor"), human.make_ask_human_tool(dash, "Extractor")]
+        let tools := [make_scan_tool(session, now, dash, "Extractor"), make_vault_tool(session, now, dash, "Extractor"), make_detonate_tool(session, now, dash, "Extractor"), human.make_ask_human_tool_http(dash, "Extractor")]
 
         let system_prompt := str.join([
           "You are Extractor, the final robot in the heist team, operating in the ", area.name, " of a secure facility.",
@@ -548,7 +548,7 @@ fn run_extractor(area :: baz.StallInfo, policy :: consent.ConsentPolicy, log :: 
 }
 
 # ── Entry point ────────────────────────────────────────────────────────────────
-fn run() -> [net, io, sql, fs_write, sense, time, env, llm, proc] Unit {
+fn run() -> [net, io, sql, fs_write, sense, time, env, llm, proc, approval] Unit {
   let trail_path := "/tmp/lex-heist-demo.db"
   let dash := "http://localhost:8900"
 

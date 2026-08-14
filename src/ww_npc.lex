@@ -84,12 +84,12 @@ fn make_model(base_url :: Str, model_name :: Str) -> prov.ModelRef {
 # empty/fallback-equal first result is retried once before giving up. Mirrors
 # the retry-on-format-miss pattern already proven to take local models from
 # partial to 3/3 reliable elsewhere in this platform (BYO-agent probes).
-fn ww_llm_turn(agent_name :: Str, system_msg :: Str, user_msg :: Str, model :: prov.ModelRef, provider :: prov.Provider, temperature :: Float, max_tokens :: Option[Int], tag :: Str, fb :: Str) -> [net, llm, io, proc] Str {
+fn ww_llm_turn(agent_name :: Str, system_msg :: Str, user_msg :: Str, model :: prov.ModelRef, provider :: prov.Provider, temperature :: Float, max_tokens :: Option[Int], tag :: Str, fb :: Str) -> [net, llm, io, proc, approval] Str {
   let agent := llm_agent.make_agent(agent_name, system_msg, model, provider, [], { temperature: Some(temperature), top_p: None, max_steps: Some(1), max_tokens: max_tokens })
   let steps := iter.to_list(llm_agent.run_loop(agent, [UserMsg(user_msg)]))
   extract_tagged_or_raw(extract_text(steps), tag, fb)
 }
-fn ww_llm_turn_retried(agent_name :: Str, system_msg :: Str, user_msg :: Str, model :: prov.ModelRef, provider :: prov.Provider, temperature :: Float, max_tokens :: Option[Int], tag :: Str, fb :: Str) -> [net, llm, io, proc] Str {
+fn ww_llm_turn_retried(agent_name :: Str, system_msg :: Str, user_msg :: Str, model :: prov.ModelRef, provider :: prov.Provider, temperature :: Float, max_tokens :: Option[Int], tag :: Str, fb :: Str) -> [net, llm, io, proc, approval] Str {
   let first := ww_llm_turn(agent_name, system_msg, user_msg, model, provider, temperature, max_tokens, tag, fb)
   if first != fb { first } else { ww_llm_turn(agent_name, system_msg, user_msg, model, provider, temperature, max_tokens, tag, fb) }
 }
@@ -126,7 +126,7 @@ fn speak_fallback(name :: Str, role :: Str) -> Str {
     "I don't have much yet — but whoever's steering us hardest is who I'd look at twice."
   }}}
 }
-fn speak(name :: Str, role :: Str, private :: Str, transcript :: Str, token :: Str, project :: Str, location :: Str, base_url :: Str, model_name :: Str) -> [net, llm, io, proc] Str {
+fn speak(name :: Str, role :: Str, private :: Str, transcript :: Str, token :: Str, project :: Str, location :: Str, base_url :: Str, model_name :: Str) -> [net, llm, io, proc, approval] Str {
   let fb := speak_fallback(name, role)
   if not provider_configured(token, project, base_url) { fb } else {
     let system_msg := str.join([
@@ -148,7 +148,7 @@ fn speak(name :: Str, role :: Str, private :: Str, transcript :: Str, token :: S
 # vote onto whoever spoke first among the candidates (deterministic, not
 # self); town abstains toward the first candidate. (A real, reasoned vote needs
 # the LLM — the whole point of the game.)
-fn vote(name :: Str, role :: Str, private :: Str, transcript :: Str, candidates :: Str, fallback_target :: Str, token :: Str, project :: Str, location :: Str, base_url :: Str, model_name :: Str) -> [net, llm, io, proc] Str {
+fn vote(name :: Str, role :: Str, private :: Str, transcript :: Str, candidates :: Str, fallback_target :: Str, token :: Str, project :: Str, location :: Str, base_url :: Str, model_name :: Str) -> [net, llm, io, proc, approval] Str {
   if not provider_configured(token, project, base_url) { fallback_target } else {
     let system_msg := str.join([
       "You are ", name, ", playing Werewolf. ", role_goal(role), "\n\n",
@@ -173,7 +173,7 @@ fn vote(name :: Str, role :: Str, private :: Str, transcript :: Str, candidates 
 fn advisor_fallback() -> Str {
   "I don't have a strong read yet — watch how people react when someone gets accused, that's usually where the tells show up."
 }
-fn advise(private :: Str, transcript :: Str, history :: Str, question :: Str, token :: Str, project :: Str, location :: Str, base_url :: Str, model_name :: Str) -> [net, llm, io, proc] Str {
+fn advise(private :: Str, transcript :: Str, history :: Str, question :: Str, token :: Str, project :: Str, location :: Str, base_url :: Str, model_name :: Str) -> [net, llm, io, proc, approval] Str {
   let fb := advisor_fallback()
   if not provider_configured(token, project, base_url) { fb } else {
     let system_msg := str.join([
@@ -214,7 +214,7 @@ fn reveal_fallback(role :: Str, won :: Bool) -> Str {
     else { "I trusted the wrong voice at the wrong moment. In hindsight the tells were right there." }
   }}}
 }
-fn reveal(name :: Str, role :: Str, won :: Bool, transcript :: Str, token :: Str, project :: Str, location :: Str, base_url :: Str, model_name :: Str) -> [net, llm, io, proc] Str {
+fn reveal(name :: Str, role :: Str, won :: Bool, transcript :: Str, token :: Str, project :: Str, location :: Str, base_url :: Str, model_name :: Str) -> [net, llm, io, proc, approval] Str {
   let fb := reveal_fallback(role, won)
   if not provider_configured(token, project, base_url) { fb } else {
     let outcome := if won { "Your side WON." } else { "Your side LOST." }

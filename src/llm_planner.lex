@@ -323,13 +323,13 @@ fn steps_to_lines(steps :: List[d.Step]) -> List[Str] {
 # Run the planner to completion against a live goal_text; returns the full
 # step trace (StepToolExec/StepToolResult/StepDone/StepDelta) for a caller
 # to render however it likes (steps_to_lines gives a ready-made summary).
-fn plan(peer_url :: Str, session_id :: Str, provider :: prov.Provider, model :: prov.ModelRef, goal_text :: Str) -> [net, crypto, llm, io, proc] List[d.Step] {
+fn plan(peer_url :: Str, session_id :: Str, provider :: prov.Provider, model :: prov.ModelRef, goal_text :: Str) -> [net, crypto, llm, io, proc, approval] List[d.Step] {
   let ctx_id := open_client_session(peer_url, session_id)
   let agent := build_agent(peer_url, ctx_id, provider, model)
   iter.to_list(ag.run_loop(agent, [UserMsg(goal_text)]))
 }
 
-fn plan_opencode(peer_url :: Str, session_id :: Str, api_key :: Str, model_name :: Str, goal_text :: Str) -> [net, crypto, llm, io, proc] List[d.Step] {
+fn plan_opencode(peer_url :: Str, session_id :: Str, api_key :: Str, model_name :: Str, goal_text :: Str) -> [net, crypto, llm, io, proc, approval] List[d.Step] {
   plan(peer_url, session_id, opencode_provider(api_key), opencode_model(model_name), goal_text)
 }
 
@@ -340,13 +340,13 @@ fn plan_opencode(peer_url :: Str, session_id :: Str, api_key :: Str, model_name 
 # actually did lives separately, inside a2a_robot_server.lex's own
 # trail.Log on the server side — the two are complementary, not the same
 # record twice.
-fn plan_traced(peer_url :: Str, session_id :: Str, provider :: prov.Provider, model :: prov.ModelRef, goal_text :: Str, log :: trail.Log, parent :: Option[Str]) -> [net, crypto, llm, io, proc, sql, time] List[d.Step] {
+fn plan_traced(peer_url :: Str, session_id :: Str, provider :: prov.Provider, model :: prov.ModelRef, goal_text :: Str, log :: trail.Log, parent :: Option[Str]) -> [net, crypto, llm, io, proc, sql, time, approval] List[d.Step] {
   let ctx_id := open_client_session(peer_url, session_id)
   let agent := build_agent(peer_url, ctx_id, provider, model)
   iter.to_list(ag.run_loop_traced(agent, [UserMsg(goal_text)], log, parent))
 }
 
-fn plan_opencode_traced(peer_url :: Str, session_id :: Str, api_key :: Str, model_name :: Str, goal_text :: Str, log :: trail.Log, parent :: Option[Str]) -> [net, crypto, llm, io, proc, sql, time] List[d.Step] {
+fn plan_opencode_traced(peer_url :: Str, session_id :: Str, api_key :: Str, model_name :: Str, goal_text :: Str, log :: trail.Log, parent :: Option[Str]) -> [net, crypto, llm, io, proc, sql, time, approval] List[d.Step] {
   plan_traced(peer_url, session_id, opencode_provider(api_key), opencode_model(model_name), goal_text, log, parent)
 }
 

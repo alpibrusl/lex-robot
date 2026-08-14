@@ -47,7 +47,7 @@ for _ in $(seq 1 50); do
   sleep 0.2
 done
 
-OUT="$("$LEX" run --allow-effects io,time,crypto,random,sql,fs_read,fs_write,net,concurrent,llm,proc,sense,actuate,stream \
+OUT="$("$LEX" run --allow-effects io,time,crypto,random,sql,fs_read,fs_write,net,concurrent,llm,proc,sense,actuate,stream,approval \
   tests/test_llm_planner.lex main 2>&1)"
 echo "$OUT"
 echo "$OUT" | grep -q "^ALL PASS:"

@@ -342,7 +342,7 @@ fn extract_done_text(steps :: List[d.Step]) -> Str {
 # ── Per-robot run functions ────────────────────────────────────────────────────
 
 # Alpha: Life Support robot
-fn run_alpha(module :: baz.StallInfo, policy :: consent.ConsentPolicy, log :: tlog.Log, parent :: Str, used :: List[Str], now :: Int, provider :: prov.Provider, model :: prov.ModelRef, dash :: Str) -> [net, sql, time, llm, io, proc] (Str, Str, List[Str]) {
+fn run_alpha(module :: baz.StallInfo, policy :: consent.ConsentPolicy, log :: tlog.Log, parent :: Str, used :: List[Str], now :: Int, provider :: prov.Provider, model :: prov.ModelRef, dash :: Str) -> [net, sql, time, llm, io, proc, approval] (Str, Str, List[Str]) {
   let blob := { endpoint: module.url, ephemeral_token: "station-token", peer_pubkey: module.pubkey_b64, nonce: str.concat("n-alpha-", module.name), expires_at: now + 300000 }
   match audit.run_audited(blob, policy, now, log, parent, used) {
     (outcome, p1, used2) => match sess.open_session(outcome, "robot-alpha", now + 60000) {
@@ -375,7 +375,7 @@ fn run_alpha(module :: baz.StallInfo, policy :: consent.ConsentPolicy, log :: tl
 }
 
 # Beta: Navigation robot
-fn run_beta(module :: baz.StallInfo, policy :: consent.ConsentPolicy, log :: tlog.Log, parent :: Str, used :: List[Str], now :: Int, provider :: prov.Provider, model :: prov.ModelRef, dash :: Str) -> [net, sql, time, llm, io, proc] (Str, Str, List[Str]) {
+fn run_beta(module :: baz.StallInfo, policy :: consent.ConsentPolicy, log :: tlog.Log, parent :: Str, used :: List[Str], now :: Int, provider :: prov.Provider, model :: prov.ModelRef, dash :: Str) -> [net, sql, time, llm, io, proc, approval] (Str, Str, List[Str]) {
   let blob := { endpoint: module.url, ephemeral_token: "station-token", peer_pubkey: module.pubkey_b64, nonce: str.concat("n-beta-", module.name), expires_at: now + 300000 }
   match audit.run_audited(blob, policy, now, log, parent, used) {
     (outcome, p1, used2) => match sess.open_session(outcome, "robot-beta", now + 60000) {
@@ -408,7 +408,7 @@ fn run_beta(module :: baz.StallInfo, policy :: consent.ConsentPolicy, log :: tlo
 }
 
 # Gamma: Communications robot
-fn run_gamma(module :: baz.StallInfo, policy :: consent.ConsentPolicy, log :: tlog.Log, parent :: Str, used :: List[Str], now :: Int, provider :: prov.Provider, model :: prov.ModelRef, dash :: Str) -> [net, sql, time, llm, io, proc] (Str, Str, List[Str]) {
+fn run_gamma(module :: baz.StallInfo, policy :: consent.ConsentPolicy, log :: tlog.Log, parent :: Str, used :: List[Str], now :: Int, provider :: prov.Provider, model :: prov.ModelRef, dash :: Str) -> [net, sql, time, llm, io, proc, approval] (Str, Str, List[Str]) {
   let blob := { endpoint: module.url, ephemeral_token: "station-token", peer_pubkey: module.pubkey_b64, nonce: str.concat("n-gamma-", module.name), expires_at: now + 300000 }
   match audit.run_audited(blob, policy, now, log, parent, used) {
     (outcome, p1, used2) => match sess.open_session(outcome, "robot-gamma", now + 60000) {
@@ -441,7 +441,7 @@ fn run_gamma(module :: baz.StallInfo, policy :: consent.ConsentPolicy, log :: tl
 }
 
 # Delta: Cargo Bay robot (adds ask_human for vent_atmosphere)
-fn run_delta(module :: baz.StallInfo, policy :: consent.ConsentPolicy, log :: tlog.Log, parent :: Str, used :: List[Str], now :: Int, provider :: prov.Provider, model :: prov.ModelRef, dash :: Str) -> [net, sql, time, llm, io, proc] (Str, Str, List[Str]) {
+fn run_delta(module :: baz.StallInfo, policy :: consent.ConsentPolicy, log :: tlog.Log, parent :: Str, used :: List[Str], now :: Int, provider :: prov.Provider, model :: prov.ModelRef, dash :: Str) -> [net, sql, time, llm, io, proc, approval] (Str, Str, List[Str]) {
   let blob := { endpoint: module.url, ephemeral_token: "station-token", peer_pubkey: module.pubkey_b64, nonce: str.concat("n-delta-", module.name), expires_at: now + 300000 }
   match audit.run_audited(blob, policy, now, log, parent, used) {
     (outcome, p1, used2) => match sess.open_session(outcome, "robot-delta", now + 60000) {
@@ -449,7 +449,7 @@ fn run_delta(module :: baz.StallInfo, policy :: consent.ConsentPolicy, log :: tl
       Some(session) => {
         let __1 := io.print("  [Delta] connected to Cargo Bay — running containment protocol ...")
         let __2 := post_ui(dash, "{\"kind\":\"llm_think\",\"robot\":\"Delta\",\"module\":\"Cargo Bay\"}")
-        let tools := [make_sensor_tool(session, now, dash, "Delta"), make_seal_cargo_bay_tool(session, now, dash, "Delta"), make_vent_atmosphere_tool(session, now, dash, "Delta"), human.make_ask_human_tool(dash, "Delta")]
+        let tools := [make_sensor_tool(session, now, dash, "Delta"), make_seal_cargo_bay_tool(session, now, dash, "Delta"), make_vent_atmosphere_tool(session, now, dash, "Delta"), human.make_ask_human_tool_http(dash, "Delta")]
         let system_goal := str.join([
           "You are robot Delta, Cargo Bay officer on a space station. EMERGENCY: hull breach in your bay.",
           " Your module is Cargo Bay on port 8904.",
@@ -475,7 +475,7 @@ fn run_delta(module :: baz.StallInfo, policy :: consent.ConsentPolicy, log :: tl
 }
 
 # ── Entry point ────────────────────────────────────────────────────────────────
-fn run() -> [net, io, sql, fs_write, sense, time, env, llm, proc] Unit {
+fn run() -> [net, io, sql, fs_write, sense, time, env, llm, proc, approval] Unit {
   let dash := "http://localhost:8900"
   let trail_path := "/tmp/lex-station-demo.db"
 
