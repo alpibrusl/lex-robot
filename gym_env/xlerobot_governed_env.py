@@ -59,6 +59,11 @@ class GovernedXLeRobotFetchEnv(gym.Wrapper):
         # shape xlerobot_usage_log.py prints) — default to 1.0 (unweighted,
         # equivalent to "no usage data yet, treat every axis equally").
         self.axis_weights = axis_weights or {}
+        # Instance copies so a subclass can move the walls over training
+        # (see xlerobot_curriculum_env.py) without touching the module
+        # constants the grant gate's numbers come from.
+        self.arm_bounds = dict(ARM_BOUNDS)
+        self.base_bounds = dict(BASE_BOUNDS)
 
     def _w(self, skill, axis):
         return self.axis_weights.get(f"{skill}.{axis}", 1.0)
@@ -72,7 +77,7 @@ class GovernedXLeRobotFetchEnv(gym.Wrapper):
         # Arm: clip raw.ee_off (arm-frame offset) into the workspace box.
         clipped = list(raw.ee_off)
         for i, axis in enumerate(("x", "y", "z")):
-            lo, hi = ARM_BOUNDS[axis]
+            lo, hi = self.arm_bounds[axis]
             clipped[i], p = _clip_and_penalty(raw.ee_off[i], lo, hi, self._w("move_to", axis))
             if p > 0.0:
                 corrected = True
@@ -83,7 +88,7 @@ class GovernedXLeRobotFetchEnv(gym.Wrapper):
         # zero the offending velocity component so the sim doesn't fight
         # the clip every subsequent step).
         bx, by = float(obs[0]), float(obs[1])
-        for axis, (lo, hi), qpos_attr in (("x", BASE_BOUNDS["x"], "jx"), ("y", BASE_BOUNDS["y"], "jy")):
+        for axis, (lo, hi), qpos_attr in (("x", self.base_bounds["x"], "jx"), ("y", self.base_bounds["y"], "jy")):
             v = bx if axis == "x" else by
             clamped_v, p = _clip_and_penalty(v, lo, hi, self._w("move_base", axis))
             penalty += p
