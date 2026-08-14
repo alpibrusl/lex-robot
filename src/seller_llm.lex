@@ -82,7 +82,7 @@ fn extract_price(text :: Str, fallback :: Int) -> Int {
 # Provider is local-first: a non-empty `base_url` (LITELLM_BASE_URL) runs the
 # seller on a local model via the LiteLLM proxy; otherwise Vertex is used when
 # token+project are present; otherwise we fall back to the base price.
-fn quote_price(stall :: Str, item_id :: Str, item_name :: Str, base_price :: Int, buyer_max :: Int, token :: Str, project :: Str, location :: Str, base_url :: Str, model_name :: Str) -> [net, llm, io, proc] Int {
+fn quote_price(stall :: Str, item_id :: Str, item_name :: Str, base_price :: Int, buyer_max :: Int, token :: Str, project :: Str, location :: Str, base_url :: Str, model_name :: Str) -> [net, llm, io, proc, approval] Int {
   let use_opencode := base_url == "opencode" and not str.is_empty(token)
   let use_local    := not use_opencode and not str.is_empty(base_url)
   let use_vertex   := str.is_empty(base_url) and not str.is_empty(token) and not str.is_empty(project)
@@ -148,7 +148,7 @@ fn extract_tagged(text_lower :: Str, tag :: Str, fallback :: Int) -> Int {
   })
 }
 
-fn haggle_reply(stall :: Str, item_name :: Str, base :: Int, offer :: Int, token :: Str, project :: Str, location :: Str, base_url :: Str, model_name :: Str) -> [net, llm, io, proc] Str {
+fn haggle_reply(stall :: Str, item_name :: Str, base :: Int, offer :: Int, token :: Str, project :: Str, location :: Str, base_url :: Str, model_name :: Str) -> [net, llm, io, proc, approval] Str {
   let use_opencode := base_url == "opencode" and not str.is_empty(token)
   let use_local    := not use_opencode and not str.is_empty(base_url)
   let use_vertex   := str.is_empty(base_url) and not str.is_empty(token) and not str.is_empty(project)

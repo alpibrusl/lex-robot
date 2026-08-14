@@ -52,7 +52,7 @@ stop_sellers() {
 
 run_traders() {
   echo "── Running trading floor demo ────────────────────────────────"
-  lex run --allow-effects env,fs_write,io,llm,net,proc,sense,sql,time \
+  lex run --allow-effects env,fs_write,io,llm,net,proc,sense,sql,time,approval \
       "$REPO_DIR/examples/trading_demo.lex" run \
     | grep -v '^null$' || true
 }

@@ -56,7 +56,7 @@ stop_areas() {
 
 run_heist() {
   echo "── Running heist demo ────────────────────────────────────────"
-  lex run --allow-effects env,fs_write,io,llm,net,proc,sense,sql,time \
+  lex run --allow-effects env,fs_write,io,llm,net,proc,sense,sql,time,approval \
       "$REPO_DIR/examples/heist_demo.lex" run \
     | grep -v '^null$' || true
 }

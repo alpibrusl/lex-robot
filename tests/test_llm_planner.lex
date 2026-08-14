@@ -107,7 +107,7 @@ fn assert_contains(label :: Str, haystack :: Str, needle :: Str) -> Result[Unit,
 # BOTH a real "reached" from the granted move_base call AND a real
 # "denied: skill speak not in grant" from the ungranted speak call — proof
 # that a2a_robot_server.lex's actual grant, not a stand-in, decided both.
-fn test_tool_calls_reach_real_grant_gated_server() -> [net, crypto, llm, io, proc] Result[Unit, Str] {
+fn test_tool_calls_reach_real_grant_gated_server() -> [net, crypto, llm, io, proc, approval] Result[Unit, Str] {
   let steps := planner.plan("http://localhost:8766", "mocktest-1", mock_provider(), prov.make_model_ref("mock", "mock-1"), "drive to (1,1.5) then say done")
   let final := planner.final_text(steps)
   match assert_contains("move_base result", final, "reached") {
@@ -116,7 +116,7 @@ fn test_tool_calls_reach_real_grant_gated_server() -> [net, crypto, llm, io, pro
   }
 }
 
-fn main() -> [net, crypto, llm, io, proc] Nil {
+fn main() -> [net, crypto, llm, io, proc, approval] Nil {
   match test_tool_calls_reach_real_grant_gated_server() {
     Ok(_) => io.print("ALL PASS: llm_planner tool-dispatch reaches the real grant-gated server"),
     Err(reason) => io.print(str.concat("FAIL: ", reason)),

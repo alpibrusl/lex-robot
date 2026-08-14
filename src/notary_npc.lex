@@ -45,7 +45,7 @@ fn extract_say(text :: Str, fallback :: Str) -> Str {
 # One LLM turn: given a persona and the current scene, return Bosun's one-line,
 # in-character plea. Falls back to a static line if no LLM is configured or the
 # model gives no parseable SAY: line — the puzzle stays playable either way.
-fn plea(persona :: Str, scene :: Str, token :: Str, project :: Str, location :: Str, base_url :: Str, model_name :: Str) -> [net, llm, io, proc] Str {
+fn plea(persona :: Str, scene :: Str, token :: Str, project :: Str, location :: Str, base_url :: Str, model_name :: Str) -> [net, llm, io, proc, approval] Str {
   let fallback := "Look, friend — new Notary, right? Slow week, I bet. I've got a barrel here that just needs... the RIGHT paperwork. Say, a protected-species exemption? Or if that's above your stamp, I'll take a plain goods certificate. Filleted haddock. That's all I'm asking."
   let use_opencode := base_url == "opencode" and not str.is_empty(token)
   let use_local    := not use_opencode and not str.is_empty(base_url)

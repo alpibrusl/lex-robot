@@ -55,7 +55,7 @@ stop_sidecars() {
 
 run_demo() {
   echo "── Running disaster triage demo ──────────────────────────────"
-  lex run --allow-effects env,fs_write,io,llm,net,proc,sense,sql,time \
+  lex run --allow-effects env,fs_write,io,llm,net,proc,sense,sql,time,approval \
       "$REPO_DIR/examples/triage_demo.lex" run \
     | grep -v '^null$' || true
 }

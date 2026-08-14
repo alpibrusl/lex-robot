@@ -222,7 +222,7 @@ fn parse_llm_result(text :: Str) -> baz.TxResult {
 # ── LLM shopping agent ────────────────────────────────────────────────────────
 # goal             — free-form natural-language goal (e.g. "Find a bowl ≤ 15 cr")
 # ask_human_enabled — adds the generic ask_human tool when true
-fn shop_with_llm(stall :: baz.StallInfo, goal :: Str, policy :: consent.ConsentPolicy, log :: tlog.Log, parent :: Str, used :: List[Str], now_ms :: Int, provider :: prov.Provider, model :: prov.ModelRef, dash :: Str, customer :: Str, ask_human_enabled :: Bool) -> [net, sql, time, llm, io, proc] (baz.TxResult, Str, List[Str]) {
+fn shop_with_llm(stall :: baz.StallInfo, goal :: Str, policy :: consent.ConsentPolicy, log :: tlog.Log, parent :: Str, used :: List[Str], now_ms :: Int, provider :: prov.Provider, model :: prov.ModelRef, dash :: Str, customer :: Str, ask_human_enabled :: Bool) -> [net, sql, time, llm, io, proc, approval] (baz.TxResult, Str, List[Str]) {
   let blob := { endpoint: stall.url, ephemeral_token: "bazaar-token", peer_pubkey: stall.pubkey_b64, nonce: str.concat("n-llm-", str.concat(customer, stall.name)), expires_at: now_ms + 300000 }
   match audit.run_audited(blob, policy, now_ms, log, parent, used) {
     (outcome, p1, used2) => match sess.open_session(outcome, str.concat("llm-", stall.name), now_ms + 60000) {
@@ -233,7 +233,7 @@ fn shop_with_llm(stall :: baz.StallInfo, goal :: Str, policy :: consent.ConsentP
 
         let base_tools := [make_query_tool(session, now_ms, dash, customer), make_reserve_tool(session, now_ms, dash, customer), make_complete_tool(session, now_ms, dash, customer)]
         let tools := if ask_human_enabled {
-          list.concat(base_tools, [human.make_ask_human_tool(dash, customer)])
+          list.concat(base_tools, [human.make_ask_human_tool_http(dash, customer)])
         } else {
           base_tools
         }

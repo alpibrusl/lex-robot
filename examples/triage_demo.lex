@@ -255,7 +255,7 @@ fn emit_step_events(steps :: List[d.Step], zone_name :: Str, dash :: Str, robot_
 
 # ── Per-robot sensor run ──────────────────────────────────────────────────────
 # Returns (report_text, final_parent_id, updated_nonce_list)
-fn run_sensor(zone :: baz.StallInfo, robot_id :: Str, policy :: consent.ConsentPolicy, log :: tlog.Log, parent :: Str, used :: List[Str], now :: Int, provider :: prov.Provider, model :: prov.ModelRef, dash :: Str) -> [net, sql, time, llm, io, proc] (Str, Str, List[Str]) {
+fn run_sensor(zone :: baz.StallInfo, robot_id :: Str, policy :: consent.ConsentPolicy, log :: tlog.Log, parent :: Str, used :: List[Str], now :: Int, provider :: prov.Provider, model :: prov.ModelRef, dash :: Str) -> [net, sql, time, llm, io, proc, approval] (Str, Str, List[Str]) {
   let blob := { endpoint: zone.url, ephemeral_token: "triage-token", peer_pubkey: zone.pubkey_b64, nonce: str.concat("n-", str.concat(robot_id, zone.name)), expires_at: now + 300000 }
   match audit.run_audited(blob, policy, now, log, parent, used) {
     (outcome, p1, used2) => match sess.open_session(outcome, str.concat("sensor-", zone.name), now + 60000) {
@@ -296,7 +296,7 @@ fn run_sensor(zone :: baz.StallInfo, robot_id :: Str, policy :: consent.ConsentP
 
 # ── Coordinator run ───────────────────────────────────────────────────────────
 # Returns (summary_text, final_parent_id, updated_nonce_list)
-fn run_coordinator(hq :: baz.StallInfo, zone_reports :: Str, policy :: consent.ConsentPolicy, log :: tlog.Log, parent :: Str, used :: List[Str], now :: Int, provider :: prov.Provider, model :: prov.ModelRef, dash :: Str) -> [net, sql, time, llm, io, proc] (Str, Str, List[Str]) {
+fn run_coordinator(hq :: baz.StallInfo, zone_reports :: Str, policy :: consent.ConsentPolicy, log :: tlog.Log, parent :: Str, used :: List[Str], now :: Int, provider :: prov.Provider, model :: prov.ModelRef, dash :: Str) -> [net, sql, time, llm, io, proc, approval] (Str, Str, List[Str]) {
   let blob := { endpoint: hq.url, ephemeral_token: "triage-token", peer_pubkey: hq.pubkey_b64, nonce: str.concat("n-", str.concat("Coordinator", hq.name)), expires_at: now + 300000 }
   match audit.run_audited(blob, policy, now, log, parent, used) {
     (outcome, p1, used2) => match sess.open_session(outcome, "coordinator-hq", now + 120000) {
@@ -308,7 +308,7 @@ fn run_coordinator(hq :: baz.StallInfo, zone_reports :: Str, policy :: consent.C
         let __think := post_ui(dash, str.join(["{\"kind\":\"coordinator_start\",\"zone_reports\":\"", json_esc(zone_reports), "\"}"], ""))
         let __pio := io.print("  [Coordinator @ LLM] dispatching rescue units ...")
 
-        let tools := [make_dispatch_tool(session, now, dash, "Coordinator"), make_evacuate_tool(session, now, dash, "Coordinator"), make_helicopter_tool(session, now, dash, "Coordinator"), human.make_ask_human_tool(dash, "Coordinator")]
+        let tools := [make_dispatch_tool(session, now, dash, "Coordinator"), make_evacuate_tool(session, now, dash, "Coordinator"), make_helicopter_tool(session, now, dash, "Coordinator"), human.make_ask_human_tool_http(dash, "Coordinator")]
 
         let system_prompt := str.join([
           "You are Coordinator at Hospital HQ managing earthquake disaster response.",
@@ -337,7 +337,7 @@ fn run_coordinator(hq :: baz.StallInfo, zone_reports :: Str, policy :: consent.C
 }
 
 # ── Entry point ───────────────────────────────────────────────────────────────
-fn run() -> [net, io, sql, fs_write, sense, time, env, llm, proc] Unit {
+fn run() -> [net, io, sql, fs_write, sense, time, env, llm, proc, approval] Unit {
   let trail_path := "/tmp/lex-triage-demo.db"
   let dash := "http://localhost:8900"
 

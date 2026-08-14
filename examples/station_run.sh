@@ -56,7 +56,7 @@ stop_modules() {
 
 run_robots() {
   echo "── Running space station emergency demo ──────────────────────"
-  lex run --allow-effects env,fs_write,io,llm,net,proc,sense,sql,time \
+  lex run --allow-effects env,fs_write,io,llm,net,proc,sense,sql,time,approval \
       "$REPO_DIR/examples/station_demo.lex" run \
     | grep -v '^null$' || true
 }

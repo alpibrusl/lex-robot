@@ -82,7 +82,7 @@ xlerobot-llm: ## "Bring me the cup", spoken + a REAL OpenCode-backed plan (NEEDS
 	 lex run --allow-effects io,time,crypto,random,sql,fs_read,fs_write,net,concurrent,llm,proc,sense,actuate \
 	   examples/a2a_robot_demo.lex run & echo $$! > /tmp/lex-robot-xle-llm-a2a.pid; \
 	 for i in $$(seq 1 100); do curl -sf http://127.0.0.1:8900/health >/dev/null 2>&1 && curl -sf http://127.0.0.1:8766/.well-known/agent.json >/dev/null 2>&1 && break; sleep 0.2; done; \
-	 EFF=io,time,crypto,random,sql,fs_read,fs_write,net,concurrent,llm,proc,sense,actuate,env,stream; \
+	 EFF=io,time,crypto,random,sql,fs_read,fs_write,net,concurrent,llm,proc,sense,actuate,env,stream,approval; \
 	 if [ -n "$$GOAL" ]; then \
 	   lex run --allow-effects $$EFF examples/llm_command_demo.lex run_text "\"$$GOAL\""; \
 	 else \
