@@ -102,7 +102,7 @@ fi
 # from --allow-effects makes the server unable to drive the arm even though the
 # same code is reachable over the network. (We don't bind a port here — the run
 # is rejected before serving because the actuating skills are unreachable.)
-mcpw="$(lex run --allow-effects io,time,crypto,random,sql,fs_read,fs_write,net,concurrent,llm,proc,sense \
+mcpw="$(lex run --allow-effects io,time,crypto,random,sql,fs_read,fs_write,net,concurrent,llm,proc,sense,approval \
           examples/mcp_server_demo.lex run 2>&1 | tr -d '\r')"
 if grep -qF "effect \`actuate\` not in --allow-effects" <<<"$mcpw"; then
   pass "MCP server: actuate withheld → actuating tools unreachable (runtime wall holds over HTTP)"
@@ -123,7 +123,7 @@ else
 fi
 
 # Same runtime effect-wall property as the MCP server, over the A2A wire.
-a2aw="$(lex run --allow-effects io,time,crypto,random,sql,fs_read,fs_write,net,concurrent,llm,proc,sense \
+a2aw="$(lex run --allow-effects io,time,crypto,random,sql,fs_read,fs_write,net,concurrent,llm,proc,sense,approval \
           examples/a2a_robot_demo.lex run 2>&1 | tr -d '\r')"
 if grep -qF "effect \`actuate\` not in --allow-effects" <<<"$a2aw"; then
   pass "A2A server: actuate withheld → actuating skills unreachable (runtime wall holds over HTTP)"

@@ -2253,7 +2253,7 @@ fn physics_call(physics_url :: Str, skill :: Str, raw_args :: Str) -> [net] Str 
   }
 }
 
-fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :: Str, dash :: Str, physics_url :: Str, seller_on :: Bool, seller_token :: Str, seller_project :: Str, seller_location :: Str, seller_base :: Str, seller_model :: Str) -> [sql, net, time, llm, io, proc, crypto, fs_write] Str {
+fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :: Str, dash :: Str, physics_url :: Str, seller_on :: Bool, seller_token :: Str, seller_project :: Str, seller_location :: Str, seller_base :: Str, seller_model :: Str) -> [sql, net, time, llm, io, proc, crypto, fs_write, approval] Str {
   # ── Haggle: one seller turn in a multi-round negotiation ──────────
   # The buyer drives the loop, POSTing {name, base, offer} each round; the stall's
   # seller LLM replies {"decision":"counter|accept|walk","ask":N}. Stateless per
@@ -2284,7 +2284,7 @@ fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :
           if found > 0 {
             match jv.get_field(j, "items") {
               Some(JList(raw_items)) => {
-                let priced := list.map(raw_items, fn (item_j :: jv.Json) -> [sql, net, llm, io, proc] jv.Json {
+                let priced := list.map(raw_items, fn (item_j :: jv.Json) -> [sql, net, llm, io, proc, approval] jv.Json {
                   let item_id   := jv_str_or(item_j, "id", "")
                   let item_name := jv_str_or(item_j, "name", "")
                   let base_p    := jv_int_or(item_j, "price", 0)
@@ -2392,7 +2392,7 @@ fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :
     # order, seeing the transcript so far — so they react to each other.
     let htext := jv_str_or(args, "text", "")
     let _ := if ww_alive(db, 0) and not str.is_empty(htext) { ww_log(db, "say", 0, htext) } else { () }
-    let _ := list.fold(ww_ai_seats(), (), fn (_ :: Unit, s :: Int) -> [sql, net, llm, io, proc, time, fs_write, crypto] Unit {
+    let _ := list.fold(ww_ai_seats(), (), fn (_ :: Unit, s :: Int) -> [sql, net, llm, io, proc, time, fs_write, crypto, approval] Unit {
       if not ww_alive(db, s) { () } else {
         let line := wwn.speak(ww_name(s), ww_role(db, s), ww_private_note(db, s), ww_transcript(db), seller_token, seller_project, seller_location, seller_base, seller_model)
         ww_log(db, "say", s, line)
@@ -2404,7 +2404,7 @@ fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :
   if name == "ww_vote" {
     let hvote := jv_int_or(args, "target", -1)
     let cands := ww_cand_names(db)
-    let ai_votes := list.fold(ww_ai_seats(), [], fn (acc :: List[Int], s :: Int) -> [sql, net, llm, io, proc, time, fs_write, crypto] List[Int] {
+    let ai_votes := list.fold(ww_ai_seats(), [], fn (acc :: List[Int], s :: Int) -> [sql, net, llm, io, proc, time, fs_write, crypto, approval] List[Int] {
       if not ww_alive(db, s) { acc } else {
         let fb := ww_fallback_vote(db, s)
         let picked := wwn.vote(ww_name(s), ww_role(db, s), ww_private_note(db, s), ww_transcript(db), cands, ww_name(fb), seller_token, seller_project, seller_location, seller_base, seller_model)
@@ -2426,7 +2426,7 @@ fn handle_skill(db :: Db, name :: Str, args :: jv.Json, raw_body :: Str, stall :
     # once and cache it (guarded by ww_revealed) so re-polling is free.
     if not ww_over(db) { "{\"status\":\"refused\",\"reason\":\"the game is not over yet\"}" } else {
       let _ := if str.is_empty(get_state(db, "ww_revealed")) {
-        let _ := list.fold(ww_ai_seats(), (), fn (_ :: Unit, s :: Int) -> [sql, net, llm, io, proc, time, fs_write, crypto] Unit {
+        let _ := list.fold(ww_ai_seats(), (), fn (_ :: Unit, s :: Int) -> [sql, net, llm, io, proc, time, fs_write, crypto, approval] Unit {
           let line := wwn.reveal(ww_name(s), ww_role(db, s), ww_seat_won(db, s), ww_transcript(db), seller_token, seller_project, seller_location, seller_base, seller_model)
           set_state(db, str.join(["ww_reveal_", int.to_str(s)], ""), line)
         })
@@ -2794,18 +2794,18 @@ fn build_router(db :: Db, stall :: Str, dash :: Str, html_path :: Str, examples_
   # Shared wide-effect handler type required by route_effectful / route_stream.
   # Each closure captures db / stall / dash from the outer scope.
   let r0 := router.new()
-  let r1 := router.route_effectful(r0, "OPTIONS", "/*path", fn (_ :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let r1 := router.route_effectful(r0, "OPTIONS", "/*path", fn (_ :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     { body: "", status: 204, headers: map.from_list([("access-control-allow-origin", "*"), ("access-control-allow-methods", "GET, POST, OPTIONS"), ("access-control-allow-headers", "Content-Type, Authorization, Last-Event-ID")]) }
   })
 
   # GET /health
-  let r2 := router.route_effectful(r1, "GET", "/health", fn (_ :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let r2 := router.route_effectful(r1, "GET", "/health", fn (_ :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     json_resp_cors("{\"ok\":true}")
   })
 
   # GET / — serve the built React SPA's index.html when LEX_ARENA_SPA_DIR is
   # set (spa_dir non-empty); otherwise the legacy dashboard HTML, unchanged.
-  let r3 := router.route_effectful(r2, "GET", "/", fn (_ :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let r3 := router.route_effectful(r2, "GET", "/", fn (_ :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     let full := if str.is_empty(spa_dir) { str.join([examples_dir, "/", html_path], "") } else { str.join([spa_dir, "/index.html"], "") }
     match io.read(full) {
       Err(_) => resp.not_found(),
@@ -2814,7 +2814,7 @@ fn build_router(db :: Db, stall :: Str, dash :: Str, html_path :: Str, examples_
   })
 
   # GET /retro_kit.js — shared pixel-art kit for all dashboards
-  let r3b := router.route_effectful(r3, "GET", "/retro_kit.js", fn (_ :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let r3b := router.route_effectful(r3, "GET", "/retro_kit.js", fn (_ :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     match io.read(str.join([examples_dir, "/retro_kit.js"], "")) {
       Err(_) => resp.not_found(),
       Ok(body) => { body: body, status: 200, headers: map.from_list([("content-type", "application/javascript; charset=utf-8"), ("cache-control", "no-cache")]) },
@@ -2824,7 +2824,7 @@ fn build_router(db :: Db, stall :: Str, dash :: Str, html_path :: Str, examples_
   # GET /games/:file — serve individual game HTML/JS/CSS pages from examples/ so
   # the lobby at / can link out to each game (and a shared stylesheet) without
   # embedding them inline.
-  let r3c := router.route_effectful(r3b, "GET", "/games/:file", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let r3c := router.route_effectful(r3b, "GET", "/games/:file", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     match ctx.path_param(c, "file") {
       None => cors_resp(resp.not_found()),
       Some(f) => {
@@ -2846,7 +2846,7 @@ fn build_router(db :: Db, stall :: Str, dash :: Str, html_path :: Str, examples_
   # GET /api/standings — the live ELO leaderboard the lobby fetches. Served from
   # examples/standings.json (what lex-games' nbazaar_season writes); a missing
   # file returns an empty-but-valid board so the lobby renders cleanly day one.
-  let r3d := router.route_effectful(r3c, "GET", "/api/standings", fn (_ :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let r3d := router.route_effectful(r3c, "GET", "/api/standings", fn (_ :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     match io.read(str.join([examples_dir, "/standings.json"], "")) {
       Ok(body) => json_resp_cors(body),
       Err(_) => json_resp_cors("{\"game\":\"nbazaar\",\"matches\":0,\"players\":0,\"standings\":[]}"),
@@ -2855,7 +2855,7 @@ fn build_router(db :: Db, stall :: Str, dash :: Str, html_path :: Str, examples_
 
   # GET /api/sellers — the Magentic Bazaar seller reputation board (what
   # lex-games' bazaar_season writes). Same empty-but-valid fallback as standings.
-  let r3e := router.route_effectful(r3d, "GET", "/api/sellers", fn (_ :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let r3e := router.route_effectful(r3d, "GET", "/api/sellers", fn (_ :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     match io.read(str.join([examples_dir, "/sellers.json"], "")) {
       Ok(body) => json_resp_cors(body),
       Err(_) => json_resp_cors("{\"game\":\"bazaar\",\"sessions\":0,\"verified\":0,\"void\":0,\"sellers\":[]}"),
@@ -2864,7 +2864,7 @@ fn build_router(db :: Db, stall :: Str, dash :: Str, html_path :: Str, examples_
 
   # GET /events — SSE long-poll (dashboard only)
   let r4 := if str.is_empty(stall) {
-    router.route_stream(r3e, "GET", "/events", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] stream.StreamResponse {
+    router.route_stream(r3e, "GET", "/events", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] stream.StreamResponse {
       let last_id := parse_int_or(ctx.header_or(c, "last-event-id", "0"), 0)
       let events := list.cons("retry: 2000\n\n", poll_events(db, last_id, 10000))
       let hdrs := map.from_list([("content-type", "text/event-stream; charset=utf-8"), ("cache-control", "no-cache"), ("connection", "keep-alive"), ("access-control-allow-origin", "*")])
@@ -2873,12 +2873,12 @@ fn build_router(db :: Db, stall :: Str, dash :: Str, html_path :: Str, examples_
   } else { r3e }
 
   # GET /stock
-  let r5 := router.route_effectful(r4, "GET", "/stock", fn (_ :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let r5 := router.route_effectful(r4, "GET", "/stock", fn (_ :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     json_resp_cors(stock_list_json(db, stall))
   })
 
   # GET /a2a/public-card
-  let r6 := router.route_effectful(r5, "GET", "/a2a/public-card", fn (_ :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let r6 := router.route_effectful(r5, "GET", "/a2a/public-card", fn (_ :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     match get_card(db, "public") {
       None => cors_resp(resp.json_status(503, "{\"error\":\"card not registered\"}")),
       Some(blob) => cors_resp({ body: blob, status: 200, headers: map.from_list([("content-type", "text/plain")]) }),
@@ -2886,7 +2886,7 @@ fn build_router(db :: Db, stall :: Str, dash :: Str, html_path :: Str, examples_
   })
 
   # GET /a2a/extended-card (requires Bearer token)
-  let r7 := router.route_effectful(r6, "GET", "/a2a/extended-card", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let r7 := router.route_effectful(r6, "GET", "/a2a/extended-card", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     match ctx.bearer_token(c) {
       None => cors_resp(resp.unauthorized("missing bearer token")),
       Some(_) => match get_card(db, "extended") {
@@ -2898,7 +2898,7 @@ fn build_router(db :: Db, stall :: Str, dash :: Str, html_path :: Str, examples_
 
   # GET /get-answer/:id — long-poll for human escalation answer
   let r8 := if str.is_empty(stall) {
-    router.route_effectful(r7, "GET", "/get-answer/:qid", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+    router.route_effectful(r7, "GET", "/get-answer/:qid", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
       match ctx.path_param(c, "qid") {
         None => cors_resp(resp.bad_request("missing qid")),
         Some(qid) => {
@@ -2911,7 +2911,7 @@ fn build_router(db :: Db, stall :: Str, dash :: Str, html_path :: Str, examples_
 
   # POST /event — SSE ingestion
   let r9 := if str.is_empty(stall) {
-    router.route_effectful(r8, "POST", "/event", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+    router.route_effectful(r8, "POST", "/event", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
       let data := c.body
       let _ := insert_event(db, data)
       json_resp_cors("{\"ok\":true}")
@@ -2919,7 +2919,7 @@ fn build_router(db :: Db, stall :: Str, dash :: Str, html_path :: Str, examples_
   } else { r8 }
 
   # POST /skill/:name — skill dispatch
-  let r10 := router.route_effectful(r9, "POST", "/skill/:skill_name", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let r10 := router.route_effectful(r9, "POST", "/skill/:skill_name", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     match ctx.path_param(c, "skill_name") {
       None => cors_resp(resp.bad_request("missing skill name")),
       Some(name) => {
@@ -2930,7 +2930,7 @@ fn build_router(db :: Db, stall :: Str, dash :: Str, html_path :: Str, examples_
   })
 
   # POST /a2a/task — A2A JSON-RPC wrapper
-  let r11 := router.route_effectful(r10, "POST", "/a2a/task", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let r11 := router.route_effectful(r10, "POST", "/a2a/task", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     match jv.parse(c.body) {
       Err(_) => cors_resp(resp.bad_request("invalid json")),
       Ok(j) => {
@@ -2949,20 +2949,20 @@ fn build_router(db :: Db, stall :: Str, dash :: Str, html_path :: Str, examples_
   })
 
   # POST /a2a/register-public-card
-  let r12 := router.route_effectful(r11, "POST", "/a2a/register-public-card", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let r12 := router.route_effectful(r11, "POST", "/a2a/register-public-card", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     let _ := set_card(db, "public", c.body)
     json_resp_cors("{\"ok\":true}")
   })
 
   # POST /a2a/register-extended-card
-  let r13 := router.route_effectful(r12, "POST", "/a2a/register-extended-card", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let r13 := router.route_effectful(r12, "POST", "/a2a/register-extended-card", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     let _ := set_card(db, "extended", c.body)
     json_resp_cors("{\"ok\":true}")
   })
 
   # GET /a2a/bootstrap-blob (stall only) — served directly; avoids dashboard race condition
   let r13b := if not str.is_empty(stall) {
-    router.route_effectful(r13, "GET", "/a2a/bootstrap-blob", fn (_ :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+    router.route_effectful(r13, "GET", "/a2a/bootstrap-blob", fn (_ :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
       let blob_b64 := get_state(db, "bootstrap_blob")
       if str.is_empty(blob_b64) {
         cors_resp(resp.not_found())
@@ -2973,7 +2973,7 @@ fn build_router(db :: Db, stall :: Str, dash :: Str, html_path :: Str, examples_
   } else { r13 }
 
   # POST /reset-stock
-  let r14 := router.route_effectful(r13b, "POST", "/reset-stock", fn (_ :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let r14 := router.route_effectful(r13b, "POST", "/reset-stock", fn (_ :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     let _ := stock_reset(db, stall)
     if str.is_empty(stall) {
       let _ := insert_event(db, "{\"kind\":\"market_reset\"}")
@@ -2984,7 +2984,7 @@ fn build_router(db :: Db, stall :: Str, dash :: Str, html_path :: Str, examples_
 
   # POST /ask-human (dashboard only)
   let r15 := if str.is_empty(stall) {
-    router.route_effectful(r14, "POST", "/ask-human", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+    router.route_effectful(r14, "POST", "/ask-human", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
       match jv.parse(c.body) {
         Err(_) => cors_resp(resp.bad_request("invalid json")),
         Ok(j) => {
@@ -3002,7 +3002,7 @@ fn build_router(db :: Db, stall :: Str, dash :: Str, html_path :: Str, examples_
 
   # POST /answer-human (dashboard only)
   let r16 := if str.is_empty(stall) {
-    router.route_effectful(r15, "POST", "/answer-human", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+    router.route_effectful(r15, "POST", "/answer-human", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
       match jv.parse(c.body) {
         Err(_) => cors_resp(resp.bad_request("invalid json")),
         Ok(j) => {
@@ -3019,7 +3019,7 @@ fn build_router(db :: Db, stall :: Str, dash :: Str, html_path :: Str, examples_
 
   # POST /add-customer (dashboard only) — spawns bazaar_interactive.lex
   let r17 := if str.is_empty(stall) {
-    router.route_effectful(r16, "POST", "/add-customer", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+    router.route_effectful(r16, "POST", "/add-customer", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
       match jv.parse(c.body) {
         Err(_) => cors_resp(resp.bad_request("invalid json")),
         Ok(j) => {
@@ -3057,7 +3057,7 @@ fn build_router(db :: Db, stall :: Str, dash :: Str, html_path :: Str, examples_
   # GET /assets/:file — the SPA's hashed JS/CSS bundle (Vite's build output).
   # Only meaningful when spa_dir is set; harmless 404 otherwise (no existing
   # demo serves a top-level /assets/* path).
-  let r18 := router.route_effectful(r17, "GET", "/assets/:file", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let r18 := router.route_effectful(r17, "GET", "/assets/:file", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     if str.is_empty(spa_dir) { resp.not_found() } else {
       match ctx.path_param(c, "file") {
         None => resp.not_found(),
@@ -3080,7 +3080,7 @@ fn build_router(db :: Db, stall :: Str, dash :: Str, html_path :: Str, examples_
   # GET /play/:game — a client-side SPA route (React Router). Serve the same
   # index.html; the SPA reads the URL and renders the right game. Only active
   # when spa_dir is set.
-  let r19 := router.route_effectful(r18, "GET", "/play/:game", fn (_ :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let r19 := router.route_effectful(r18, "GET", "/play/:game", fn (_ :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     if str.is_empty(spa_dir) { resp.not_found() } else {
       match io.read(str.join([spa_dir, "/index.html"], "")) {
         Err(_) => resp.not_found(),
@@ -3094,7 +3094,7 @@ fn build_router(db :: Db, stall :: Str, dash :: Str, html_path :: Str, examples_
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
-fn run() -> [env, io, sql, net, time, proc, concurrent, crypto, random, fs_read, fs_write, llm] Unit {
+fn run() -> [env, io, sql, net, time, proc, concurrent, crypto, random, fs_read, fs_write, llm, approval] Unit {
   let port    := cfg_port()
   let stall   := cfg_stall()
   let dash    := if str.is_empty(stall) { "" } else { cfg_dash_url() }
@@ -3128,7 +3128,7 @@ fn run() -> [env, io, sql, net, time, proc, concurrent, crypto, random, fs_read,
         init_stall_a2a(db, stall, port, dash, a2a_now)
       } else { () }
       let r := build_router(db, stall, dash, html, ex_dir, spa_dir, physics_url, seller_on, seller_token, seller_project, seller_location, seller_base, seller_model)
-      let handler := fn (req :: Request) -> [env, io, sql, net, time, proc, concurrent, crypto, random, fs_read, fs_write, llm] Response {
+      let handler := fn (req :: Request) -> [env, io, sql, net, time, proc, concurrent, crypto, random, fs_read, fs_write, llm, approval] Response {
         let raw := { body: req.body, method: req.method, path: req.path, query: req.query, headers: req.headers }
         match router.dispatch_outcome(r, raw) {
           DPlain(res) => { status: res.status, body: BodyStr(res.body), headers: res.headers },
