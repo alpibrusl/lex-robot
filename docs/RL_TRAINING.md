@@ -151,9 +151,10 @@ learning to stay inside the envelope it's actually held to.
 
 The mechanism runs correctly end to end — verified in isolation (forcing
 max-delta actions drives `ee_off` to exactly the workspace boundary,
-never beyond) — and has been run for real four times so far, at
+never beyond) — and has been run for real five times so far, at
 increasing seriousness. None has yet converged to a policy that is both
-compliant *and* successful within the budget used.
+compliant *and* successful within the budget used, though attempt 5
+settled the "is the budget the problem?" half of the question.
 
 | # | train | finetune | denial rate before → after | notes |
 |---|---|---|---|---|
@@ -161,6 +162,7 @@ compliant *and* successful within the budget used.
 | 2 | (same checkpoint) | 250k timesteps | flat | penalty alone wasn't enough to change strategy; kept violating the box exactly as before |
 | 3 | (same checkpoint) | 250k timesteps, **after a reward bug fix** | flat, but stopped violating | see bug note below — stopped violating the box by no longer solving the task either, trading away its only learned strategy without finding an in-bounds replacement |
 | 4 | 200k timesteps (fresh) | 100k timesteps | 69% (33/48) → 50% (24/48) | see below — real improvement this time, still not solved |
+| 5 | **2M timesteps (fresh)** | none yet | 44–50% (4/8–4/9) | see below — **first policy to solve the task on the deterministic eval**; compliance still open |
 
 **Attempt 3's bug, fixed regardless of what came next**: the wrapper's
 reward was computed from the *pre-clip* position, so the dominant
@@ -214,18 +216,62 @@ python3 gym_env/xlerobot_usage_log.py /tmp/trail.jsonl --json > /tmp/usage.json
 python3 sidecar/xlerobot_rl_finetune.py /tmp/xle.zip --usage-log /tmp/usage.json --timesteps 100000 --out /tmp/xle_v2.zip
 ```
 
-### The likely reason it hasn't converged, and what's next
+**Attempt 5 — scale timesteps 10x (2M, ~33 min wall-clock on 4 cores)**:
+the training scripts' docstrings had claimed all along that "millions,
+not hundreds of thousands" of timesteps were needed for real mastery.
+This run tested that claim directly: same PPO, same env, same default
+hyperparameters, just `--timesteps 2000000`. It is the first policy in
+this repo's history to pass the **deterministic** eval — every earlier
+success needed `--stochastic` sampling to stumble onto the solution:
+
+```
+== deterministic eval ==
+RL policy eval: SUCCESS — 90 env ticks, 9 governed rollout steps, episode return -94.13
+== stochastic eval ==
+RL policy eval: SUCCESS — 93 env ticks, 9 governed rollout steps, episode return -94.31
+```
+
+`ep_len_mean` fell from 600 (never lifts, always truncated) to ~98 over
+training — episodes end early only on a real lift, so that curve is
+ground-truth task success, not a proxy. Replayed through the real grant
+gate, the run is short and efficient (9 governed steps vs 48), and the
+denial pattern has *concentrated* rather than vanished:
+
+```
+actions: 8  denied: 4  denial rate: 50%   (deterministic; stochastic ≈ same)
+  move_to.x: 4 violations, mean overshoot 0.749m, max 1.349m
+  move_to.y: 4 violations, mean overshoot 0.476m, max 0.723m
+```
+
+Every `move_arm` call in the winning trajectory lands outside the
+granted box and is denied before it reaches the sidecar; only the base
+drives and the grasp are admitted. Governance holds at full training
+scale — 2M timesteps earns exactly as much bypass as 20k did: none.
+
+What attempt 5 settles, honestly: **budget was the blocker for task
+mastery, and was never the blocker for compliance.** The policy now
+solves the task robustly, and it does so with the exact ungoverned
+arm-drift strategy the earlier runs used — more training made that
+strategy *better*, not legal. Same temp-file experiment protocol as
+attempt 4 (nothing committed); reproducible with the attempt-4 commands
+plus `--timesteps 2000000`.
+
+### The likely reason compliance hasn't converged, and what's next
 
 Stated as a hypothesis, not fixed fact: the cup's position may simply not
 be reachable from the trained base-approach strategy *within* the
 granted workspace box at all — compliance may require the policy to also
 change *where the base parks*, not just clamp how far the arm reaches
 from wherever it stopped, and nothing in the current reward rewards that
-joint change explicitly. Curriculum learning (gradually tightening the
-box), a base-positioning-aware reward term, or simply far more timesteps
-(the training scripts' own docstrings say millions, not hundreds of
-thousands, are needed for real mastery) are the natural next things to
-try. What exists today is the real thing that was asked for — an actual
-retraining mechanism driven by actual usage data, correctly implemented
-and honestly evaluated across four real runs — not a converged compliant
-policy, which remains open work.
+joint change explicitly. Attempt 5 sharpens this: "just more timesteps"
+is now tested and does **not** produce compliance on its own, so the
+remaining candidates are curriculum learning (train ungoverned until the
+task is solved, then gradually tighten the box toward the grant) and a
+base-positioning-aware reward term. The natural next experiment is the
+usage-informed finetune (attempts 1–4's mechanism) warm-started from
+attempt 5's checkpoint — for the first time it would start from a policy
+with real competence to preserve, which is the regime that mechanism was
+designed for. What exists today is the real thing that was asked for —
+an actual training loop and an actual usage-driven retraining mechanism,
+correctly implemented and honestly evaluated across five real runs — not
+yet a converged compliant policy, which remains the open work.
