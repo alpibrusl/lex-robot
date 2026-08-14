@@ -88,16 +88,19 @@ class GovernedXLeRobotFetchEnv(gym.Wrapper):
         # zero the offending velocity component so the sim doesn't fight
         # the clip every subsequent step).
         bx, by = float(obs[0]), float(obs[1])
-        for axis, (lo, hi), qpos_attr in (("x", self.base_bounds["x"], "jx"), ("y", self.base_bounds["y"], "jy")):
+        for axis, (lo, hi), joint_name in (("x", self.base_bounds["x"], "cart_x"), ("y", self.base_bounds["y"], "cart_y")):
             v = bx if axis == "x" else by
             clamped_v, p = _clip_and_penalty(v, lo, hi, self._w("move_base", axis))
             penalty += p
             if p > 0.0:
                 corrected = True
-                qpos_adr = getattr(raw.sim, qpos_attr)
+                # qpos and qvel index different spaces (the cup's freejoint
+                # takes 7 qpos slots but only 6 DOFs), so the position uses
+                # the joint's qpos address and the velocity its DOF address.
+                joint = raw.sim.m.joint(joint_name)
                 base_origin = 0.5 if axis == "x" else 1.5  # XLeSim.base_xy()'s hardcoded origin
-                raw.sim.d.qpos[qpos_adr] = clamped_v - base_origin
-                raw.sim.d.qvel[qpos_adr] = 0.0
+                raw.sim.d.qpos[joint.qposadr[0]] = clamped_v - base_origin
+                raw.sim.d.qvel[joint.dofadr[0]] = 0.0
 
         if corrected:
             # Re-derive site/body positions (site_xpos etc.) for the corrected
