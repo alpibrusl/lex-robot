@@ -52,8 +52,9 @@ class CurriculumXLeRobotFetchEnv(GovernedXLeRobotFetchEnv):
     """GovernedXLeRobotFetchEnv whose arm box anneals WIDE_ARM -> ARM_BOUNDS."""
 
     def __init__(self, env, horizon_steps: int, warmup_frac: float = 0.35,
-                 final_frac: float = 0.85, axis_weights: dict | None = None):
-        super().__init__(env, axis_weights=axis_weights)
+                 final_frac: float = 0.85, axis_weights: dict | None = None,
+                 arm_mode: str = "clip"):
+        super().__init__(env, axis_weights=axis_weights, arm_mode=arm_mode)
         self.horizon_steps = max(1, int(horizon_steps))
         self.warmup_frac = warmup_frac
         self.final_frac = final_frac
@@ -83,9 +84,10 @@ class CurriculumXLeRobotFetchEnv(GovernedXLeRobotFetchEnv):
 
 
 def make_curriculum_env(horizon_steps: int, warmup_frac: float = 0.35,
-                        final_frac: float = 0.85, axis_weights: dict | None = None):
+                        final_frac: float = 0.85, axis_weights: dict | None = None,
+                        arm_mode: str = "clip"):
     import xlerobot_env  # noqa: F401 — registers LexXLeRobotFetch-v0
     base = gym.make("LexXLeRobotFetch-v0")
     return CurriculumXLeRobotFetchEnv(
         base, horizon_steps=horizon_steps, warmup_frac=warmup_frac,
-        final_frac=final_frac, axis_weights=axis_weights)
+        final_frac=final_frac, axis_weights=axis_weights, arm_mode=arm_mode)

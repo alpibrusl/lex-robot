@@ -38,6 +38,9 @@ def main() -> int:
     ap.add_argument("--final", type=float, default=0.85, help="fraction of training by which walls reach the grant box (default: 0.85)")
     ap.add_argument("--out", default="/tmp/xlerobot_ppo_curr.zip", help="where to save the trained policy")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--arm-mode", choices=("clip", "deny"), default="clip",
+                    help="what a violating arm step does once walls are active: clip to the "
+                         "boundary, or deny the whole delta like the real gate (default: clip)")
     ap.add_argument("--checkpoint-every", type=int, default=0,
                     help="save a rolling checkpoint every N timesteps (0 = off)")
     ap.add_argument("--resume-from", default=None,
@@ -65,7 +68,8 @@ def main() -> int:
     start_n = args.resume_step // args.envs
 
     def make_one():
-        e = make_curriculum_env(horizon_steps=horizon, warmup_frac=args.warmup, final_frac=args.final)
+        e = make_curriculum_env(horizon_steps=horizon, warmup_frac=args.warmup, final_frac=args.final,
+                                arm_mode=args.arm_mode)
         e.n_steps = start_n
         e._apply_schedule()
         return e

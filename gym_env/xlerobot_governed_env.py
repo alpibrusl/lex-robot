@@ -53,7 +53,7 @@ class GovernedXLeRobotFetchEnv(gym.Wrapper):
     """Wraps `LexXLeRobotFetch-v0`; enforces the arm workspace box and base
     floor area every step, penalizing (and clipping) violations."""
 
-    def __init__(self, env, axis_weights: dict | None = None):
+    def __init__(self, env, axis_weights: dict | None = None, arm_mode: str = "clip"):
         super().__init__(env)
         # axis_weights keys look like "move_to.x" / "move_base.y" (the same
         # shape xlerobot_usage_log.py prints) — default to 1.0 (unweighted,
@@ -64,17 +64,44 @@ class GovernedXLeRobotFetchEnv(gym.Wrapper):
         # constants the grant gate's numbers come from.
         self.arm_bounds = dict(ARM_BOUNDS)
         self.base_bounds = dict(BASE_BOUNDS)
+        # arm_mode selects what a violating arm step *does* (the penalty is
+        # identical in both):
+        #   "clip" — the offset is clamped to the boundary: you get most of
+        #            what you asked for. Cheap to learn to lean on.
+        #   "deny" — the WHOLE arm delta for this step is rejected and the
+        #            arm stays where it was, matching what the real gate's
+        #            "denied: target unreached" actually does to the robot.
+        #            One escape hatch: if the arm is *already* outside the
+        #            box (only possible when a curriculum anneal moved the
+        #            walls past it), a delta that strictly reduces the total
+        #            overshoot is accepted — a strict deny would freeze the
+        #            arm out-of-bounds forever, since per-step deltas are
+        #            capped far below the distance back to the box.
+        if arm_mode not in ("clip", "deny"):
+            raise ValueError(f"arm_mode must be 'clip' or 'deny', got {arm_mode!r}")
+        self.arm_mode = arm_mode
 
     def _w(self, skill, axis):
         return self.axis_weights.get(f"{skill}.{axis}", 1.0)
 
+    def _arm_overshoot(self, off):
+        """Total unweighted metres outside the current arm box, summed over axes."""
+        total = 0.0
+        for i, axis in enumerate(("x", "y", "z")):
+            lo, hi = self.arm_bounds[axis]
+            total += max(0.0, lo - off[i]) + max(0.0, off[i] - hi)
+        return total
+
     def step(self, action):
-        obs, reward, terminated, truncated, info = self.env.step(action)
         raw = self.env.unwrapped
+        prev_off = np.array(raw.ee_off, dtype=np.float64)  # pre-step, for deny mode
+        obs, reward, terminated, truncated, info = self.env.step(action)
         penalty = 0.0
         corrected = False
 
-        # Arm: clip raw.ee_off (arm-frame offset) into the workspace box.
+        # Arm: the attempted offset is raw.ee_off (the base env already
+        # applied this step's delta). Penalize overshoot identically in both
+        # modes; what differs is where the arm ends up.
         clipped = list(raw.ee_off)
         for i, axis in enumerate(("x", "y", "z")):
             lo, hi = self.arm_bounds[axis]
@@ -82,7 +109,17 @@ class GovernedXLeRobotFetchEnv(gym.Wrapper):
             if p > 0.0:
                 corrected = True
             penalty += p
-        raw.ee_off = np.array(clipped, dtype=np.float64)
+        if corrected and self.arm_mode == "deny":
+            # Reject the whole delta — unless the arm was already outside
+            # (annealed walls) and this delta strictly moves it back toward
+            # the box, which we accept un-clipped (see __init__).
+            if self._arm_overshoot(prev_off) > 0.0 and \
+                    self._arm_overshoot(raw.ee_off) < self._arm_overshoot(prev_off):
+                pass  # inward from out-of-bounds: keep the attempted offset
+            else:
+                raw.ee_off = prev_off
+        else:
+            raw.ee_off = np.array(clipped, dtype=np.float64)
 
         # Base: clip the cart's world position into the floor area (and
         # zero the offending velocity component so the sim doesn't fight
@@ -127,10 +164,10 @@ class GovernedXLeRobotFetchEnv(gym.Wrapper):
         return obs, float(reward) - penalty, terminated, truncated, info
 
 
-def make_governed_env(axis_weights: dict | None = None):
+def make_governed_env(axis_weights: dict | None = None, arm_mode: str = "clip"):
     import xlerobot_env  # noqa: F401 — registers LexXLeRobotFetch-v0
     base = gym.make("LexXLeRobotFetch-v0")
-    return GovernedXLeRobotFetchEnv(base, axis_weights=axis_weights)
+    return GovernedXLeRobotFetchEnv(base, axis_weights=axis_weights, arm_mode=arm_mode)
 
 
 register(id="LexXLeRobotFetchGoverned-v0", entry_point="xlerobot_governed_env:make_governed_env")
