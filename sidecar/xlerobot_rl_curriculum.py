@@ -48,6 +48,10 @@ def main() -> int:
                     help="always-on soft cost per metre the arm offset sits outside the FINAL "
                          "grant box, from step 0 (0 = off). Shapes strategy toward near-body "
                          "reaches without hard walls; keep well below the wall PENALTY_SCALE (5.0)")
+    ap.add_argument("--grant-pull-end", type=float, default=None,
+                    help="anneal the pull linearly from --grant-pull down to this value over the "
+                         "run (default: constant pull). Strong early breaks the stretch; the decay "
+                         "lets the deterministic policy stabilize late")
     ap.add_argument("--checkpoint-every", type=int, default=0,
                     help="save a rolling checkpoint every N timesteps (0 = off)")
     ap.add_argument("--resume-from", default=None,
@@ -76,7 +80,8 @@ def main() -> int:
 
     def make_one():
         e = make_curriculum_env(horizon_steps=horizon, warmup_frac=args.warmup, final_frac=args.final,
-                                arm_mode=args.arm_mode, deny_from=args.deny_from, grant_pull=args.grant_pull)
+                                arm_mode=args.arm_mode, deny_from=args.deny_from, grant_pull=args.grant_pull,
+                                grant_pull_end=args.grant_pull_end)
         e.n_steps = start_n
         e._apply_schedule()
         return e

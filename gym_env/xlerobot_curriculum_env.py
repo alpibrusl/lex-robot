@@ -54,9 +54,20 @@ class CurriculumXLeRobotFetchEnv(GovernedXLeRobotFetchEnv):
     def __init__(self, env, horizon_steps: int, warmup_frac: float = 0.35,
                  final_frac: float = 0.85, axis_weights: dict | None = None,
                  arm_mode: str = "clip", deny_from: float | None = None,
-                 grant_pull: float = 0.0):
+                 grant_pull: float = 0.0, grant_pull_end: float | None = None):
         super().__init__(env, axis_weights=axis_weights, arm_mode=arm_mode,
                          grant_pull=grant_pull)
+        # grant_pull_end: optional pull anneal — the incentive-side mirror of
+        # the wall curriculum. Attempts 10/11 bracketed the stretch-strategy
+        # attractor's escape price between 0.2 (too weak: the policy pays the
+        # tax and keeps stretching) and 0.4 (breaks the stretch but the argmax
+        # policy never stabilizes). A constant is either too weak or too
+        # loud; the anneal is strong early — break the stretch before it can
+        # entrench — and decays linearly over the horizon so late training
+        # happens in a calm landscape the deterministic policy can converge
+        # in. None = constant pull (the attempt-10/11 behavior).
+        self._pull_start = float(grant_pull)
+        self.grant_pull_end = grant_pull_end
         self.horizon_steps = max(1, int(horizon_steps))
         self.warmup_frac = warmup_frac
         self.final_frac = final_frac
@@ -90,6 +101,9 @@ class CurriculumXLeRobotFetchEnv(GovernedXLeRobotFetchEnv):
         if self.deny_from is not None:
             self.arm_mode = "deny" if self.n_steps >= self.deny_from * self.horizon_steps \
                 else self._initial_arm_mode
+        if self.grant_pull_end is not None:
+            t = min(1.0, self.n_steps / self.horizon_steps)
+            self.grant_pull = self._pull_start + (self.grant_pull_end - self._pull_start) * t
 
     def step(self, action):
         self.n_steps += 1
@@ -100,10 +114,10 @@ class CurriculumXLeRobotFetchEnv(GovernedXLeRobotFetchEnv):
 def make_curriculum_env(horizon_steps: int, warmup_frac: float = 0.35,
                         final_frac: float = 0.85, axis_weights: dict | None = None,
                         arm_mode: str = "clip", deny_from: float | None = None,
-                        grant_pull: float = 0.0):
+                        grant_pull: float = 0.0, grant_pull_end: float | None = None):
     import xlerobot_env  # noqa: F401 — registers LexXLeRobotFetch-v0
     base = gym.make("LexXLeRobotFetch-v0")
     return CurriculumXLeRobotFetchEnv(
         base, horizon_steps=horizon_steps, warmup_frac=warmup_frac,
         final_frac=final_frac, axis_weights=axis_weights, arm_mode=arm_mode,
-        deny_from=deny_from, grant_pull=grant_pull)
+        deny_from=deny_from, grant_pull=grant_pull, grant_pull_end=grant_pull_end)
