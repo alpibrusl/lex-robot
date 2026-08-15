@@ -159,7 +159,7 @@ learning to stay inside the envelope it's actually held to.
 
 The mechanism runs correctly end to end — verified in isolation (forcing
 max-delta actions drives `ee_off` to exactly the workspace boundary,
-never beyond) — and has been run for real eleven times so far, at
+never beyond) — and has been run for real twelve times so far, at
 increasing seriousness. None has yet converged to a policy that is both
 compliant *and* successful within the budget used: attempt 5 settled
 the "is the budget the problem?" half of the question, attempt 6
@@ -184,6 +184,7 @@ rate below 50% and break the 0.75m x-lean plateau.
 | 9 | 3M timesteps, **clip anneal → deny hold** (`--deny-from 0.85`) | (single run) | 50%, task competence **destroyed by the deny hold** | see below — SUCCESS at 2.5M with walls 97% closed (clip); dead within 200k steps of the deny switch |
 | 10 | 3M timesteps, clip curriculum + **grant-pull 0.4** | (single run) | **46%** — first below 50%; x-overshoot mean 0.410m (was ~0.75m) | see below — stochastic SUCCESS, deterministic FAILED; the residual violation flipped from far-stretch to a small inner-bound tuck |
 | 11 | 3M timesteps, clip curriculum + **grant-pull 0.2** | (single run) | 50%, x-overshoot back at 0.744m | see below — deterministic SUCCESS recovered; pull strength directly trades competence against compliance |
+| 12 | 3M timesteps, clip curriculum + **pull anneal 0.5 → 0.1** | (single run) | 50%, x-overshoot 0.410m | see below — no better than constant 0.4; deep parking achieved but the argmax policy freezes in the inner-bound tuck |
 
 **Attempt 3's bug, fixed regardless of what came next**: the wrapper's
 reward was computed from the *pre-clip* position, so the dominant
@@ -450,17 +451,47 @@ keeps stretching); at 0.4 the tax dislodges the stretch but destabilizes
 the argmax policy. The x-lean is not noise — it is a strong attractor
 whose escape price sits somewhere between 0.2 and 0.4 per metre-step.
 
-### What's next: the pull schedule, not the pull constant
+**Attempt 12 — the pull anneal (`--grant-pull 0.5 --grant-pull-end 0.1`)**:
+option (a) from the bracket, run as designed — start above the known
+escape price, end below the destabilization threshold:
 
-Two runs bracket the answer: a fixed pull is either too weak to move
-the attractor or too strong for stable convergence. The natural next
-experiments are (a) a **pull anneal** — start at 0.4 (or higher) to
-break the stretch early, decay toward 0.1–0.2 as training converges so
-the argmax policy can stabilize (the mirror image of the wall
-curriculum, which anneals *constraint* while this anneals *incentive*),
-(b) an intermediate constant (0.3) to map the middle of the bracket,
-and (c) asymmetric bounds taxing, still untested. What exists today —
-a training loop, a usage-driven retraining mechanism, a curriculum
-trainer with both wall semantics, and a bracketed reward-shaping term,
-honestly evaluated across eleven real runs — is the full experimental
-apparatus; the converged compliant policy remains the open work.
+```
+== deterministic eval ==   FAILED  — 600 ticks, return -204.39
+== stochastic eval ==      SUCCESS — 472 ticks, return -239.78 (slow)
+== grant-gate replay ==    48 actions, 24 denied (50%)
+  move_to.x: 22 violations, mean overshoot 0.410m, max 1.549m
+  move_to.z:  6 violations, mean overshoot 0.045m
+  move_to.y:  0 violations
+```
+
+The honest read: **the anneal bought nothing over constant 0.4** —
+same 0.410m x-overshoot, denial back at 50%, deterministic still
+failing, stochastic success slower than attempt 10's. One genuinely
+new behavior appeared in the deterministic trajectory: the base now
+**parks deep** (x = 2.88 — the re-parking the whole series was trying
+to induce) — but the arm then freezes in the inner-bound tuck
+(x ≈ −0.16, below x-lo = 0.05) instead of extending into the box for
+the reach. The strategy the pull was meant to teach is half-learned:
+drive close ✓, reach in-box ✗. The tuck is a stable local optimum for
+the argmax policy at every pull strength ≥0.4-early tried; only
+sampling noise escapes it.
+
+### Where the series stands after twelve runs
+
+The apparatus is complete and every cheap hypothesis is tested. What
+the twelve runs establish: walls (fixed, annealed, deny, phase-mixed)
+never dislodge the stretch strategy; reward shaping does, reliably —
+but at every shaping schedule tried, the deterministic policy lands in
+one of two attractors (far-stretch at weak pull, inner-tuck at strong
+pull) and only the stochastic policy threads between them. The
+remaining ideas are qualitatively different investments, not knob
+turns: an **asymmetric pull** (tax the outer bound, leave the inner
+approach free — the tuck is only an attractor because the tax field is
+symmetric around a box that excludes home), **PPO hyperparameter work**
+aimed at deterministic convergence (entropy schedule, learning-rate
+decay), a much larger timestep budget, or accepting the stochastic
+policy and hardening around it. The apparatus — training loop,
+usage-driven retraining, curriculum walls in both semantics, constant
+and annealed reward shaping, a committed experiment ledger — is the
+durable deliverable; the converged compliant deterministic policy
+remains open.
