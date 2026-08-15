@@ -149,6 +149,14 @@ learning to stay inside the envelope it's actually held to.
 
 ### Attempt log — honest results, not success claims
 
+> Machine-readable companion: [`docs/experiments.jsonl`](experiments.jsonl)
+> — one JSON object per attempt (config, eval results, denial profile),
+> appended via `gym_env/xlerobot_experiment_ledger.py append` and
+> summarized with `... show`. This table stays the narrative; the ledger
+> is the queryable record (and imports cleanly into MLflow-style tools
+> later). Committed to git because that is the only store that survives
+> the ephemeral containers these runs actually happen in.
+
 The mechanism runs correctly end to end — verified in isolation (forcing
 max-delta actions drives `ee_off` to exactly the workspace boundary,
 never beyond) — and has been run for real nine times so far, at
