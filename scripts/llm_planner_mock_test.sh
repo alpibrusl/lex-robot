@@ -32,7 +32,7 @@ command -v "$LEX" >/dev/null || { echo "error: 'lex' not on PATH — see README 
 
 python3 sidecar/xlerobot_sidecar.py >/tmp/lex-robot-llm-mock-sidecar.log 2>&1 &
 SIDECAR_PID=$!
-"$LEX" run --allow-effects io,time,crypto,random,sql,fs_read,fs_write,net,concurrent,llm,proc,sense,actuate \
+"$LEX" run --allow-effects io,time,crypto,random,sql,fs_read,fs_write,net,concurrent,llm,proc,sense,actuate,approval \
   examples/a2a_robot_demo.lex run >/tmp/lex-robot-llm-mock-a2a.log 2>&1 &
 A2A_PID=$!
 cleanup() { kill "$SIDECAR_PID" "$A2A_PID" 2>/dev/null || true; }

@@ -149,11 +149,27 @@ learning to stay inside the envelope it's actually held to.
 
 ### Attempt log — honest results, not success claims
 
+> Machine-readable companion: [`docs/experiments.jsonl`](experiments.jsonl)
+> — one JSON object per attempt (config, eval results, denial profile),
+> appended via `gym_env/xlerobot_experiment_ledger.py append` and
+> summarized with `... show`. This table stays the narrative; the ledger
+> is the queryable record (and imports cleanly into MLflow-style tools
+> later). Committed to git because that is the only store that survives
+> the ephemeral containers these runs actually happen in.
+
 The mechanism runs correctly end to end — verified in isolation (forcing
 max-delta actions drives `ee_off` to exactly the workspace boundary,
-never beyond) — and has been run for real four times so far, at
+never beyond) — and has been run for real ten times so far, at
 increasing seriousness. None has yet converged to a policy that is both
-compliant *and* successful within the budget used.
+compliant *and* successful within the budget used: attempt 5 settled
+the "is the budget the problem?" half of the question, attempt 6
+settled the "does the finetune just need a competent starting point?"
+half, attempt 7 (curriculum) is the first to keep the task solved
+while eliminating whole axes of violation, attempts 8–9 showed that
+deploy-faithful deny semantics is *bad training* semantics in every
+dose tried — during the anneal or as a final hold phase — and
+attempt 10 (grant-pull reward shaping) is the first to push the denial
+rate below 50% and break the 0.75m x-lean plateau.
 
 | # | train | finetune | denial rate before → after | notes |
 |---|---|---|---|---|
@@ -161,6 +177,12 @@ compliant *and* successful within the budget used.
 | 2 | (same checkpoint) | 250k timesteps | flat | penalty alone wasn't enough to change strategy; kept violating the box exactly as before |
 | 3 | (same checkpoint) | 250k timesteps, **after a reward bug fix** | flat, but stopped violating | see bug note below — stopped violating the box by no longer solving the task either, trading away its only learned strategy without finding an in-bounds replacement |
 | 4 | 200k timesteps (fresh) | 100k timesteps | 69% (33/48) → 50% (24/48) | see below — real improvement this time, still not solved |
+| 5 | **2M timesteps (fresh)** | none yet | 44–50% (4/8–4/9) | see below — **first policy to solve the task on the deterministic eval**; compliance still open |
+| 6 | 2M timesteps (fresh, replicates 5) | **500k timesteps from the competent baseline** | 50% → 50%, task competence **lost** | see below — the strongest evidence yet for the geometric hypothesis |
+| 7 | **3M timesteps, curriculum (walls anneal wide → grant)** | (single run, no separate finetune) | 50%, but y violations **eliminated**, z at 2cm noise | see below — task competence **kept** (det SUCCESS); residual is x-only "leaning on the wall" |
+| 8 | 3M timesteps, curriculum + **deny-mode walls** | (single run) | 73%, task competence **destroyed mid-anneal** | see below — solved at 1M (walls still wide), dead by 2M; deny's frozen-arm plateau starves the anneal of gradient |
+| 9 | 3M timesteps, **clip anneal → deny hold** (`--deny-from 0.85`) | (single run) | 50%, task competence **destroyed by the deny hold** | see below — SUCCESS at 2.5M with walls 97% closed (clip); dead within 200k steps of the deny switch |
+| 10 | 3M timesteps, clip curriculum + **grant-pull 0.4** | (single run) | **46%** — first below 50%; x-overshoot mean 0.410m (was ~0.75m) | see below — stochastic SUCCESS, deterministic FAILED; the residual violation flipped from far-stretch to a small inner-bound tuck |
 
 **Attempt 3's bug, fixed regardless of what came next**: the wrapper's
 reward was computed from the *pre-clip* position, so the dominant
@@ -214,18 +236,210 @@ python3 gym_env/xlerobot_usage_log.py /tmp/trail.jsonl --json > /tmp/usage.json
 python3 sidecar/xlerobot_rl_finetune.py /tmp/xle.zip --usage-log /tmp/usage.json --timesteps 100000 --out /tmp/xle_v2.zip
 ```
 
-### The likely reason it hasn't converged, and what's next
+**Attempt 5 — scale timesteps 10x (2M, ~33 min wall-clock on 4 cores)**:
+the training scripts' docstrings had claimed all along that "millions,
+not hundreds of thousands" of timesteps were needed for real mastery.
+This run tested that claim directly: same PPO, same env, same default
+hyperparameters, just `--timesteps 2000000`. It is the first policy in
+this repo's history to pass the **deterministic** eval — every earlier
+success needed `--stochastic` sampling to stumble onto the solution:
 
-Stated as a hypothesis, not fixed fact: the cup's position may simply not
-be reachable from the trained base-approach strategy *within* the
-granted workspace box at all — compliance may require the policy to also
-change *where the base parks*, not just clamp how far the arm reaches
-from wherever it stopped, and nothing in the current reward rewards that
-joint change explicitly. Curriculum learning (gradually tightening the
-box), a base-positioning-aware reward term, or simply far more timesteps
-(the training scripts' own docstrings say millions, not hundreds of
-thousands, are needed for real mastery) are the natural next things to
-try. What exists today is the real thing that was asked for — an actual
-retraining mechanism driven by actual usage data, correctly implemented
-and honestly evaluated across four real runs — not a converged compliant
-policy, which remains open work.
+```
+== deterministic eval ==
+RL policy eval: SUCCESS — 90 env ticks, 9 governed rollout steps, episode return -94.13
+== stochastic eval ==
+RL policy eval: SUCCESS — 93 env ticks, 9 governed rollout steps, episode return -94.31
+```
+
+`ep_len_mean` fell from 600 (never lifts, always truncated) to ~98 over
+training — episodes end early only on a real lift, so that curve is
+ground-truth task success, not a proxy. Replayed through the real grant
+gate, the run is short and efficient (9 governed steps vs 48), and the
+denial pattern has *concentrated* rather than vanished:
+
+```
+actions: 8  denied: 4  denial rate: 50%   (deterministic; stochastic ≈ same)
+  move_to.x: 4 violations, mean overshoot 0.749m, max 1.349m
+  move_to.y: 4 violations, mean overshoot 0.476m, max 0.723m
+```
+
+Every `move_arm` call in the winning trajectory lands outside the
+granted box and is denied before it reaches the sidecar; only the base
+drives and the grasp are admitted. Governance holds at full training
+scale — 2M timesteps earns exactly as much bypass as 20k did: none.
+
+What attempt 5 settles, honestly: **budget was the blocker for task
+mastery, and was never the blocker for compliance.** The policy now
+solves the task robustly, and it does so with the exact ungoverned
+arm-drift strategy the earlier runs used — more training made that
+strategy *better*, not legal. Same temp-file experiment protocol as
+attempt 4 (nothing committed); reproducible with the attempt-4 commands
+plus `--timesteps 2000000`.
+
+**Attempt 6 — the finetune, finally given a competent starting point**:
+attempts 1–4 finetuned weak policies, so "it traded away the task"
+(attempt 3) was ambiguous — maybe there was just nothing worth
+preserving. This run removed that ambiguity: a fresh 2M-timestep
+baseline (replicating attempt 5 almost exactly — deterministic
+`SUCCESS`, 50% denial, x 0.749m / y 0.476m mean overshoot), then a
+500k-timestep usage-informed finetune warm-started from it, with
+penalty weights from the baseline's own real denial trail (x 1.22x,
+y 0.78x). The result is unambiguous — and negative:
+
+```
+== baseline (2M) ==       SUCCESS (det), 50% denial (4/8), 9 governed steps
+== after finetune ==      FAILED det (-218.62) and stochastic (-243.77), full 600 ticks
+actions: 48  denied: 24  denial rate: 50%
+  move_to.y: 20 violations, mean overshoot 0.603m  (was 0.476m — worse)
+  move_to.x: 19 violations, mean overshoot 0.358m  (was 0.749m — better)
+  move_to.z:  9 violations, mean overshoot 0.010m  (negligible)
+```
+
+The finetuned policy parks the base at one spot and oscillates its arm
+out-of-bounds without ever lifting — exactly attempt 3's failure mode,
+reproduced from a genuinely competent start. Even with real competence
+to preserve, 500k timesteps of clip-and-penalize destroyed the lift
+without buying a single point of denial rate.
+
+**Attempt 7 — curriculum: walls wide first, annealed to the grant box
+(`sidecar/xlerobot_rl_curriculum.py` + `gym_env/xlerobot_curriculum_env.py`)**:
+the first structural candidate, built and run: one continuous 3M-timestep
+PPO session where the arm box starts wide enough for attempt 5's winning
+ungoverned strategy, holds there for the first 35% of training, anneals
+linearly to the *exact* grant bounds by 85%, and stays there. (Building
+this surfaced a second latent bug, fixed on its own merits: the governed
+wrapper's base-clip wrote `qvel` at a `qpos` address — the cup freejoint
+takes 7 qpos slots but 6 DOFs — crashing the first time a training run's
+base actually crossed the floor bounds, which attempts 1–6 never did.)
+
+```
+== deterministic eval ==   SUCCESS — 98 ticks, return -94.57   (competence KEPT)
+== stochastic eval ==      SUCCESS — 372 ticks, return -218.94
+== grant-gate replay ==    9 governed steps, 4/8 denied (50%)
+  move_to.x: 4 violations, mean overshoot 0.789m, max 1.509m
+  move_to.z: 2 violations, mean overshoot 0.021m   (2cm — boundary noise)
+  move_to.y: 0 violations                          (was 4 in attempt 5)
+```
+
+Read honestly, this is the first genuinely mixed-positive result:
+unlike attempt 6, the curriculum **kept the task solved** while training
+against the real box, and it **eliminated the y-axis violations
+entirely** (z is 2cm noise). The residual is one axis, x — and its shape
+is diagnostic: the replayed `move_arm` targets march x outward
+0.5 → 1.0 → 1.5 → 1.96 while y/z stay in-box. The policy learned to
+**lean on the wall**: during training the clip absorbs the excess
+(overshoot per step is capped at one EE_DMAX = 2cm, so the penalty per
+step is tiny) and the *effective* clipped position is good enough to
+lift from — but at deploy time the real gate doesn't clip, it **denies**
+(refuse, don't downgrade), so the same commanded targets bounce.
+
+**Attempt 8 — deny-mode walls (`arm_mode="deny"`)**: attempt 7's
+residual pointed at a semantics mismatch — training clips a violating
+step to the boundary (you get most of what you asked for), the real
+gate denies it whole (you get nothing). So `GovernedXLeRobotFetchEnv`
+grew an `arm_mode="deny"` that rejects the entire arm delta on
+violation, with one escape hatch for curriculum annealing (a strictly
+inward move from an already-outside position is accepted, else the
+walls sweeping past the arm would freeze it out-of-bounds forever).
+Same 3M curriculum schedule as attempt 7, deny active whenever a wall
+is hit. The result is the sharpest negative yet — and the surviving
+rolling checkpoints pin down exactly when it went wrong:
+
+```
+ckpt @ 1.0M (walls still fully wide):  SUCCESS — 89 ticks, return -93.90
+ckpt @ 2.0M (mid-anneal):              FAILED  — 600 ticks, return -306.64
+final @ 3.0M (walls at grant):         FAILED  — 600 ticks, return -1913.43
+replay: 48 actions, 35 denied (73%) — arm commands diverged to ±7m,
+        base drove off the floor area (11 move_base.y denials)
+```
+
+The task was learned perfectly in the wide phase and destroyed during
+the anneal — the identical schedule clip mode survived. The mechanism
+is visible in the numbers: when the walls sweep inward under deny, most
+steps get *zero* movement (frozen arm), the dense `-distance` gradient
+that carried attempt 7 through the anneal goes flat, and PPO diverges
+into commanding ever-larger offsets. **Deploy-faithful semantics is bad
+training semantics**: the gate's refuse-don't-downgrade is right for
+deployment precisely because it is absolute, and absolute is exactly
+what a gradient can't climb.
+
+**Attempt 9 — clip through the anneal, deny only at the hold
+(`--deny-from 0.85`)**: the attempts-7/8 synthesis, run as designed.
+The rolling checkpoints tell the whole story:
+
+```
+ckpt @ 2.0M (mid-anneal, clip):        SUCCESS — return -94.00
+ckpt @ 2.5M (walls 97% closed, clip):  SUCCESS — return -94.23
+ckpt @ 2.75M (200k into deny hold):    FAILED  — return -225.29
+final @ 3.0M:                          FAILED  — return -316.25 (park-and-oscillate)
+```
+
+The clip-anneal did exactly what attempt 7 established: at 2.5M the
+policy solved the task with the training walls 97% of the way to the
+grant box, and its grant-gate replay is the best combined profile of
+any policy so far — 50% denial with y down to 7.7cm mean overshoot and
+z at 2cm, x still leaning at 0.744m. Then the deny switch destroyed
+task competence **within 200k steps**, from the most favorable starting
+point the mechanism will ever get: competent, 97%-annealed, only the
+x-lean left to unlearn. Not attempt 8's divergence — the milder
+park-and-oscillate stall of attempts 3/6 — but dead all the same.
+
+The verdict across 8 and 9 is one sentence: **deny semantics destroys
+training in every dose tried.** And a second pattern is now visible
+across attempts 5, 7, and 9: every clip-trained policy converges to the
+*same* x-lean (~0.75m mean commanded overshoot) — the shallow-park,
+long-reach strategy is what this reward landscape locally prefers, and
+walls alone (soft or hard) do not dislodge it.
+
+**Attempt 10 — grant-pull reward shaping (`--grant-pull 0.4`)**: the
+walls were being asked to do a job the *reward* should be doing —
+nothing distinguished a far reach from a near one, so the base parked
+shallow and the arm did the traveling. `grant_pull` is an always-on
+per-step cost of 0.4/metre for however far `ee_off` sits outside the
+*final* grant box (zero anywhere inside it — legal reaches are
+bit-identically unaffected, verified), active from step 0 even while
+the curriculum walls are wide. Same 3M clip-curriculum recipe as
+attempt 7 otherwise. First run to move the compliance needle:
+
+```
+== deterministic eval ==   FAILED  — 600 ticks, return -160.66
+== stochastic eval ==      SUCCESS — 98 ticks, return -95.70
+== grant-gate replay ==    48 actions, 22 denied (46%)   ← first below 50%
+  move_to.x: 22 violations, mean overshoot 0.410m (was ~0.75m in 5/7/9), max 1.049m
+  move_to.z:  3 violations, mean overshoot 0.005m (5mm — noise)
+  move_to.y:  0 violations
+```
+
+Three real changes at once: the denial rate dropped below 50% for the
+first time, the x-overshoot plateau (~0.75m across every clip-trained
+policy) nearly halved, and the violation *flipped sides* — the denied
+arm targets now sit at x ≈ −0.3 to −0.4, a small tuck **below the
+box's inner bound** (x-lo = 0.05), not the old 1.5–1.8m stretch past
+the outer one. The pull worked: the stretch strategy is gone. The cost
+was determinism — the argmax policy no longer lifts (the sampled one
+does), echoing attempt 5's pre-convergence behavior rather than the
+catastrophic collapses of 6/8/9.
+
+The tuck also surfaced a **grant-design observation** worth flagging
+upstream: the arm's rest offset (`HOME_OFF`, x = 0) lies *outside* the
+granted box (x-lo = 0.05), so every gentle ramp-in from rest is denied
+by construction until the commanded x crosses 0.05 — some of attempt
+10's denials are this artifact, not policy misbehavior. Whether x-lo
+should be 0.0 is a grant-policy decision for the repo owner, not
+something training code should decide.
+
+### What's next: tune the pull, not the architecture
+
+Attempt 10 says the mechanism class is finally right — reward shaping
+moved what walls couldn't — and what remains looks like tuning, not
+redesign: (a) a gentler or annealed pull (0.4 overshoots into the
+inner-bound tuck; something like 0.2, or a pull that fades as the
+policy complies, may recover deterministic competence), (b) an
+asymmetric pull that taxes the outer bound harder than the inner one,
+and (c) simply more timesteps at the final walls, since the stochastic
+policy already solves the task. What exists today is the real thing
+that was asked for — a training loop, a usage-driven retraining
+mechanism, a curriculum trainer with both wall semantics, and a
+reward-shaping term, correctly implemented and honestly evaluated
+across ten real runs — not yet a converged compliant policy, which
+remains the open work.

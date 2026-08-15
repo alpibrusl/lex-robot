@@ -79,7 +79,7 @@ xlerobot-llm-mock: ## LLM planner tool-dispatch, verified for real with a script
 
 xlerobot-llm: ## "Bring me the cup", spoken + a REAL OpenCode-backed plan (NEEDS: OPENCODE_API_KEY; GOAL="..." for a typed goal)
 	@python3 sidecar/xlerobot_sidecar.py & echo $$! > /tmp/lex-robot-xle-llm-sc.pid; \
-	 lex run --allow-effects io,time,crypto,random,sql,fs_read,fs_write,net,concurrent,llm,proc,sense,actuate \
+	 lex run --allow-effects io,time,crypto,random,sql,fs_read,fs_write,net,concurrent,llm,proc,sense,actuate,approval \
 	   examples/a2a_robot_demo.lex run & echo $$! > /tmp/lex-robot-xle-llm-a2a.pid; \
 	 for i in $$(seq 1 100); do curl -sf http://127.0.0.1:8900/health >/dev/null 2>&1 && curl -sf http://127.0.0.1:8766/.well-known/agent.json >/dev/null 2>&1 && break; sleep 0.2; done; \
 	 EFF=io,time,crypto,random,sql,fs_read,fs_write,net,concurrent,llm,proc,sense,actuate,env,stream,approval; \

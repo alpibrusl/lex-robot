@@ -8,7 +8,7 @@ PHYSICS_PORT=9000
 PHYSICS_URL="http://localhost:${PHYSICS_PORT}"
 SIDECAR_PORT=8900
 SIDECAR_URL="http://localhost:${SIDECAR_PORT}"
-LEX_RUN="lex run --allow-effects concurrent,crypto,env,fs_read,fs_write,io,llm,net,proc,random,sql,time --allow-proc sh"
+LEX_RUN="lex run --allow-effects approval,concurrent,crypto,env,fs_read,fs_write,io,llm,net,proc,random,sql,time --allow-proc sh"
 SIDECAR="${REPO_DIR}/sidecar/sim_sidecar.lex"
 
 cleanup() {

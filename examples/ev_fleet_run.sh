@@ -15,7 +15,7 @@ DASH_PORT=8900
 DASH_URL="http://localhost:${DASH_PORT}"
 STD_PORT=9201; FAST_PORT=9202; PREM_PORT=9203
 
-LEX_RUN="lex run --allow-effects concurrent,crypto,env,fs_read,fs_write,io,llm,net,proc,random,sense,sql,time"
+LEX_RUN="lex run --allow-effects approval,concurrent,crypto,env,fs_read,fs_write,io,llm,net,proc,random,sense,sql,time"
 SIDECAR="${REPO_DIR}/sidecar/sim_sidecar.lex"
 CHARGER="${REPO_DIR}/examples/ev_charger.lex"
 

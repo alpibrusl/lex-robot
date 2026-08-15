@@ -81,7 +81,7 @@ fn dispatch(skill :: Str, args :: jv.Json, rate :: Int) -> Str {
   }
 }
 
-fn run() -> [env, io, sql, net, time, proc, concurrent, crypto, random, fs_read, fs_write, llm] Unit {
+fn run() -> [env, io, sql, net, time, proc, concurrent, crypto, random, fs_read, fs_write, llm, approval] Unit {
   let port := match env.get("CHARGER_PORT") { None => 9201, Some(v) => match str.to_int(v) { Some(n) => n, None => 9201 } }
   let name := match env.get("CHARGER_NAME") { None => "Charger", Some(v) => v }
   let rate := match env.get("CHARGER_RATE") { None => 4, Some(v) => match str.to_int(v) { Some(n) => n, None => 4 } }
@@ -113,25 +113,25 @@ fn run() -> [env, io, sql, net, time, proc, concurrent, crypto, random, fs_read,
             let _ := io.print(str.join(["[charger] ", name, " @ ", self_url, "  ", int.to_str(rate), "cr/kWh  pubkey=", str.slice(pub_b64, 0, 12), "...  (Ctrl-C to stop)"], ""))
 
             let r0 := router.new()
-            let r1 := router.route_effectful(r0, "OPTIONS", "/*path", fn (_ :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+            let r1 := router.route_effectful(r0, "OPTIONS", "/*path", fn (_ :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
               { body: "", status: 204, headers: map.from_list([("access-control-allow-origin", "*"), ("access-control-allow-methods", "GET, POST, OPTIONS"), ("access-control-allow-headers", "Content-Type, Authorization, Last-Event-ID")]) }
             })
-            let r2 := router.route_effectful(r1, "GET", "/health", fn (_ :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+            let r2 := router.route_effectful(r1, "GET", "/health", fn (_ :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
               cors(resp.json("{\"ok\":true}"))
             })
-            let r3 := router.route_effectful(r2, "GET", "/a2a/public-card", fn (_ :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+            let r3 := router.route_effectful(r2, "GET", "/a2a/public-card", fn (_ :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
               cors({ body: pub_blob, status: 200, headers: map.from_list([("content-type", "text/plain")]) })
             })
-            let r4 := router.route_effectful(r3, "GET", "/a2a/extended-card", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+            let r4 := router.route_effectful(r3, "GET", "/a2a/extended-card", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
               match ctx.bearer_token(c) {
                 None    => cors(resp.unauthorized("missing bearer token")),
                 Some(_) => cors({ body: ext_blob, status: 200, headers: map.from_list([("content-type", "text/plain")]) }),
               }
             })
-            let r5 := router.route_effectful(r4, "GET", "/a2a/bootstrap-blob", fn (_ :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+            let r5 := router.route_effectful(r4, "GET", "/a2a/bootstrap-blob", fn (_ :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
               cors(resp.json(str.join(["{\"blob\":", json_str(blob_b64), "}"], "")))
             })
-            let r6 := router.route_effectful(r5, "POST", "/a2a/task", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+            let r6 := router.route_effectful(r5, "POST", "/a2a/task", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
               match jv.parse(c.body) {
                 Err(_) => cors(resp.bad_request("invalid json")),
                 Ok(j)  => {
@@ -148,7 +148,7 @@ fn run() -> [env, io, sql, net, time, proc, concurrent, crypto, random, fs_read,
               }
             })
 
-            let handler := fn (req :: Request) -> [env, io, sql, net, time, proc, concurrent, crypto, random, fs_read, fs_write, llm] Response {
+            let handler := fn (req :: Request) -> [env, io, sql, net, time, proc, concurrent, crypto, random, fs_read, fs_write, llm, approval] Response {
               let raw := { body: req.body, method: req.method, path: req.path, query: req.query, headers: req.headers }
               match router.dispatch_outcome(r6, raw) {
                 DPlain(res) => { status: res.status, body: BodyStr(res.body), headers: res.headers },

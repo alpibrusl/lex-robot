@@ -53,46 +53,112 @@ class GovernedXLeRobotFetchEnv(gym.Wrapper):
     """Wraps `LexXLeRobotFetch-v0`; enforces the arm workspace box and base
     floor area every step, penalizing (and clipping) violations."""
 
-    def __init__(self, env, axis_weights: dict | None = None):
+    def __init__(self, env, axis_weights: dict | None = None, arm_mode: str = "clip",
+                 grant_pull: float = 0.0):
         super().__init__(env)
         # axis_weights keys look like "move_to.x" / "move_base.y" (the same
         # shape xlerobot_usage_log.py prints) — default to 1.0 (unweighted,
         # equivalent to "no usage data yet, treat every axis equally").
         self.axis_weights = axis_weights or {}
+        # Instance copies so a subclass can move the walls over training
+        # (see xlerobot_curriculum_env.py) without touching the module
+        # constants the grant gate's numbers come from.
+        self.arm_bounds = dict(ARM_BOUNDS)
+        self.base_bounds = dict(BASE_BOUNDS)
+        # arm_mode selects what a violating arm step *does* (the penalty is
+        # identical in both):
+        #   "clip" — the offset is clamped to the boundary: you get most of
+        #            what you asked for. Cheap to learn to lean on.
+        #   "deny" — the WHOLE arm delta for this step is rejected and the
+        #            arm stays where it was, matching what the real gate's
+        #            "denied: target unreached" actually does to the robot.
+        #            One escape hatch: if the arm is *already* outside the
+        #            box (only possible when a curriculum anneal moved the
+        #            walls past it), a delta that strictly reduces the total
+        #            overshoot is accepted — a strict deny would freeze the
+        #            arm out-of-bounds forever, since per-step deltas are
+        #            capped far below the distance back to the box.
+        if arm_mode not in ("clip", "deny"):
+            raise ValueError(f"arm_mode must be 'clip' or 'deny', got {arm_mode!r}")
+        self.arm_mode = arm_mode
+        # grant_pull: an always-on soft cost, per step, proportional to how
+        # far the arm offset sits outside the FINAL grant box (ARM_BOUNDS,
+        # not the possibly-wider curriculum walls). Zero anywhere inside the
+        # box — legal reaches are never taxed — but a stretched reach pays
+        # rent every step it is held, even while curriculum walls are wide.
+        # This targets the strategy the walls can't dislodge (attempts 5/7/9
+        # all converge to the same ~0.75m x-lean): it makes the long reach
+        # more expensive than driving the base, inside a dense-gradient
+        # landscape, instead of fencing it out after the fact. Keep it well
+        # below PENALTY_SCALE: this shapes preference, it is not a wall.
+        self.grant_pull = float(grant_pull)
 
     def _w(self, skill, axis):
         return self.axis_weights.get(f"{skill}.{axis}", 1.0)
 
+    def _arm_overshoot(self, off):
+        """Total unweighted metres outside the current arm box, summed over axes."""
+        total = 0.0
+        for i, axis in enumerate(("x", "y", "z")):
+            lo, hi = self.arm_bounds[axis]
+            total += max(0.0, lo - off[i]) + max(0.0, off[i] - hi)
+        return total
+
     def step(self, action):
-        obs, reward, terminated, truncated, info = self.env.step(action)
         raw = self.env.unwrapped
+        prev_off = np.array(raw.ee_off, dtype=np.float64)  # pre-step, for deny mode
+        obs, reward, terminated, truncated, info = self.env.step(action)
         penalty = 0.0
         corrected = False
 
-        # Arm: clip raw.ee_off (arm-frame offset) into the workspace box.
+        # Arm: the attempted offset is raw.ee_off (the base env already
+        # applied this step's delta). Penalize overshoot identically in both
+        # modes; what differs is where the arm ends up.
         clipped = list(raw.ee_off)
         for i, axis in enumerate(("x", "y", "z")):
-            lo, hi = ARM_BOUNDS[axis]
+            lo, hi = self.arm_bounds[axis]
             clipped[i], p = _clip_and_penalty(raw.ee_off[i], lo, hi, self._w("move_to", axis))
             if p > 0.0:
                 corrected = True
             penalty += p
-        raw.ee_off = np.array(clipped, dtype=np.float64)
+        if corrected and self.arm_mode == "deny":
+            # Reject the whole delta — unless the arm was already outside
+            # (annealed walls) and this delta strictly moves it back toward
+            # the box, which we accept un-clipped (see __init__).
+            if self._arm_overshoot(prev_off) > 0.0 and \
+                    self._arm_overshoot(raw.ee_off) < self._arm_overshoot(prev_off):
+                pass  # inward from out-of-bounds: keep the attempted offset
+            else:
+                raw.ee_off = prev_off
+        else:
+            raw.ee_off = np.array(clipped, dtype=np.float64)
+
+        if self.grant_pull > 0.0:
+            # measured against the FINAL grant box (module ARM_BOUNDS), not
+            # self.arm_bounds — see __init__.
+            pull = 0.0
+            for i, axis in enumerate(("x", "y", "z")):
+                lo, hi = ARM_BOUNDS[axis]
+                pull += max(0.0, lo - raw.ee_off[i]) + max(0.0, raw.ee_off[i] - hi)
+            penalty += self.grant_pull * pull
 
         # Base: clip the cart's world position into the floor area (and
         # zero the offending velocity component so the sim doesn't fight
         # the clip every subsequent step).
         bx, by = float(obs[0]), float(obs[1])
-        for axis, (lo, hi), qpos_attr in (("x", BASE_BOUNDS["x"], "jx"), ("y", BASE_BOUNDS["y"], "jy")):
+        for axis, (lo, hi), joint_name in (("x", self.base_bounds["x"], "cart_x"), ("y", self.base_bounds["y"], "cart_y")):
             v = bx if axis == "x" else by
             clamped_v, p = _clip_and_penalty(v, lo, hi, self._w("move_base", axis))
             penalty += p
             if p > 0.0:
                 corrected = True
-                qpos_adr = getattr(raw.sim, qpos_attr)
+                # qpos and qvel index different spaces (the cup's freejoint
+                # takes 7 qpos slots but only 6 DOFs), so the position uses
+                # the joint's qpos address and the velocity its DOF address.
+                joint = raw.sim.m.joint(joint_name)
                 base_origin = 0.5 if axis == "x" else 1.5  # XLeSim.base_xy()'s hardcoded origin
-                raw.sim.d.qpos[qpos_adr] = clamped_v - base_origin
-                raw.sim.d.qvel[qpos_adr] = 0.0
+                raw.sim.d.qpos[joint.qposadr[0]] = clamped_v - base_origin
+                raw.sim.d.qvel[joint.dofadr[0]] = 0.0
 
         if corrected:
             # Re-derive site/body positions (site_xpos etc.) for the corrected
@@ -119,10 +185,12 @@ class GovernedXLeRobotFetchEnv(gym.Wrapper):
         return obs, float(reward) - penalty, terminated, truncated, info
 
 
-def make_governed_env(axis_weights: dict | None = None):
+def make_governed_env(axis_weights: dict | None = None, arm_mode: str = "clip",
+                      grant_pull: float = 0.0):
     import xlerobot_env  # noqa: F401 — registers LexXLeRobotFetch-v0
     base = gym.make("LexXLeRobotFetch-v0")
-    return GovernedXLeRobotFetchEnv(base, axis_weights=axis_weights)
+    return GovernedXLeRobotFetchEnv(base, axis_weights=axis_weights, arm_mode=arm_mode,
+                                    grant_pull=grant_pull)
 
 
 register(id="LexXLeRobotFetchGoverned-v0", entry_point="xlerobot_governed_env:make_governed_env")

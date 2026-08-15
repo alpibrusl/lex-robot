@@ -25,8 +25,8 @@ case "$DEMO" in
   xlerobot_task) SIDECAR=xlerobot_sidecar; FILE=examples/xlerobot_task.lex;  EFF="actuate,fs_write,io,net,sense,time" ;;
   xlerobot_voice) SIDECAR=xlerobot_sidecar; FILE=examples/xlerobot_voice_demo.lex; EFF="net,sense,io" ;;
   xlerobot_find) SIDECAR=xlerobot_sidecar; FILE=examples/find_and_fetch_demo.lex; EFF="net,sense,actuate,io" ;;
-  mcp_grant)   NO_SIDECAR=1;          FILE=tests/test_mcp_grant.lex;         EFF="io,time,crypto,random,sql,fs_read,fs_write,net,concurrent,llm,proc,sense,actuate" ;;
-  a2a_grant)   NO_SIDECAR=1;          FILE=tests/test_a2a_robot_grant.lex;   EFF="io,time,crypto,random,sql,fs_read,fs_write,net,concurrent,llm,proc,sense,actuate,stream" ;;
+  mcp_grant)   NO_SIDECAR=1;          FILE=tests/test_mcp_grant.lex;         EFF="io,time,crypto,random,sql,fs_read,fs_write,net,concurrent,llm,proc,sense,actuate,approval" ;;
+  a2a_grant)   NO_SIDECAR=1;          FILE=tests/test_a2a_robot_grant.lex;   EFF="io,time,crypto,random,sql,fs_read,fs_write,net,concurrent,llm,proc,sense,actuate,stream,approval" ;;
   *) echo "unknown demo '$DEMO' (use: grant | llm | task | budget | depot | xlerobot | xlerobot_task | xlerobot_voice | xlerobot_find | dynamic_keepout | tool_fire | mcp_grant | a2a_grant)" >&2; exit 2 ;;
 esac
 

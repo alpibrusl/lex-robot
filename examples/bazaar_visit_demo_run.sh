@@ -16,7 +16,7 @@ ARBITER_URL="http://localhost:${ARBITER_PORT}"
 STALL_URL="http://localhost:${STALL_PORT}"
 DB="/tmp/lex-bazaar-visit-arbiter.db"
 
-LEX_RUN="lex run --allow-effects concurrent,crypto,env,fs_read,fs_write,io,llm,net,proc,random,sense,sql,time"
+LEX_RUN="lex run --allow-effects approval,concurrent,crypto,env,fs_read,fs_write,io,llm,net,proc,random,sense,sql,time"
 
 cleanup() {
   echo "[bazaar_visit] stopping arbiter + stall..."
