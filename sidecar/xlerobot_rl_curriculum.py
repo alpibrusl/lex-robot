@@ -44,6 +44,10 @@ def main() -> int:
     ap.add_argument("--deny-from", type=float, default=None,
                     help="fraction of training at which arm violations switch from clip to deny "
                          "(e.g. 0.85 = deny during the hold phase only; default: no switch)")
+    ap.add_argument("--grant-pull", type=float, default=0.0,
+                    help="always-on soft cost per metre the arm offset sits outside the FINAL "
+                         "grant box, from step 0 (0 = off). Shapes strategy toward near-body "
+                         "reaches without hard walls; keep well below the wall PENALTY_SCALE (5.0)")
     ap.add_argument("--checkpoint-every", type=int, default=0,
                     help="save a rolling checkpoint every N timesteps (0 = off)")
     ap.add_argument("--resume-from", default=None,
@@ -72,7 +76,7 @@ def main() -> int:
 
     def make_one():
         e = make_curriculum_env(horizon_steps=horizon, warmup_frac=args.warmup, final_frac=args.final,
-                                arm_mode=args.arm_mode, deny_from=args.deny_from)
+                                arm_mode=args.arm_mode, deny_from=args.deny_from, grant_pull=args.grant_pull)
         e.n_steps = start_n
         e._apply_schedule()
         return e

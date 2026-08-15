@@ -53,8 +53,10 @@ class CurriculumXLeRobotFetchEnv(GovernedXLeRobotFetchEnv):
 
     def __init__(self, env, horizon_steps: int, warmup_frac: float = 0.35,
                  final_frac: float = 0.85, axis_weights: dict | None = None,
-                 arm_mode: str = "clip", deny_from: float | None = None):
-        super().__init__(env, axis_weights=axis_weights, arm_mode=arm_mode)
+                 arm_mode: str = "clip", deny_from: float | None = None,
+                 grant_pull: float = 0.0):
+        super().__init__(env, axis_weights=axis_weights, arm_mode=arm_mode,
+                         grant_pull=grant_pull)
         self.horizon_steps = max(1, int(horizon_steps))
         self.warmup_frac = warmup_frac
         self.final_frac = final_frac
@@ -97,10 +99,11 @@ class CurriculumXLeRobotFetchEnv(GovernedXLeRobotFetchEnv):
 
 def make_curriculum_env(horizon_steps: int, warmup_frac: float = 0.35,
                         final_frac: float = 0.85, axis_weights: dict | None = None,
-                        arm_mode: str = "clip", deny_from: float | None = None):
+                        arm_mode: str = "clip", deny_from: float | None = None,
+                        grant_pull: float = 0.0):
     import xlerobot_env  # noqa: F401 — registers LexXLeRobotFetch-v0
     base = gym.make("LexXLeRobotFetch-v0")
     return CurriculumXLeRobotFetchEnv(
         base, horizon_steps=horizon_steps, warmup_frac=warmup_frac,
         final_frac=final_frac, axis_weights=axis_weights, arm_mode=arm_mode,
-        deny_from=deny_from)
+        deny_from=deny_from, grant_pull=grant_pull)
