@@ -159,15 +159,17 @@ learning to stay inside the envelope it's actually held to.
 
 The mechanism runs correctly end to end — verified in isolation (forcing
 max-delta actions drives `ee_off` to exactly the workspace boundary,
-never beyond) — and has been run for real nine times so far, at
+never beyond) — and has been run for real ten times so far, at
 increasing seriousness. None has yet converged to a policy that is both
 compliant *and* successful within the budget used: attempt 5 settled
 the "is the budget the problem?" half of the question, attempt 6
 settled the "does the finetune just need a competent starting point?"
 half, attempt 7 (curriculum) is the first to keep the task solved
-while eliminating whole axes of violation, and attempts 8–9 showed that
+while eliminating whole axes of violation, attempts 8–9 showed that
 deploy-faithful deny semantics is *bad training* semantics in every
-dose tried — during the anneal or as a final hold phase.
+dose tried — during the anneal or as a final hold phase — and
+attempt 10 (grant-pull reward shaping) is the first to push the denial
+rate below 50% and break the 0.75m x-lean plateau.
 
 | # | train | finetune | denial rate before → after | notes |
 |---|---|---|---|---|
@@ -180,6 +182,7 @@ dose tried — during the anneal or as a final hold phase.
 | 7 | **3M timesteps, curriculum (walls anneal wide → grant)** | (single run, no separate finetune) | 50%, but y violations **eliminated**, z at 2cm noise | see below — task competence **kept** (det SUCCESS); residual is x-only "leaning on the wall" |
 | 8 | 3M timesteps, curriculum + **deny-mode walls** | (single run) | 73%, task competence **destroyed mid-anneal** | see below — solved at 1M (walls still wide), dead by 2M; deny's frozen-arm plateau starves the anneal of gradient |
 | 9 | 3M timesteps, **clip anneal → deny hold** (`--deny-from 0.85`) | (single run) | 50%, task competence **destroyed by the deny hold** | see below — SUCCESS at 2.5M with walls 97% closed (clip); dead within 200k steps of the deny switch |
+| 10 | 3M timesteps, clip curriculum + **grant-pull 0.4** | (single run) | **46%** — first below 50%; x-overshoot mean 0.410m (was ~0.75m) | see below — stochastic SUCCESS, deterministic FAILED; the residual violation flipped from far-stretch to a small inner-bound tuck |
 
 **Attempt 3's bug, fixed regardless of what came next**: the wrapper's
 reward was computed from the *pre-clip* position, so the dominant
@@ -388,22 +391,55 @@ across attempts 5, 7, and 9: every clip-trained policy converges to the
 long-reach strategy is what this reward landscape locally prefers, and
 walls alone (soft or hard) do not dislodge it.
 
-### What's next: make the long reach itself expensive
+**Attempt 10 — grant-pull reward shaping (`--grant-pull 0.4`)**: the
+walls were being asked to do a job the *reward* should be doing —
+nothing distinguished a far reach from a near one, so the base parked
+shallow and the arm did the traveling. `grant_pull` is an always-on
+per-step cost of 0.4/metre for however far `ee_off` sits outside the
+*final* grant box (zero anywhere inside it — legal reaches are
+bit-identically unaffected, verified), active from step 0 even while
+the curriculum walls are wide. Same 3M clip-curriculum recipe as
+attempt 7 otherwise. First run to move the compliance needle:
 
-The walls have been asked to do a job the *reward* should be doing.
-The policy reaches 1.5–1.8m in arm-frame x because nothing in the
-reward distinguishes a far reach from a near one — `-distance` is
-ee→cup, indifferent to how the ee got there, so the base parks shallow
-and the arm does the traveling. The remaining shelf candidate targets
-exactly this: an **arm-extension cost** — a small penalty proportional
-to `|ee_off|` every step, always on, no walls needed — which makes the
-near-body reach cheaper than the stretched one and pushes the distance
-closure onto the base (whose driving is free). That reshapes the
-strategy *inside* a dense-gradient landscape instead of fencing it
-from outside, which is where every wall-based approach has now failed.
-Curriculum walls stay in the recipe for the y/z gains attempt 7 proved.
-What exists today is the real thing that was asked for — an actual
-training loop, a usage-driven retraining mechanism, and a curriculum
-trainer with both wall semantics, correctly implemented and honestly
-evaluated across nine real runs — not yet a converged compliant
-policy, which remains the open work.
+```
+== deterministic eval ==   FAILED  — 600 ticks, return -160.66
+== stochastic eval ==      SUCCESS — 98 ticks, return -95.70
+== grant-gate replay ==    48 actions, 22 denied (46%)   ← first below 50%
+  move_to.x: 22 violations, mean overshoot 0.410m (was ~0.75m in 5/7/9), max 1.049m
+  move_to.z:  3 violations, mean overshoot 0.005m (5mm — noise)
+  move_to.y:  0 violations
+```
+
+Three real changes at once: the denial rate dropped below 50% for the
+first time, the x-overshoot plateau (~0.75m across every clip-trained
+policy) nearly halved, and the violation *flipped sides* — the denied
+arm targets now sit at x ≈ −0.3 to −0.4, a small tuck **below the
+box's inner bound** (x-lo = 0.05), not the old 1.5–1.8m stretch past
+the outer one. The pull worked: the stretch strategy is gone. The cost
+was determinism — the argmax policy no longer lifts (the sampled one
+does), echoing attempt 5's pre-convergence behavior rather than the
+catastrophic collapses of 6/8/9.
+
+The tuck also surfaced a **grant-design observation** worth flagging
+upstream: the arm's rest offset (`HOME_OFF`, x = 0) lies *outside* the
+granted box (x-lo = 0.05), so every gentle ramp-in from rest is denied
+by construction until the commanded x crosses 0.05 — some of attempt
+10's denials are this artifact, not policy misbehavior. Whether x-lo
+should be 0.0 is a grant-policy decision for the repo owner, not
+something training code should decide.
+
+### What's next: tune the pull, not the architecture
+
+Attempt 10 says the mechanism class is finally right — reward shaping
+moved what walls couldn't — and what remains looks like tuning, not
+redesign: (a) a gentler or annealed pull (0.4 overshoots into the
+inner-bound tuck; something like 0.2, or a pull that fades as the
+policy complies, may recover deterministic competence), (b) an
+asymmetric pull that taxes the outer bound harder than the inner one,
+and (c) simply more timesteps at the final walls, since the stochastic
+policy already solves the task. What exists today is the real thing
+that was asked for — a training loop, a usage-driven retraining
+mechanism, a curriculum trainer with both wall semantics, and a
+reward-shaping term, correctly implemented and honestly evaluated
+across ten real runs — not yet a converged compliant policy, which
+remains the open work.
