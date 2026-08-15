@@ -53,11 +53,20 @@ class CurriculumXLeRobotFetchEnv(GovernedXLeRobotFetchEnv):
 
     def __init__(self, env, horizon_steps: int, warmup_frac: float = 0.35,
                  final_frac: float = 0.85, axis_weights: dict | None = None,
-                 arm_mode: str = "clip"):
+                 arm_mode: str = "clip", deny_from: float | None = None):
         super().__init__(env, axis_weights=axis_weights, arm_mode=arm_mode)
         self.horizon_steps = max(1, int(horizon_steps))
         self.warmup_frac = warmup_frac
         self.final_frac = final_frac
+        # deny_from: optional fraction of the horizon at which arm_mode
+        # switches from its constructor value to "deny" — the attempt-9
+        # synthesis (docs/RL_TRAINING.md): clip semantics keep the distance
+        # gradient dense while the walls anneal, deny semantics take over
+        # only for the hold phase, when the walls already sit at the grant
+        # box and there is a residual wall-lean left to unlearn rather than
+        # a whole strategy left to relearn.
+        self.deny_from = deny_from
+        self._initial_arm_mode = arm_mode
         self.n_steps = 0
         self._apply_schedule()
 
@@ -76,6 +85,9 @@ class CurriculumXLeRobotFetchEnv(GovernedXLeRobotFetchEnv):
             for axis, ((wl, wh), (tl, th)) in
             ((a, (WIDE_ARM[a], ARM_BOUNDS[a])) for a in ("x", "y", "z"))
         }
+        if self.deny_from is not None:
+            self.arm_mode = "deny" if self.n_steps >= self.deny_from * self.horizon_steps \
+                else self._initial_arm_mode
 
     def step(self, action):
         self.n_steps += 1
@@ -85,9 +97,10 @@ class CurriculumXLeRobotFetchEnv(GovernedXLeRobotFetchEnv):
 
 def make_curriculum_env(horizon_steps: int, warmup_frac: float = 0.35,
                         final_frac: float = 0.85, axis_weights: dict | None = None,
-                        arm_mode: str = "clip"):
+                        arm_mode: str = "clip", deny_from: float | None = None):
     import xlerobot_env  # noqa: F401 — registers LexXLeRobotFetch-v0
     base = gym.make("LexXLeRobotFetch-v0")
     return CurriculumXLeRobotFetchEnv(
         base, horizon_steps=horizon_steps, warmup_frac=warmup_frac,
-        final_frac=final_frac, axis_weights=axis_weights, arm_mode=arm_mode)
+        final_frac=final_frac, axis_weights=axis_weights, arm_mode=arm_mode,
+        deny_from=deny_from)

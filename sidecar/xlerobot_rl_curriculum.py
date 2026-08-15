@@ -41,6 +41,9 @@ def main() -> int:
     ap.add_argument("--arm-mode", choices=("clip", "deny"), default="clip",
                     help="what a violating arm step does once walls are active: clip to the "
                          "boundary, or deny the whole delta like the real gate (default: clip)")
+    ap.add_argument("--deny-from", type=float, default=None,
+                    help="fraction of training at which arm violations switch from clip to deny "
+                         "(e.g. 0.85 = deny during the hold phase only; default: no switch)")
     ap.add_argument("--checkpoint-every", type=int, default=0,
                     help="save a rolling checkpoint every N timesteps (0 = off)")
     ap.add_argument("--resume-from", default=None,
@@ -69,7 +72,7 @@ def main() -> int:
 
     def make_one():
         e = make_curriculum_env(horizon_steps=horizon, warmup_frac=args.warmup, final_frac=args.final,
-                                arm_mode=args.arm_mode)
+                                arm_mode=args.arm_mode, deny_from=args.deny_from)
         e.n_steps = start_n
         e._apply_schedule()
         return e
