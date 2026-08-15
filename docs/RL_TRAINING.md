@@ -159,7 +159,7 @@ learning to stay inside the envelope it's actually held to.
 
 The mechanism runs correctly end to end — verified in isolation (forcing
 max-delta actions drives `ee_off` to exactly the workspace boundary,
-never beyond) — and has been run for real ten times so far, at
+never beyond) — and has been run for real eleven times so far, at
 increasing seriousness. None has yet converged to a policy that is both
 compliant *and* successful within the budget used: attempt 5 settled
 the "is the budget the problem?" half of the question, attempt 6
@@ -183,6 +183,7 @@ rate below 50% and break the 0.75m x-lean plateau.
 | 8 | 3M timesteps, curriculum + **deny-mode walls** | (single run) | 73%, task competence **destroyed mid-anneal** | see below — solved at 1M (walls still wide), dead by 2M; deny's frozen-arm plateau starves the anneal of gradient |
 | 9 | 3M timesteps, **clip anneal → deny hold** (`--deny-from 0.85`) | (single run) | 50%, task competence **destroyed by the deny hold** | see below — SUCCESS at 2.5M with walls 97% closed (clip); dead within 200k steps of the deny switch |
 | 10 | 3M timesteps, clip curriculum + **grant-pull 0.4** | (single run) | **46%** — first below 50%; x-overshoot mean 0.410m (was ~0.75m) | see below — stochastic SUCCESS, deterministic FAILED; the residual violation flipped from far-stretch to a small inner-bound tuck |
+| 11 | 3M timesteps, clip curriculum + **grant-pull 0.2** | (single run) | 50%, x-overshoot back at 0.744m | see below — deterministic SUCCESS recovered; pull strength directly trades competence against compliance |
 
 **Attempt 3's bug, fixed regardless of what came next**: the wrapper's
 reward was computed from the *pre-clip* position, so the dominant
@@ -428,18 +429,38 @@ by construction until the commanded x crosses 0.05 — some of attempt
 should be 0.0 is a grant-policy decision for the repo owner, not
 something training code should decide.
 
-### What's next: tune the pull, not the architecture
+**Attempt 11 — the pull halved (`--grant-pull 0.2`)**: a clean
+single-variable test of option (a). The result is the sharpest
+trade-off curve the series has produced:
 
-Attempt 10 says the mechanism class is finally right — reward shaping
-moved what walls couldn't — and what remains looks like tuning, not
-redesign: (a) a gentler or annealed pull (0.4 overshoots into the
-inner-bound tuck; something like 0.2, or a pull that fades as the
-policy complies, may recover deterministic competence), (b) an
-asymmetric pull that taxes the outer bound harder than the inner one,
-and (c) simply more timesteps at the final walls, since the stochastic
-policy already solves the task. What exists today is the real thing
-that was asked for — a training loop, a usage-driven retraining
-mechanism, a curriculum trainer with both wall semantics, and a
-reward-shaping term, correctly implemented and honestly evaluated
-across ten real runs — not yet a converged compliant policy, which
-remains the open work.
+```
+== deterministic eval ==   SUCCESS — 89 ticks, return -94.43   (recovered)
+== stochastic eval ==      SUCCESS — 415 ticks, return -220.90
+== grant-gate replay ==    8 actions, 4 denied (50%)
+  move_to.x: 4 violations, mean overshoot 0.744m, max 1.329m   (the plateau is back)
+  move_to.z: 1 violation, 1mm
+  move_to.y: 0 violations
+```
+
+Deterministic competence came back — and so did the exact 0.744m
+x-lean, to the millimetre of attempts 5/7/9. Read together, attempts
+10 and 11 bracket the pull cleanly: at 0.2 the stretch strategy's
+basin is still cheaper than re-parking (the policy pays the tax and
+keeps stretching); at 0.4 the tax dislodges the stretch but destabilizes
+the argmax policy. The x-lean is not noise — it is a strong attractor
+whose escape price sits somewhere between 0.2 and 0.4 per metre-step.
+
+### What's next: the pull schedule, not the pull constant
+
+Two runs bracket the answer: a fixed pull is either too weak to move
+the attractor or too strong for stable convergence. The natural next
+experiments are (a) a **pull anneal** — start at 0.4 (or higher) to
+break the stretch early, decay toward 0.1–0.2 as training converges so
+the argmax policy can stabilize (the mirror image of the wall
+curriculum, which anneals *constraint* while this anneals *incentive*),
+(b) an intermediate constant (0.3) to map the middle of the bracket,
+and (c) asymmetric bounds taxing, still untested. What exists today —
+a training loop, a usage-driven retraining mechanism, a curriculum
+trainer with both wall semantics, and a bracketed reward-shaping term,
+honestly evaluated across eleven real runs — is the full experimental
+apparatus; the converged compliant policy remains the open work.
