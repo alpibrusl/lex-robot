@@ -508,6 +508,19 @@ evidence**: its governed-replay trail is committed
 metric re-derived from the trail and `VERIFIED` (`notebooklab verify`,
 exit 0). From here on, attempts should be recorded this way.
 
+The back-catalogue has since been migrated into the same store.
+Attempts 1–12 were imported from `docs/experiments.jsonl` with
+lex-notebooklab's ledger importer; each lands as `UNVERIFIABLE` —
+honestly, since those runs' trails died with their containers and
+there is nothing to recompute the claims from. The one exception is
+attempt 11, whose replay artifacts survived: its governed-replay trail
+is committed as `docs/trails/attempt11.jsonl` and a `VERIFIED` record
+(all nine claims re-derived bit-exact, including the 0.744 m mean /
+1.329 m max x-overshoot) supersedes the imported entry. So the store
+now holds the full series — thirteen attempts, two of them backed by
+recomputable evidence — and `notebooklab verify` over the whole store
+exits 0.
+
 ### Where the series stands after thirteen runs
 
 The apparatus is complete and every cheap hypothesis is tested —
