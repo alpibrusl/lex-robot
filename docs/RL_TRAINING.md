@@ -151,15 +151,15 @@ learning to stay inside the envelope it's actually held to.
 
 The mechanism runs correctly end to end — verified in isolation (forcing
 max-delta actions drives `ee_off` to exactly the workspace boundary,
-never beyond) — and has been run for real eight times so far, at
+never beyond) — and has been run for real nine times so far, at
 increasing seriousness. None has yet converged to a policy that is both
 compliant *and* successful within the budget used: attempt 5 settled
 the "is the budget the problem?" half of the question, attempt 6
 settled the "does the finetune just need a competent starting point?"
 half, attempt 7 (curriculum) is the first to keep the task solved
-while eliminating whole axes of violation, and attempt 8 showed that
-deploy-faithful deny semantics is *bad training* semantics when applied
-during the anneal.
+while eliminating whole axes of violation, and attempts 8–9 showed that
+deploy-faithful deny semantics is *bad training* semantics in every
+dose tried — during the anneal or as a final hold phase.
 
 | # | train | finetune | denial rate before → after | notes |
 |---|---|---|---|---|
@@ -171,6 +171,7 @@ during the anneal.
 | 6 | 2M timesteps (fresh, replicates 5) | **500k timesteps from the competent baseline** | 50% → 50%, task competence **lost** | see below — the strongest evidence yet for the geometric hypothesis |
 | 7 | **3M timesteps, curriculum (walls anneal wide → grant)** | (single run, no separate finetune) | 50%, but y violations **eliminated**, z at 2cm noise | see below — task competence **kept** (det SUCCESS); residual is x-only "leaning on the wall" |
 | 8 | 3M timesteps, curriculum + **deny-mode walls** | (single run) | 73%, task competence **destroyed mid-anneal** | see below — solved at 1M (walls still wide), dead by 2M; deny's frozen-arm plateau starves the anneal of gradient |
+| 9 | 3M timesteps, **clip anneal → deny hold** (`--deny-from 0.85`) | (single run) | 50%, task competence **destroyed by the deny hold** | see below — SUCCESS at 2.5M with walls 97% closed (clip); dead within 200k steps of the deny switch |
 
 **Attempt 3's bug, fixed regardless of what came next**: the wrapper's
 reward was computed from the *pre-clip* position, so the dominant
@@ -351,21 +352,50 @@ training semantics**: the gate's refuse-don't-downgrade is right for
 deployment precisely because it is absolute, and absolute is exactly
 what a gradient can't climb.
 
-### What's next: clip through the anneal, deny only at the end
+**Attempt 9 — clip through the anneal, deny only at the hold
+(`--deny-from 0.85`)**: the attempts-7/8 synthesis, run as designed.
+The rolling checkpoints tell the whole story:
 
-Attempts 7 and 8 bracket the answer from both sides: clip mode carries
-task competence through the anneal but teaches wall-leaning; deny mode
-matches the gate but starves the anneal of gradient. The natural
-synthesis is a **two-phase run**: anneal with clip semantics (attempt
-7's recipe, known to preserve competence and fix y/z), then switch to
-deny only for the final hold phase, when the walls are already at the
-grant box and the policy is already mostly in-box — deny then only has
-to unlearn the residual x-lean, with the distance gradient still dense
-everywhere inside the box. The cheaper knob of raising `PENALTY_SCALE`
-during the hold phase is the fallback if the mode switch itself
-destabilizes training. A base-positioning-aware reward term remains on
-the shelf after that. What exists today is the real thing that was
-asked for — an actual training loop, a usage-driven retraining
-mechanism, and a curriculum trainer with both wall semantics,
-correctly implemented and honestly evaluated across eight real runs —
-not yet a converged compliant policy, which remains the open work.
+```
+ckpt @ 2.0M (mid-anneal, clip):        SUCCESS — return -94.00
+ckpt @ 2.5M (walls 97% closed, clip):  SUCCESS — return -94.23
+ckpt @ 2.75M (200k into deny hold):    FAILED  — return -225.29
+final @ 3.0M:                          FAILED  — return -316.25 (park-and-oscillate)
+```
+
+The clip-anneal did exactly what attempt 7 established: at 2.5M the
+policy solved the task with the training walls 97% of the way to the
+grant box, and its grant-gate replay is the best combined profile of
+any policy so far — 50% denial with y down to 7.7cm mean overshoot and
+z at 2cm, x still leaning at 0.744m. Then the deny switch destroyed
+task competence **within 200k steps**, from the most favorable starting
+point the mechanism will ever get: competent, 97%-annealed, only the
+x-lean left to unlearn. Not attempt 8's divergence — the milder
+park-and-oscillate stall of attempts 3/6 — but dead all the same.
+
+The verdict across 8 and 9 is one sentence: **deny semantics destroys
+training in every dose tried.** And a second pattern is now visible
+across attempts 5, 7, and 9: every clip-trained policy converges to the
+*same* x-lean (~0.75m mean commanded overshoot) — the shallow-park,
+long-reach strategy is what this reward landscape locally prefers, and
+walls alone (soft or hard) do not dislodge it.
+
+### What's next: make the long reach itself expensive
+
+The walls have been asked to do a job the *reward* should be doing.
+The policy reaches 1.5–1.8m in arm-frame x because nothing in the
+reward distinguishes a far reach from a near one — `-distance` is
+ee→cup, indifferent to how the ee got there, so the base parks shallow
+and the arm does the traveling. The remaining shelf candidate targets
+exactly this: an **arm-extension cost** — a small penalty proportional
+to `|ee_off|` every step, always on, no walls needed — which makes the
+near-body reach cheaper than the stretched one and pushes the distance
+closure onto the base (whose driving is free). That reshapes the
+strategy *inside* a dense-gradient landscape instead of fencing it
+from outside, which is where every wall-based approach has now failed.
+Curriculum walls stay in the recipe for the y/z gains attempt 7 proved.
+What exists today is the real thing that was asked for — an actual
+training loop, a usage-driven retraining mechanism, and a curriculum
+trainer with both wall semantics, correctly implemented and honestly
+evaluated across nine real runs — not yet a converged compliant
+policy, which remains the open work.
