@@ -151,13 +151,15 @@ learning to stay inside the envelope it's actually held to.
 
 The mechanism runs correctly end to end — verified in isolation (forcing
 max-delta actions drives `ee_off` to exactly the workspace boundary,
-never beyond) — and has been run for real seven times so far, at
+never beyond) — and has been run for real eight times so far, at
 increasing seriousness. None has yet converged to a policy that is both
 compliant *and* successful within the budget used: attempt 5 settled
 the "is the budget the problem?" half of the question, attempt 6
 settled the "does the finetune just need a competent starting point?"
-half, and attempt 7 (curriculum) is the first to keep the task solved
-while eliminating whole axes of violation.
+half, attempt 7 (curriculum) is the first to keep the task solved
+while eliminating whole axes of violation, and attempt 8 showed that
+deploy-faithful deny semantics is *bad training* semantics when applied
+during the anneal.
 
 | # | train | finetune | denial rate before → after | notes |
 |---|---|---|---|---|
@@ -168,6 +170,7 @@ while eliminating whole axes of violation.
 | 5 | **2M timesteps (fresh)** | none yet | 44–50% (4/8–4/9) | see below — **first policy to solve the task on the deterministic eval**; compliance still open |
 | 6 | 2M timesteps (fresh, replicates 5) | **500k timesteps from the competent baseline** | 50% → 50%, task competence **lost** | see below — the strongest evidence yet for the geometric hypothesis |
 | 7 | **3M timesteps, curriculum (walls anneal wide → grant)** | (single run, no separate finetune) | 50%, but y violations **eliminated**, z at 2cm noise | see below — task competence **kept** (det SUCCESS); residual is x-only "leaning on the wall" |
+| 8 | 3M timesteps, curriculum + **deny-mode walls** | (single run) | 73%, task competence **destroyed mid-anneal** | see below — solved at 1M (walls still wide), dead by 2M; deny's frozen-arm plateau starves the anneal of gradient |
 
 **Attempt 3's bug, fixed regardless of what came next**: the wrapper's
 reward was computed from the *pre-clip* position, so the dominant
@@ -318,22 +321,51 @@ step is tiny) and the *effective* clipped position is good enough to
 lift from — but at deploy time the real gate doesn't clip, it **denies**
 (refuse, don't downgrade), so the same commanded targets bounce.
 
-### What's next: make training-time denial mean what the gate means
+**Attempt 8 — deny-mode walls (`arm_mode="deny"`)**: attempt 7's
+residual pointed at a semantics mismatch — training clips a violating
+step to the boundary (you get most of what you asked for), the real
+gate denies it whole (you get nothing). So `GovernedXLeRobotFetchEnv`
+grew an `arm_mode="deny"` that rejects the entire arm delta on
+violation, with one escape hatch for curriculum annealing (a strictly
+inward move from an already-outside position is accepted, else the
+walls sweeping past the arm would freeze it out-of-bounds forever).
+Same 3M curriculum schedule as attempt 7, deny active whenever a wall
+is hit. The result is the sharpest negative yet — and the surviving
+rolling checkpoints pin down exactly when it went wrong:
 
-The curriculum killed the geometric excuse for y and z, which sharpens
-the remaining gap to a semantics mismatch: the training wrapper models a
-violation as "clipped to the boundary" (you get most of what you asked
-for), while the real gate models it as "denied — target unreached" (you
-get nothing; the arm stays where it was). Leaning on the wall is only a
-viable strategy under the first semantics. The natural next experiment
-is a **deny-mode wrapper**: on violation, reject the entire arm delta
-for that step instead of clipping — pushing at the wall then freezes
-the arm and stalls the distance term, which is a real gradient toward
-backing off the commanded target, not just a small tax on it. (Raising
-`PENALTY_SCALE` is the cheaper knob but taxes the same wrong margin.)
-A base-positioning-aware reward term remains on the shelf after that.
-What exists today is the real thing that was asked for — an actual
-training loop, a usage-driven retraining mechanism, and a curriculum
-trainer, correctly implemented and honestly evaluated across seven real
-runs — not yet a converged compliant policy, which remains the open
-work.
+```
+ckpt @ 1.0M (walls still fully wide):  SUCCESS — 89 ticks, return -93.90
+ckpt @ 2.0M (mid-anneal):              FAILED  — 600 ticks, return -306.64
+final @ 3.0M (walls at grant):         FAILED  — 600 ticks, return -1913.43
+replay: 48 actions, 35 denied (73%) — arm commands diverged to ±7m,
+        base drove off the floor area (11 move_base.y denials)
+```
+
+The task was learned perfectly in the wide phase and destroyed during
+the anneal — the identical schedule clip mode survived. The mechanism
+is visible in the numbers: when the walls sweep inward under deny, most
+steps get *zero* movement (frozen arm), the dense `-distance` gradient
+that carried attempt 7 through the anneal goes flat, and PPO diverges
+into commanding ever-larger offsets. **Deploy-faithful semantics is bad
+training semantics**: the gate's refuse-don't-downgrade is right for
+deployment precisely because it is absolute, and absolute is exactly
+what a gradient can't climb.
+
+### What's next: clip through the anneal, deny only at the end
+
+Attempts 7 and 8 bracket the answer from both sides: clip mode carries
+task competence through the anneal but teaches wall-leaning; deny mode
+matches the gate but starves the anneal of gradient. The natural
+synthesis is a **two-phase run**: anneal with clip semantics (attempt
+7's recipe, known to preserve competence and fix y/z), then switch to
+deny only for the final hold phase, when the walls are already at the
+grant box and the policy is already mostly in-box — deny then only has
+to unlearn the residual x-lean, with the distance gradient still dense
+everywhere inside the box. The cheaper knob of raising `PENALTY_SCALE`
+during the hold phase is the fallback if the mode switch itself
+destabilizes training. A base-positioning-aware reward term remains on
+the shelf after that. What exists today is the real thing that was
+asked for — an actual training loop, a usage-driven retraining
+mechanism, and a curriculum trainer with both wall semantics,
+correctly implemented and honestly evaluated across eight real runs —
+not yet a converged compliant policy, which remains the open work.
