@@ -345,6 +345,24 @@ on a non-touch panel. `make xlerobot-touch` demos the loop (canned tap,
 no screen needed); with a real screen attached, a real tap always wins
 over the canned one.
 
+## 9. Split compute: the Pi drives, a GPU box sees
+
+The Pi 5 is the right brain for everything the sidecar does — servos,
+cameras, display, the grant gate. The workloads that want a GPU (VLM
+detection, scene description) run on a second machine over plain HTTP:
+`sidecar/vision_service.py` on a Mac Studio (Ollama), a Jetson, or
+anything serving an OpenAI-compatible vision model — including whatever
+you route through a LiteLLM proxy. One env var joins them:
+
+```sh
+export LEX_XLE_VISION_URL=http://mac-studio.local:8901
+```
+
+`make vision-split` runs the whole loop on one machine with a mock
+service (no models); `deploy/VISION_SPLIT.md` is the two-machine
+runbook, with systemd units for the Pi and a Jetson and a launchd job
+for the Mac.
+
 This is tier-independent — it works identically against the stub
 sidecar (no `LEX_ROBOT_HW` needed) or the real one, since none of it
 depends on servos or the camera; only a browser needs to actually be

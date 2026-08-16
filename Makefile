@@ -2,7 +2,7 @@
 # python3 (no pip). The ML demos (keep-out / MuJoCo / learned policy) need the
 # Python deps in sidecar/requirements.txt — see the README dependency matrix.
 
-.PHONY: help check smoke demo grant task budget depot xlerobot xlerobot-task xlerobot-voice xlerobot-touch xlerobot-sim xlerobot-find xlerobot-find-sim keepout dynamic_keepout tool_fire mcp-grant a2a-grant xlerobot-rl-train xlerobot-rl-run xlerobot-rl-usage xlerobot-rl-finetune xlerobot-llm-mock xlerobot-llm fleet-clean-house bazaar-visit skill-acquisition skill-catalog fridge-report deps clean
+.PHONY: help check smoke demo grant task budget depot xlerobot xlerobot-task xlerobot-voice xlerobot-touch vision-split vision-serve home-wash xlerobot-sim xlerobot-find xlerobot-find-sim keepout dynamic_keepout tool_fire mcp-grant a2a-grant xlerobot-rl-train xlerobot-rl-run xlerobot-rl-usage xlerobot-rl-finetune xlerobot-llm-mock xlerobot-llm fleet-clean-house bazaar-visit skill-acquisition skill-catalog fridge-report deps clean
 
 help: ## Show this help
 	@grep -hE '^[a-z-]+:.*##' $(MAKEFILE_LIST) | sed -E 's/:.*## /\t/' | sort
@@ -39,6 +39,15 @@ xlerobot-voice: ## Voice goal + camera + mic-refusal: sensors as granted capabil
 
 xlerobot-touch: ## Touchscreen consent prompt + tap-refusal: the display's input path as a granted capability (no ML deps)
 	@bash scripts/demo.sh xlerobot_touch
+
+vision-split: ## Split-compute vision: sidecar captures, vision service judges (mock mode, no ML deps)
+	@bash scripts/demo.sh xlerobot_vision
+
+vision-serve: ## Run the vision service for real (on the GPU box; needs an OpenAI-compatible VLM — Ollama or LiteLLM, see deploy/VISION_SPLIT.md)
+	@python3 sidecar/vision_service.py
+
+home-wash: ## "Wash when energy is cheap": HA appliances as granted, tariff-gated capabilities (no ML deps)
+	@bash scripts/demo.sh home_wash
 
 xlerobot-sim: ## Same demo against real MuJoCo physics (NEEDS: pip install mujoco numpy)
 	@python3 sidecar/xlerobot_mujoco_sidecar.py & echo $$! > /tmp/lex-robot-xle.pid; \

@@ -223,3 +223,16 @@ def test_grasp_arm_unrestricted_when_no_grant_configured():
     result = robot.grasp_arm("left", 20.0)  # under HARD_GRIP_N, no grant to clamp it
     assert result["outcome"] == "reached"
     assert "20.0N" in result["detail"]
+
+
+def test_missing_arm_refuses_instead_of_substituting():
+    # Partial-build honesty: a request for an unconfigured arm is refused
+    # with a named reason — never silently routed to the other physical arm.
+    r = XLeRobot()
+    assert r._hw_arm_missing("left") is not None  # stub mode: no hw arms at all
+    out = r._hw_arm_missing("right")
+    assert out["outcome"] == "stalled"
+    assert "not configured" in out["detail"]
+    r._hw_arms["left"] = object()
+    assert r._hw_arm_missing("left") is None
+    assert r._hw_arm_missing("right") is not None

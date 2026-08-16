@@ -1,0 +1,22 @@
+# systemd unit for the vision service on a Linux GPU box (e.g. a Jetson).
+#   sudo cp deploy/linux/lex-vision.service /etc/systemd/system/
+#   sudo systemctl enable --now lex-vision
+# Edit paths/user/model. Assumes an OpenAI-compatible VLM endpoint is up
+# locally (Ollama or a LiteLLM proxy — deploy/VISION_SPLIT.md).
+[Unit]
+Description=lex-robot vision service (VLM judgment for robot-captured frames)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=robot
+WorkingDirectory=/home/robot/lex-robot
+ExecStart=/usr/bin/python3 sidecar/vision_service.py
+Restart=on-failure
+RestartSec=3
+Environment=LEX_VISION_LLM_URL=http://127.0.0.1:11434/v1
+Environment=LEX_VISION_MODEL=qwen2.5vl:7b
+Environment=LEX_VISION_PORT=8901
+
+[Install]
+WantedBy=multi-user.target

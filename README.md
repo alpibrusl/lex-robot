@@ -492,6 +492,46 @@ make xlerobot-touch
 #   ask-only robot → denied: skill read_touch not in grant   ← NEVER SENT
 ```
 
+**Split-compute vision — the Pi drives, a GPU box sees** (`make
+vision-split`): the sidecar (a Raspberry Pi on the robot) owns the camera —
+capturing a frame is the `[sense]` effect and stays on the robot — while
+*judging* the frame runs wherever the model horsepower lives
+(`sidecar/vision_service.py` on a Mac Studio serving Ollama, a Jetson, or
+anything behind a LiteLLM proxy; one OpenAI-compatible call covers them
+all). The new `detect_object` skill ships the already-captured JPEG across
+and returns a **2D normalized bounding box** — deliberately not a world
+pose, because that needs depth or calibration this hardware doesn't have,
+and Tier-3 `locate_object` keeps saying so rather than pretending. The demo
+runs everywhere with a mock service (canned, labeled answers);
+`deploy/VISION_SPLIT.md` is the two-machine runbook.
+
+```sh
+make vision-split
+#   detect: cup found (judged by the vision service)   ← frame captured on-robot, judged off-robot
+#   items from the vision service:                     ← list_visible_items, same [net]-judgment seam
+#     - (mock) a cup
+```
+
+**The house as a governed robot — "wash when energy is cheap"** (`make
+home-wash`): one Home Assistant sidecar (`sidecar/ha_sidecar.py`) makes
+every HA device a grant-gated lex skill — an appliance command is an
+actuation with real-world costs (water, heat, energy cents), so it gets the
+same treatment as an arm reach. `src/home.lex` adds the energy-policy
+precondition: `wash_allowed` is a pure, examples-tested gate (integer cents
+per kWh, costs rounded up — never floats in a budget) that refuses a
+peak-tariff start **before any request is sent**, the same shape as the
+dangerous-tool demo's clamp check. The stub house pins "now" at peak so the
+refusal is reproducible in CI; real mode reads a live PVPC/Nordpool sensor
+through HA's local API.
+
+```sh
+make home-wash
+#   now: 32c/kWh — REFUSED: peak tariff above the 15c/kWh ceiling (… never sent)
+#   at 02:30: 11c/kWh — allowed (cycle ≈ 10 cents)
+#   washer started in off-peak window
+#   observer → denied: skill appliance_start not in grant   ← may read, not touch
+```
+
 **"Bring me the cup" — vision-grounded object fetch** (`make xlerobot-find` /
 `xlerobot-find-sim`): naming an object isn't the same as knowing where it is —
 an LLM planner can say "the cup" but has no `move_arm` target until *something*

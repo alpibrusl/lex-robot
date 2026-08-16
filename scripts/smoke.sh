@@ -56,6 +56,11 @@ expect xlerobot_voice "voice goal: fetch the cup to the table" "xlerobot voice: 
 expect xlerobot_voice "denied: skill listen not in grant" "xlerobot voice: mic-less grant refuses listen at the capability layer"
 expect xlerobot_touch "tap: yes" "xlerobot touch: screen prompt's tapped answer reaches the governed program"
 expect xlerobot_touch "denied: skill read_touch not in grant" "xlerobot touch: ask-only grant refuses the tap read at the capability layer"
+expect xlerobot_vision "detect: cup found (judged by the vision service)" "vision split: sidecar frame judged by the vision service over HTTP"
+expect xlerobot_vision "(mock) a cup" "vision split: list_visible_items round-trips the vision service"
+expect home_wash "REFUSED: peak tariff above the 15c/kWh ceiling" "home wash: peak-tariff start refused by the examples-tested gate, never sent"
+expect home_wash "washer started in off-peak window" "home wash: same request passes in the valley window"
+expect home_wash "denied: skill appliance_start not in grant" "home wash: observer grant may read the house but not actuate it"
 expect xlerobot_find "located 'cup' at world" "xlerobot find: locate_object turns an object name into a real position"
 expect xlerobot_find "grasp 15N                  → reached" "xlerobot find: vision-driven approach + grasp succeeds"
 

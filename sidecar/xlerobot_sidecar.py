@@ -29,6 +29,7 @@ protocol (SIDECAR.md), plus XLeRobot's own skills:
     show_prompt {"question","options":["...", ...]}     → outcome
     read_touch  {}                                      → {"option": "...", "detail"?}
     clear_display {}                                    → outcome
+    detect_object {"name": "..."}                       → {"found","cx","cy","w","h","confidence","detail"}
 
 `render_qr`/`scan_qr` are the QR half of src/a2a_bootstrap.lex's stranger
 handshake (two robots that don't know each other bootstrap trust from a QR
@@ -82,7 +83,9 @@ Run:
 
 ## Real hardware — environment variables
 
-Arms (required when LEX_ROBOT_HW=1):
+Arms (at least ONE required when LEX_ROBOT_HW=1 — each slot is optional so a
+partial build runs during bring-up or as a single-arm robot; a missing arm's
+skills return an honest error rather than falling through to the other arm):
     LEX_XLE_LEFT_PORT / LEX_XLE_RIGHT_PORT     serial port per arm, e.g. /dev/ttyACM0
     LEX_XLE_LEFT_ID / LEX_XLE_RIGHT_ID         lerobot robot id (calibration file
                                                 lookup); default xle_left / xle_right
@@ -127,6 +130,19 @@ crashing the sidecar:
     LEX_XLE_CAMERA_RIGHT_INDEX  OpenCV index for the "right" camera
     LEX_XLE_CAMERA_INDEX        legacy alias for LEX_XLE_CAMERA_HEAD_INDEX
                                  (used if LEX_XLE_CAMERA_HEAD_INDEX is unset)
+
+Split-compute vision (`detect_object` — see deploy/VISION_SPLIT.md):
+    LEX_XLE_VISION_URL        base URL of a running sidecar/vision_service.py
+                               (e.g. http://mac-studio.local:8901). When set,
+                               detect_object captures a head-camera frame and
+                               sends it there for judgment — the camera read
+                               stays on the robot; only the already-captured
+                               JPEG crosses the LAN (the same [net]-judgment
+                               posture as list_visible_items). When unset:
+                               Tier-3 says so honestly; the Tier-1 stub falls
+                               back to an explicitly-labeled canned detection
+                               (same convention as locate_object).
+    LEX_XLE_VISION_TIMEOUT_S  per-call budget (default 15)
 
 Mic + local transcription (only imported if `listen` is actually called):
     LEX_XLE_MIC_DEVICE     sounddevice input device index/name (default: system default)
@@ -189,6 +205,8 @@ import json
 import math
 import mimetypes
 import os
+import urllib.error
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HOST = "127.0.0.1"
@@ -1357,18 +1375,24 @@ class XLeRobot:
         left_port = os.environ.get("LEX_XLE_LEFT_PORT")
         right_port = os.environ.get("LEX_XLE_RIGHT_PORT")
         base_port = os.environ.get("LEX_XLE_BASE_PORT")
-        if not left_port or not right_port:
+        # Each arm slot is optional so a partial build runs during bring-up —
+        # one calibrated SO-101 on the bench, or a single-arm second robot
+        # (a LeKiwi) — but a hardware sidecar with NO arm at all is almost
+        # certainly a misconfiguration, so that still refuses loudly.
+        if not left_port and not right_port:
             raise SystemExit(
-                "LEX_ROBOT_HW=1 requires LEX_XLE_LEFT_PORT and LEX_XLE_RIGHT_PORT "
-                "(serial ports for the two SO-101 arms) — see SIDECAR.md. "
-                "LEX_XLE_BASE_PORT is optional; without it, the base is unavailable "
-                "(read_base/move_base will fail if called)."
+                "LEX_ROBOT_HW=1 requires at least one of LEX_XLE_LEFT_PORT / "
+                "LEX_XLE_RIGHT_PORT (serial port per SO-101 arm) — see SIDECAR.md. "
+                "A missing arm stays unavailable (its skills return an honest "
+                "error); LEX_XLE_BASE_PORT is likewise optional."
             )
         max_rel = os.environ.get("LEX_XLE_MAX_REL_TARGET")
         max_rel = float(max_rel) if max_rel else None
         try:
-            self._hw_arms["left"] = _HwArm("left", left_port, os.environ.get("LEX_XLE_LEFT_ID", "xle_left"), max_rel)
-            self._hw_arms["right"] = _HwArm("right", right_port, os.environ.get("LEX_XLE_RIGHT_ID", "xle_right"), max_rel)
+            if left_port:
+                self._hw_arms["left"] = _HwArm("left", left_port, os.environ.get("LEX_XLE_LEFT_ID", "xle_left"), max_rel)
+            if right_port:
+                self._hw_arms["right"] = _HwArm("right", right_port, os.environ.get("LEX_XLE_RIGHT_ID", "xle_right"), max_rel)
             if base_port:
                 if BASE_MODE == "omni":
                     self._hw_base = _HwOmniBase(base_port, os.environ.get("LEX_XLE_BASE_ID", "xle_base"))
@@ -1401,6 +1425,16 @@ class XLeRobot:
             except Exception as e:
                 print(f"[xlerobot] camera '{cam_name}' (index {index_str}) unavailable: {e}")
 
+    def _hw_arm_missing(self, arm):
+        """None when the arm is configured; an honest outcome-shaped refusal
+        otherwise. A request for a missing arm must never fall through to the
+        OTHER physical arm -- moving different metal than the caller named is
+        worse than refusing."""
+        if arm in self._hw_arms:
+            return None
+        return {"outcome": "stalled",
+                "detail": f"{arm} arm not configured (no LEX_XLE_{arm.upper()}_PORT) -- partial build"}
+
     def _disconnect_partial(self):
         """Leave nothing energized behind on a failed bring-up."""
         for a in self._hw_arms.values():
@@ -1420,7 +1454,12 @@ class XLeRobot:
     # ---- sensing -------------------------------------------------------------
     def read_joints(self, arm):
         if USE_HW:
-            return self._hw_arms[arm if arm in self._hw_arms else "left"].read_joints()
+            if arm in self._hw_arms:
+                return self._hw_arms[arm].read_joints()
+            fallback = self._hw_arms.get("left") or next(iter(self._hw_arms.values()), None)
+            if arm not in ("left", "right") and fallback is not None:
+                return fallback.read_joints()
+            return {"error": f"{arm} arm not configured (no LEX_XLE_{arm.upper()}_PORT) -- partial build"}
         a = self.arms.get(arm, self.arms["left"])
         return {
             "names": [f"{arm}_{j}" for j in ARM_JOINTS],
@@ -1430,7 +1469,12 @@ class XLeRobot:
 
     def read_arm_pose(self, arm):
         if USE_HW:
-            return self._hw_arms[arm if arm in self._hw_arms else "left"].read_pose()
+            if arm in self._hw_arms:
+                return self._hw_arms[arm].read_pose()
+            fallback = self._hw_arms.get("left") or next(iter(self._hw_arms.values()), None)
+            if arm not in ("left", "right") and fallback is not None:
+                return fallback.read_pose()
+            return {"ok": False, "detail": f"{arm} arm not configured (no LEX_XLE_{arm.upper()}_PORT) -- partial build"}
         a = self.arms.get(arm, self.arms["left"])
         x, y, z = a["positions"][:3]
         return {"ok": True, "x": x, "y": y, "z": z}
@@ -1555,6 +1599,54 @@ class XLeRobot:
     def clear_display(self):
         return self.display.clear()
 
+    # ---- split-compute vision (deploy/VISION_SPLIT.md) -------------------
+    # 2D detection: capture a head-camera frame HERE (the [sense] effect
+    # stays on the robot), ship the already-captured JPEG to the vision
+    # service for judgment, and pass its normalized bounding box through.
+    # Deliberately NOT a 3D pose: turning a box into a world position needs
+    # depth or calibration this robot doesn't have — locate_object on Tier-3
+    # keeps saying so rather than pretending (see that method).
+    def detect_object_2d(self, name):
+        if not name:
+            return {"found": False, "detail": "detect_object needs a non-empty name"}
+        vision_url = os.environ.get("LEX_XLE_VISION_URL", "").rstrip("/")
+        if vision_url:
+            frame = self.read_camera("head")
+            jpeg = frame.get("jpeg_b64", "") if isinstance(frame, dict) else ""
+            timeout_s = float(os.environ.get("LEX_XLE_VISION_TIMEOUT_S", "15"))
+            body = json.dumps({"image_b64": jpeg, "name": name}).encode()
+            req = urllib.request.Request(f"{vision_url}/vision/detect", data=body,
+                                         headers={"Content-Type": "application/json"})
+            try:
+                with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+                    out = json.loads(resp.read())
+            except Exception as e:
+                return {"found": False,
+                        "detail": f"vision service unreachable at {vision_url}: {e}"}
+            if not isinstance(out, dict):
+                return {"found": False, "detail": "vision service returned non-object JSON"}
+            out["source"] = "vision_service"
+            if not jpeg:
+                # The judgment was real but the frame wasn't — say so, don't
+                # let a service answer imply the camera worked.
+                out["detail"] = (str(out.get("detail", "")) +
+                                 " (frame had no jpeg bytes — camera unavailable"
+                                 " or Pillow missing)").strip()
+            return out
+        if USE_HW:
+            return {"found": False,
+                    "detail": "no LEX_XLE_VISION_URL configured — real-camera detection"
+                              " needs the split-compute vision service, see"
+                              " deploy/VISION_SPLIT.md"}
+        # Tier-1 stub without a service: explicitly-labeled canned detection,
+        # same honesty convention as locate_object's canned lookup.
+        if name in CANNED_OBJECT_WORLD:
+            return {"found": True, "cx": 0.62, "cy": 0.55, "w": 0.18, "h": 0.22,
+                    "confidence": 1.0, "source": "stub",
+                    "detail": "(stub) canned 2D detection"}
+        return {"found": False, "source": "stub",
+                "detail": f"(stub) unknown object '{name}' (stub knows: cup)"}
+
     def locate_object(self, name):
         if USE_HW:
             # No real-camera object-detection model wired up yet — say so
@@ -1592,6 +1684,9 @@ class XLeRobot:
         if denial is not None:
             return {"outcome": "denied", "detail": denial}
         if USE_HW:
+            missing = self._hw_arm_missing(arm)
+            if missing is not None:
+                return missing
             timeout_s = float(os.environ.get("LEX_XLE_ARM_TIMEOUT_S", "8"))
             tol_m = float(os.environ.get("LEX_XLE_ARM_TOL_M", "0.01"))
             return self._hw_arms[arm].move_to(x, y, z, 0.0, 0.0, 0.0, timeout_s, tol_m)
@@ -1616,6 +1711,9 @@ class XLeRobot:
         # whenever the grant caps grip force below HARD_GRIP_N.
         scale_max = granted_max if granted_max is not None else HARD_GRIP_N
         if USE_HW:
+            missing = self._hw_arm_missing(arm)
+            if missing is not None:
+                return missing
             return self._hw_arms[arm].grasp(force, scale_max)
         a = self.arms[arm]
         a["holding"] = True
@@ -1626,6 +1724,9 @@ class XLeRobot:
         if arm not in ("left", "right"):
             return {"outcome": "stalled", "detail": f"unknown arm '{arm}' (use left|right)"}
         if USE_HW:
+            missing = self._hw_arm_missing(arm)
+            if missing is not None:
+                return missing
             return self._hw_arms[arm].release()
         a = self.arms[arm]
         was = a["holding"]
@@ -1702,6 +1803,8 @@ def handle_skill(name, args):
                                float(args.get("speed", 0.3)))
     if name == "locate_object":
         return ROBOT.locate_object(args.get("name", ""))
+    if name == "detect_object":
+        return ROBOT.detect_object_2d(args.get("name", ""))
     if name == "transform_to_arm":
         return ROBOT.transform_to_arm(float(args.get("x", 0.0)), float(args.get("y", 0.0)), float(args.get("z", 0.0)))
     return {"error": f"unknown skill: {name}"}

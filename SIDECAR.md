@@ -27,6 +27,7 @@ only caller; it adds effect typing, grant enforcement, and the audit trail.
 | `listen` | `{ "seconds": N }` | `{ "transcript": "...", "confidence": 0.9 }` — mic capture + LOCAL transcription; raw audio never leaves the sidecar |
 | `show_prompt` | `{ "question", "options": ["...", ...] }` | outcome — a question with large tap targets on the kiosk display (`GET /display`), its one interactive kind |
 | `read_touch` | `{}` | `{ "option": "...", "detail"? }` — the one unread tap answering the prompt currently showing; `""` when nothing was tapped (or no prompt is up). The tap itself arrives via `POST /display/touch` from the kiosk page, never through `/skill/` — a human's tap is input at the sidecar, and the governed program only sees it through this grant-gated read |
+| `detect_object` | `{ "name": "..." }` | `{ "found": bool, "cx","cy","w","h", "confidence", "detail" }` — 2D normalized bounding box (deliberately not a world pose). The sidecar captures a head-camera frame locally and ships the JPEG to the split-compute vision service named by `LEX_XLE_VISION_URL` (`sidecar/vision_service.py` — a Mac Studio, Jetson, or any box serving an OpenAI-compatible VLM; see `deploy/VISION_SPLIT.md`). Without the URL, Tier-3 says so honestly; the Tier-1 stub answers with an explicitly-labeled canned detection |
 
 ### `run_policy` is asynchronous
 A full closed-loop rollout runs tens of seconds — longer than the Lex `std.http`
@@ -168,8 +169,10 @@ What it does and doesn't do:
   as the stub's documented contract.
 
 Environment variables (see the module docstring in `xlerobot_sidecar.py`
-for the full, current list): `LEX_XLE_LEFT_PORT` / `LEX_XLE_RIGHT_PORT` /
-`LEX_XLE_BASE_PORT` (serial ports, required), `LEX_XLE_LEFT_ID` /
+for the full, current list): `LEX_XLE_LEFT_PORT` / `LEX_XLE_RIGHT_PORT`
+(serial port per arm — at least one required; a missing arm's skills answer
+with an honest error, so a half-assembled build runs during bring-up),
+`LEX_XLE_BASE_PORT` (optional), `LEX_XLE_LEFT_ID` /
 `LEX_XLE_RIGHT_ID` (LeRobot calibration ids), `LEX_XLE_WHEEL_RADIUS_M` /
 `LEX_XLE_TRACK_WIDTH_M` (diff-base geometry), `LEX_XLE_MAX_REL_TARGET`
 (optional per-step joint clamp, defense in depth alongside the grant),

@@ -157,6 +157,19 @@ fn locate_object(r :: t.Robot, name :: Str) -> [net, sense] Result[t.Located, St
   }
 }
 
+# 2D object detection via the split-compute vision service (the sidecar
+# captures a head-camera frame on the robot, ships the already-captured JPEG
+# to the service named by LEX_XLE_VISION_URL, and passes the normalized
+# bounding box back — deploy/VISION_SPLIT.md). Returns the sidecar's raw
+# JSON ({"found": bool, "cx","cy","w","h", "confidence", "detail"}) —
+# deliberately 2D image coordinates, not a world pose: turning a box into a
+# position needs depth or calibration, which is locate_object's (still
+# honest, still open) Tier-3 problem. Sensing-only, no grant check — same
+# reasoning as locate_object: detection never moves anything.
+fn detect_object(r :: t.Robot, name :: Str) -> [net, sense] Result[Str, Str] {
+  client.call(r.sidecar_url, "detect_object", str.join(["{\"name\":\"", name, "\"}"], ""))
+}
+
 # Re-project a world position (e.g. from an earlier locate_object call) into
 # whichever arm's frame is nearest, using the base's CURRENT pose. Needed
 # because the base moving after locate_object invalidates that earlier call's
