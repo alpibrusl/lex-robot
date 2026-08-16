@@ -159,7 +159,7 @@ learning to stay inside the envelope it's actually held to.
 
 The mechanism runs correctly end to end — verified in isolation (forcing
 max-delta actions drives `ee_off` to exactly the workspace boundary,
-never beyond) — and has been run for real twelve times so far, at
+never beyond) — and has been run for real thirteen times so far, at
 increasing seriousness. None has yet converged to a policy that is both
 compliant *and* successful within the budget used: attempt 5 settled
 the "is the budget the problem?" half of the question, attempt 6
@@ -185,6 +185,7 @@ rate below 50% and break the 0.75m x-lean plateau.
 | 10 | 3M timesteps, clip curriculum + **grant-pull 0.4** | (single run) | **46%** — first below 50%; x-overshoot mean 0.410m (was ~0.75m) | see below — stochastic SUCCESS, deterministic FAILED; the residual violation flipped from far-stretch to a small inner-bound tuck |
 | 11 | 3M timesteps, clip curriculum + **grant-pull 0.2** | (single run) | 50%, x-overshoot back at 0.744m | see below — deterministic SUCCESS recovered; pull strength directly trades competence against compliance |
 | 12 | 3M timesteps, clip curriculum + **pull anneal 0.5 → 0.1** | (single run) | 50%, x-overshoot 0.410m | see below — no better than constant 0.4; deep parking achieved but the argmax policy freezes in the inner-bound tuck |
+| 13 | **6M timesteps**, clip curriculum + pull 0.4 | (single run) | 50%, **both evals FAILED**, z drifts out | see below — more time entrenches the tuck; refutes the "more time converges" precedent for shaped landscapes. First entry with **committed, notebooklab-verified evidence** |
 
 **Attempt 3's bug, fixed regardless of what came next**: the wrapper's
 reward was computed from the *pre-clip* position, so the dominant
@@ -476,10 +477,55 @@ drive close ✓, reach in-box ✗. The tuck is a stable local optimum for
 the argmax policy at every pull strength ≥0.4-early tried; only
 sampling noise escapes it.
 
-### Where the series stands after twelve runs
+**Attempt 13 — attempt 10's recipe at double budget (6M timesteps)**:
+the last cheap hypothesis, from the attempt-5 precedent (300k det-FAILED
+→ 2M det-SUCCESS on the raw env): give the shaped landscape more time
+at fixed conditions and let the argmax policy converge. The opposite
+happened:
 
-The apparatus is complete and every cheap hypothesis is tested. What
-the twelve runs establish: walls (fixed, annealed, deny, phase-mixed)
+```
+== deterministic eval ==   FAILED — 600 ticks, return -497.13
+== stochastic eval ==      FAILED — 600 ticks, return -492.69   (first stoch failure since 9)
+== grant-gate replay ==    48 actions, 24 denied (50%)
+  move_to.x: 22 violations, mean 0.443m    move_to.z: 17 violations, mean 0.348m
+  move_to.y:  5 violations, mean 0.180m
+ckpt diag: det SUCCESS at 2M (-94.51) and 3.5M (-94.86); dead by 5M (-362)
+```
+
+More time made it worse: the policy over-converged into a stable
+hover-tuck (arm at x ≈ −0.07, z ≈ 0.88 — z drifted *out* of the box for
+the first time since attempt 8) that not even sampling noise escapes.
+The 3.5M checkpoint — deterministic SUCCESS with the pull active,
+mid-anneal — replays at the standard attractor profile (50%, x 0.749m),
+so no hidden gem either. The attempt-5 precedent does **not** transfer
+to shaped landscapes: longer pull exposure entrenches the tuck rather
+than polishing the reach.
+
+This attempt is also the series' first with **durable, verifiable
+evidence**: its governed-replay trail is committed
+(`docs/trails/attempt13.jsonl`) and the run is recorded in
+`docs/notebooklab_runs.jsonl` via lex-notebooklab — every claimed
+metric re-derived from the trail and `VERIFIED` (`notebooklab verify`,
+exit 0). From here on, attempts should be recorded this way.
+
+The back-catalogue has since been migrated into the same store.
+Attempts 1–12 were imported from `docs/experiments.jsonl` with
+lex-notebooklab's ledger importer; each lands as `UNVERIFIABLE` —
+honestly, since those runs' trails died with their containers and
+there is nothing to recompute the claims from. The one exception is
+attempt 11, whose replay artifacts survived: its governed-replay trail
+is committed as `docs/trails/attempt11.jsonl` and a `VERIFIED` record
+(all nine claims re-derived bit-exact, including the 0.744 m mean /
+1.329 m max x-overshoot) supersedes the imported entry. So the store
+now holds the full series — thirteen attempts, two of them backed by
+recomputable evidence — and `notebooklab verify` over the whole store
+exits 0.
+
+### Where the series stands after thirteen runs
+
+The apparatus is complete and every cheap hypothesis is tested —
+including, as of attempt 13, "just give it more time." What
+the thirteen runs establish: walls (fixed, annealed, deny, phase-mixed)
 never dislodge the stretch strategy; reward shaping does, reliably —
 but at every shaping schedule tried, the deterministic policy lands in
 one of two attractors (far-stretch at weak pull, inner-tuck at strong
