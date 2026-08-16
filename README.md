@@ -512,6 +512,26 @@ make vision-split
 #     - (mock) a cup
 ```
 
+**The house as a governed robot — "wash when energy is cheap"** (`make
+home-wash`): one Home Assistant sidecar (`sidecar/ha_sidecar.py`) makes
+every HA device a grant-gated lex skill — an appliance command is an
+actuation with real-world costs (water, heat, energy cents), so it gets the
+same treatment as an arm reach. `src/home.lex` adds the energy-policy
+precondition: `wash_allowed` is a pure, examples-tested gate (integer cents
+per kWh, costs rounded up — never floats in a budget) that refuses a
+peak-tariff start **before any request is sent**, the same shape as the
+dangerous-tool demo's clamp check. The stub house pins "now" at peak so the
+refusal is reproducible in CI; real mode reads a live PVPC/Nordpool sensor
+through HA's local API.
+
+```sh
+make home-wash
+#   now: 32c/kWh — REFUSED: peak tariff above the 15c/kWh ceiling (… never sent)
+#   at 02:30: 11c/kWh — allowed (cycle ≈ 10 cents)
+#   washer started in off-peak window
+#   observer → denied: skill appliance_start not in grant   ← may read, not touch
+```
+
 **"Bring me the cup" — vision-grounded object fetch** (`make xlerobot-find` /
 `xlerobot-find-sim`): naming an object isn't the same as knowing where it is —
 an LLM planner can say "the cup" but has no `move_arm` target until *something*
