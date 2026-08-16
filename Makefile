@@ -2,7 +2,7 @@
 # python3 (no pip). The ML demos (keep-out / MuJoCo / learned policy) need the
 # Python deps in sidecar/requirements.txt — see the README dependency matrix.
 
-.PHONY: help check smoke demo grant task budget depot xlerobot xlerobot-task xlerobot-voice xlerobot-sim xlerobot-find xlerobot-find-sim keepout dynamic_keepout tool_fire mcp-grant a2a-grant xlerobot-rl-train xlerobot-rl-run xlerobot-rl-usage xlerobot-rl-finetune xlerobot-llm-mock xlerobot-llm fleet-clean-house bazaar-visit skill-acquisition skill-catalog fridge-report deps clean
+.PHONY: help check smoke demo grant task budget depot xlerobot xlerobot-task xlerobot-voice xlerobot-touch xlerobot-sim xlerobot-find xlerobot-find-sim keepout dynamic_keepout tool_fire mcp-grant a2a-grant xlerobot-rl-train xlerobot-rl-run xlerobot-rl-usage xlerobot-rl-finetune xlerobot-llm-mock xlerobot-llm fleet-clean-house bazaar-visit skill-acquisition skill-catalog fridge-report deps clean
 
 help: ## Show this help
 	@grep -hE '^[a-z-]+:.*##' $(MAKEFILE_LIST) | sed -E 's/:.*## /\t/' | sort
@@ -36,6 +36,9 @@ xlerobot-task: ## Fetch-the-Cup as a VERIFIED robot_task: trail -> referee -> ra
 
 xlerobot-voice: ## Voice goal + camera + mic-refusal: sensors as granted capabilities (no ML deps)
 	@bash scripts/demo.sh xlerobot_voice
+
+xlerobot-touch: ## Touchscreen consent prompt + tap-refusal: the display's input path as a granted capability (no ML deps)
+	@bash scripts/demo.sh xlerobot_touch
 
 xlerobot-sim: ## Same demo against real MuJoCo physics (NEEDS: pip install mujoco numpy)
 	@python3 sidecar/xlerobot_mujoco_sidecar.py & echo $$! > /tmp/lex-robot-xle.pid; \

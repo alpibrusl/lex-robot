@@ -26,6 +26,8 @@ protocol (SIDECAR.md), plus XLeRobot's own skills:
     show_url   {"url": "http(s)://..."}                 → outcome
     show_text  {"text": "..."}                          → outcome
     show_report {"source","items","caption"?}           → outcome
+    show_prompt {"question","options":["...", ...]}     → outcome
+    read_touch  {}                                      → {"option": "...", "detail"?}
     clear_display {}                                    → outcome
 
 `render_qr`/`scan_qr` are the QR half of src/a2a_bootstrap.lex's stranger
@@ -164,6 +166,23 @@ extra env vars, no extra pip installs):
     LEX_ROBOT_HW: none of it needs a servo or camera, only a browser
     somewhere pointed at the URL, which this process has no way to verify
     either way — see DisplayState's docstring.
+
+Touch (POST /display/touch — the display's one INPUT path):
+    `show_prompt` puts a question plus large tap targets on the kiosk page;
+    a tap POSTs {"option","version"} back here, and `read_touch` hands the
+    tapped option to the governed program — the touchscreen's input layer
+    as a granted capability, the same posture `listen` takes for the mic.
+    A tap is only accepted while ITS prompt is still showing (kind and
+    version are checked), and each prompt holds at most one answer: a new
+    show_prompt discards any unread tap, so a stale answer can never leak
+    into a newer question. On the Tier-1 stub, when no real tap is pending,
+    read_touch answers with a canned tap so the demos run headless:
+    LEX_XLE_TOUCH   which option the canned tap picks (default: the
+                    prompt's first option; must match one of the options
+                    or read_touch honestly reports the mismatch)
+    A real tap always wins over the canned one — a browser pointed at the
+    stub's /display is a real touchscreen. On Tier 3 there is no canned
+    fallback: no tap yet means {"option": ""}.
 """
 
 import json
@@ -181,6 +200,9 @@ HARD_SPEED_MPS = float(os.environ.get("LEX_XLE_HARD_SPEED_MPS", "1.0"))
 USE_HW = os.environ.get("LEX_ROBOT_HW", "0") == "1"
 # Stub transcript for the mic (override to script voice demos offline).
 CANNED_TRANSCRIPT = os.environ.get("LEX_XLE_TRANSCRIPT", "fetch the cup to the table")
+# Stub tap for the touchscreen (see "Touch" in the module docstring). Empty
+# means "the prompt's first option" so headless demos need no configuration.
+CANNED_TOUCH = os.environ.get("LEX_XLE_TOUCH", "")
 
 # Tier-1 has no camera model at all (arms/base are position vectors, not a
 # physics scene) — `locate_object` here is an explicitly-labeled canned
@@ -756,11 +778,13 @@ class DisplayState:
     """
 
     def __init__(self):
-        self.kind = "blank"  # blank | image | video | url | text | report
+        self.kind = "blank"  # blank | image | video | url | text | report | prompt
         self.content = ""  # <img>/<video> src, <iframe> src, or literal text
         self.local_path = None  # backing file for GET /display/content, if any
         self.items = []  # report only: the findings list alongside the image
         self.caption = ""  # report only: one-line context above the list
+        self.options = []  # prompt only: the tap targets, in display order
+        self.touch = None  # prompt only: the one unread tap, if any
         self.version = 0  # bumped on every change; the kiosk page polls this
 
     def set_local_file(self, kind, path):
@@ -803,6 +827,37 @@ class DisplayState:
             self.content = f"/display/content?v={self.version}"
         return {"outcome": "reached", "detail": f"showing report: {len(items)} item(s)"}
 
+    def set_prompt(self, question, options):
+        # A question plus tap targets -- the display's only interactive kind.
+        # Discards any unread tap: an answer can only ever belong to the
+        # prompt that is currently showing, never carry over to a new one.
+        self.local_path = None
+        self.version += 1
+        self.kind = "prompt"
+        self.content = question
+        self.options = [str(o) for o in options]
+        self.touch = None
+        return {"outcome": "reached",
+                "detail": f"showing prompt with {len(self.options)} option(s)"}
+
+    def record_touch(self, option, version):
+        # Accept a tap from the kiosk page only if it answers the prompt
+        # that is showing RIGHT NOW -- kind and version both checked, so a
+        # tap racing a display change is rejected rather than misfiled.
+        if self.kind != "prompt":
+            return {"ok": False, "detail": "no prompt on the display"}
+        if version != self.version:
+            return {"ok": False, "detail": "prompt changed since this tap"}
+        if option not in self.options:
+            return {"ok": False, "detail": f"'{option}' is not one of the prompt's options"}
+        self.touch = option
+        return {"ok": True}
+
+    def take_touch(self):
+        tap = self.touch
+        self.touch = None
+        return tap
+
     def clear(self):
         self.local_path = None
         self.version += 1
@@ -810,6 +865,8 @@ class DisplayState:
         self.content = ""
         self.items = []
         self.caption = ""
+        self.options = []
+        self.touch = None
         return {"outcome": "reached", "detail": "display cleared"}
 
     def to_json(self):
@@ -817,6 +874,9 @@ class DisplayState:
         if self.kind == "report":
             base["items"] = self.items
             base["caption"] = self.caption
+        if self.kind == "prompt":
+            base["options"] = self.options
+            base["answered"] = self.touch is not None
         return base
 
 
@@ -843,6 +903,19 @@ DISPLAY_PAGE_HTML = """<!doctype html>
   #stage .report .caption{opacity:0.75;margin:0 0 1.5vh}
   #stage .report ul{margin:0;padding-left:1.1em}
   #stage .report li{margin-bottom:0.6vh}
+  /* prompt: finger-first sizing — a 7-inch panel is the design target, so
+     targets are viewport-proportional, not pixel-sized */
+  #stage .prompt{width:92vw;height:92vh;display:flex;flex-direction:column;
+                 justify-content:center;gap:4vh;color:#fff;
+                 font-family:-apple-system,Helvetica,Arial,sans-serif}
+  #stage .prompt .question{font-size:7vh;line-height:1.25;text-align:center}
+  #stage .prompt .options{display:flex;flex-wrap:wrap;gap:3vh;justify-content:center}
+  #stage .prompt button{flex:1 1 38vw;min-height:20vh;font-size:6vh;
+                        font-family:inherit;color:#fff;background:#1c3d5a;
+                        border:0.6vh solid #4a90d9;border-radius:3vh;
+                        touch-action:manipulation;-webkit-tap-highlight-color:transparent}
+  #stage .prompt button:disabled{opacity:0.35}
+  #stage .prompt button.chosen{background:#2e7d32;border-color:#66bb6a;opacity:1}
 </style></head>
 <body><div id="stage"></div>
 <script>
@@ -873,6 +946,30 @@ function render(s) {
     (s.items || []).forEach(it => { const li = document.createElement('li'); li.textContent = it; ul.appendChild(li); });
     panel.appendChild(ul);
     wrap.appendChild(panel);
+    stage.appendChild(wrap);
+  } else if (s.kind === 'prompt') {
+    const wrap = document.createElement('div'); wrap.className = 'prompt';
+    const q = document.createElement('div'); q.className = 'question'; q.textContent = s.content;
+    wrap.appendChild(q);
+    const row = document.createElement('div'); row.className = 'options';
+    const buttons = [];
+    (s.options || []).forEach(opt => {
+      const b = document.createElement('button'); b.textContent = opt;
+      b.onclick = async () => {
+        // Send the version this prompt was rendered with, so a tap that
+        // races a display change is rejected server-side, not misfiled.
+        try {
+          const r = await fetch('/display/touch', {method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({option: opt, version: s.version})});
+          const res = await r.json();
+          if (res.ok) { buttons.forEach(x => x.disabled = true); b.classList.add('chosen'); }
+        } catch (e) { /* sidecar unreachable -- leave the buttons live to retry */ }
+      };
+      buttons.push(b); row.appendChild(b);
+    });
+    if (s.answered) buttons.forEach(x => x.disabled = true);
+    wrap.appendChild(row);
     stage.appendChild(wrap);
   }
   // 'blank' -> stage stays empty
@@ -1428,6 +1525,33 @@ class XLeRobot:
             return {"outcome": "stalled", "detail": "show_report needs a non-empty image path or URL"}
         return self.display.set_report(source, items, caption)
 
+    def show_prompt(self, question, options):
+        if not question:
+            return {"outcome": "stalled", "detail": "show_prompt needs a non-empty question"}
+        if not options:
+            return {"outcome": "stalled", "detail": "show_prompt needs at least one option"}
+        return self.display.set_prompt(question, options)
+
+    def read_touch(self):
+        # A real tap from the kiosk page always wins, on every tier -- a
+        # browser pointed at the stub's /display is a real touchscreen.
+        tap = self.display.take_touch()
+        if tap is not None:
+            return {"option": tap, "detail": "tap from the display page"}
+        if self.display.kind != "prompt":
+            # A tap can only answer something shown; without a prompt there
+            # is honestly nothing to read, canned or not.
+            return {"option": "", "detail": "no prompt on the display"}
+        if USE_HW:
+            return {"option": "", "detail": "no tap yet"}
+        # Tier-1 stub, headless: answer with the canned tap (same convention
+        # as `listen`'s CANNED_TRANSCRIPT) so the demos run without a screen.
+        opt = CANNED_TOUCH or self.display.options[0]
+        if opt not in self.display.options:
+            return {"option": "",
+                    "detail": f"LEX_XLE_TOUCH '{opt}' is not one of the prompt's options"}
+        return {"option": opt, "detail": "(stub, no touchscreen) canned tap"}
+
     def clear_display(self):
         return self.display.clear()
 
@@ -1560,6 +1684,10 @@ def handle_skill(name, args):
         return ROBOT.show_text(args.get("text", ""))
     if name == "show_report":
         return ROBOT.show_report(args.get("source", ""), args.get("items", []), args.get("caption", ""))
+    if name == "show_prompt":
+        return ROBOT.show_prompt(args.get("question", ""), args.get("options", []))
+    if name == "read_touch":
+        return ROBOT.read_touch()
     if name == "clear_display":
         return ROBOT.clear_display()
     if name == "move_arm":
@@ -1613,6 +1741,13 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(400, {"error": "invalid json"})
         if self.path.startswith("/skill/"):
             return self._send(200, handle_skill(self.path[len("/skill/"):], args))
+        if self.path == "/display/touch":
+            # The kiosk page's tap comes back here, NOT through /skill/: a
+            # human tapping the screen is input arriving at the sidecar, not
+            # a skill the governed program invoked. The program only ever
+            # sees it through read_touch, behind its own grant gate.
+            return self._send(200, ROBOT.display.record_touch(
+                str(args.get("option", "")), args.get("version", -1)))
         return self._send(404, {"error": "not found"})
 
     def do_GET(self):

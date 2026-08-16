@@ -333,6 +333,18 @@ a hardware integration:
    a webpage, or plain status text), until `clear_display` blanks it.
    No restart needed when the robot changes what it's showing.
 
+If your panel is a **touchscreen** (a 7-inch HDMI+USB-touch panel is the
+design target), the display's one input path lights up too: `show_prompt`
+puts a question with large, finger-sized tap targets on the page, a tap
+posts back to the sidecar, and the governed program reads the answer
+through the grant-gated `read_touch` skill — the touch layer treated as
+an input sensor exactly like the mic, so "can this program hear the
+answer?" is a typed, refusable question. Nothing to configure: the
+buttons respond to any pointer, so the same page also works with a mouse
+on a non-touch panel. `make xlerobot-touch` demos the loop (canned tap,
+no screen needed); with a real screen attached, a real tap always wins
+over the canned one.
+
 This is tier-independent — it works identically against the stub
 sidecar (no `LEX_ROBOT_HW` needed) or the real one, since none of it
 depends on servos or the camera; only a browser needs to actually be

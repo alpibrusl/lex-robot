@@ -54,6 +54,8 @@ expect xlerobot_task "DISQUALIFIED" "xlerobot task: forged over-grant entry is d
 expect xlerobot_task "submission written" "xlerobot task: portable JSONL submission is written"
 expect xlerobot_voice "voice goal: fetch the cup to the table" "xlerobot voice: spoken transcript becomes the human goal"
 expect xlerobot_voice "denied: skill listen not in grant" "xlerobot voice: mic-less grant refuses listen at the capability layer"
+expect xlerobot_touch "tap: yes" "xlerobot touch: screen prompt's tapped answer reaches the governed program"
+expect xlerobot_touch "denied: skill read_touch not in grant" "xlerobot touch: ask-only grant refuses the tap read at the capability layer"
 expect xlerobot_find "located 'cup' at world" "xlerobot find: locate_object turns an object name into a real position"
 expect xlerobot_find "grasp 15N                  → reached" "xlerobot find: vision-driven approach + grasp succeeds"
 

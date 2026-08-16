@@ -25,6 +25,8 @@ only caller; it adds effect typing, grant enforcement, and the audit trail.
 | `policy_status` | `{}` | `{ "status": "running" }` or `{ "status": "done", "outcome": "...", "detail": "" }` |
 | `record_episode` | `{ "task": "..." }` | `{ "episode_id": "...", "frames": N, "path": "..." }` |
 | `listen` | `{ "seconds": N }` | `{ "transcript": "...", "confidence": 0.9 }` — mic capture + LOCAL transcription; raw audio never leaves the sidecar |
+| `show_prompt` | `{ "question", "options": ["...", ...] }` | outcome — a question with large tap targets on the kiosk display (`GET /display`), its one interactive kind |
+| `read_touch` | `{}` | `{ "option": "...", "detail"? }` — the one unread tap answering the prompt currently showing; `""` when nothing was tapped (or no prompt is up). The tap itself arrives via `POST /display/touch` from the kiosk page, never through `/skill/` — a human's tap is input at the sidecar, and the governed program only sees it through this grant-gated read |
 
 ### `run_policy` is asynchronous
 A full closed-loop rollout runs tens of seconds — longer than the Lex `std.http`
