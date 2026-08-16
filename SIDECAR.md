@@ -169,8 +169,10 @@ What it does and doesn't do:
   as the stub's documented contract.
 
 Environment variables (see the module docstring in `xlerobot_sidecar.py`
-for the full, current list): `LEX_XLE_LEFT_PORT` / `LEX_XLE_RIGHT_PORT` /
-`LEX_XLE_BASE_PORT` (serial ports, required), `LEX_XLE_LEFT_ID` /
+for the full, current list): `LEX_XLE_LEFT_PORT` / `LEX_XLE_RIGHT_PORT`
+(serial port per arm — at least one required; a missing arm's skills answer
+with an honest error, so a half-assembled build runs during bring-up),
+`LEX_XLE_BASE_PORT` (optional), `LEX_XLE_LEFT_ID` /
 `LEX_XLE_RIGHT_ID` (LeRobot calibration ids), `LEX_XLE_WHEEL_RADIUS_M` /
 `LEX_XLE_TRACK_WIDTH_M` (diff-base geometry), `LEX_XLE_MAX_REL_TARGET`
 (optional per-step joint clamp, defense in depth alongside the grant),

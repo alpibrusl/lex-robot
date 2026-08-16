@@ -83,7 +83,9 @@ Run:
 
 ## Real hardware — environment variables
 
-Arms (required when LEX_ROBOT_HW=1):
+Arms (at least ONE required when LEX_ROBOT_HW=1 — each slot is optional so a
+partial build runs during bring-up or as a single-arm robot; a missing arm's
+skills return an honest error rather than falling through to the other arm):
     LEX_XLE_LEFT_PORT / LEX_XLE_RIGHT_PORT     serial port per arm, e.g. /dev/ttyACM0
     LEX_XLE_LEFT_ID / LEX_XLE_RIGHT_ID         lerobot robot id (calibration file
                                                 lookup); default xle_left / xle_right
@@ -1373,18 +1375,24 @@ class XLeRobot:
         left_port = os.environ.get("LEX_XLE_LEFT_PORT")
         right_port = os.environ.get("LEX_XLE_RIGHT_PORT")
         base_port = os.environ.get("LEX_XLE_BASE_PORT")
-        if not left_port or not right_port:
+        # Each arm slot is optional so a partial build runs during bring-up —
+        # one calibrated SO-101 on the bench, or a single-arm second robot
+        # (a LeKiwi) — but a hardware sidecar with NO arm at all is almost
+        # certainly a misconfiguration, so that still refuses loudly.
+        if not left_port and not right_port:
             raise SystemExit(
-                "LEX_ROBOT_HW=1 requires LEX_XLE_LEFT_PORT and LEX_XLE_RIGHT_PORT "
-                "(serial ports for the two SO-101 arms) — see SIDECAR.md. "
-                "LEX_XLE_BASE_PORT is optional; without it, the base is unavailable "
-                "(read_base/move_base will fail if called)."
+                "LEX_ROBOT_HW=1 requires at least one of LEX_XLE_LEFT_PORT / "
+                "LEX_XLE_RIGHT_PORT (serial port per SO-101 arm) — see SIDECAR.md. "
+                "A missing arm stays unavailable (its skills return an honest "
+                "error); LEX_XLE_BASE_PORT is likewise optional."
             )
         max_rel = os.environ.get("LEX_XLE_MAX_REL_TARGET")
         max_rel = float(max_rel) if max_rel else None
         try:
-            self._hw_arms["left"] = _HwArm("left", left_port, os.environ.get("LEX_XLE_LEFT_ID", "xle_left"), max_rel)
-            self._hw_arms["right"] = _HwArm("right", right_port, os.environ.get("LEX_XLE_RIGHT_ID", "xle_right"), max_rel)
+            if left_port:
+                self._hw_arms["left"] = _HwArm("left", left_port, os.environ.get("LEX_XLE_LEFT_ID", "xle_left"), max_rel)
+            if right_port:
+                self._hw_arms["right"] = _HwArm("right", right_port, os.environ.get("LEX_XLE_RIGHT_ID", "xle_right"), max_rel)
             if base_port:
                 if BASE_MODE == "omni":
                     self._hw_base = _HwOmniBase(base_port, os.environ.get("LEX_XLE_BASE_ID", "xle_base"))
@@ -1417,6 +1425,16 @@ class XLeRobot:
             except Exception as e:
                 print(f"[xlerobot] camera '{cam_name}' (index {index_str}) unavailable: {e}")
 
+    def _hw_arm_missing(self, arm):
+        """None when the arm is configured; an honest outcome-shaped refusal
+        otherwise. A request for a missing arm must never fall through to the
+        OTHER physical arm -- moving different metal than the caller named is
+        worse than refusing."""
+        if arm in self._hw_arms:
+            return None
+        return {"outcome": "stalled",
+                "detail": f"{arm} arm not configured (no LEX_XLE_{arm.upper()}_PORT) -- partial build"}
+
     def _disconnect_partial(self):
         """Leave nothing energized behind on a failed bring-up."""
         for a in self._hw_arms.values():
@@ -1436,7 +1454,12 @@ class XLeRobot:
     # ---- sensing -------------------------------------------------------------
     def read_joints(self, arm):
         if USE_HW:
-            return self._hw_arms[arm if arm in self._hw_arms else "left"].read_joints()
+            if arm in self._hw_arms:
+                return self._hw_arms[arm].read_joints()
+            fallback = self._hw_arms.get("left") or next(iter(self._hw_arms.values()), None)
+            if arm not in ("left", "right") and fallback is not None:
+                return fallback.read_joints()
+            return {"error": f"{arm} arm not configured (no LEX_XLE_{arm.upper()}_PORT) -- partial build"}
         a = self.arms.get(arm, self.arms["left"])
         return {
             "names": [f"{arm}_{j}" for j in ARM_JOINTS],
@@ -1446,7 +1469,12 @@ class XLeRobot:
 
     def read_arm_pose(self, arm):
         if USE_HW:
-            return self._hw_arms[arm if arm in self._hw_arms else "left"].read_pose()
+            if arm in self._hw_arms:
+                return self._hw_arms[arm].read_pose()
+            fallback = self._hw_arms.get("left") or next(iter(self._hw_arms.values()), None)
+            if arm not in ("left", "right") and fallback is not None:
+                return fallback.read_pose()
+            return {"ok": False, "detail": f"{arm} arm not configured (no LEX_XLE_{arm.upper()}_PORT) -- partial build"}
         a = self.arms.get(arm, self.arms["left"])
         x, y, z = a["positions"][:3]
         return {"ok": True, "x": x, "y": y, "z": z}
@@ -1656,6 +1684,9 @@ class XLeRobot:
         if denial is not None:
             return {"outcome": "denied", "detail": denial}
         if USE_HW:
+            missing = self._hw_arm_missing(arm)
+            if missing is not None:
+                return missing
             timeout_s = float(os.environ.get("LEX_XLE_ARM_TIMEOUT_S", "8"))
             tol_m = float(os.environ.get("LEX_XLE_ARM_TOL_M", "0.01"))
             return self._hw_arms[arm].move_to(x, y, z, 0.0, 0.0, 0.0, timeout_s, tol_m)
@@ -1680,6 +1711,9 @@ class XLeRobot:
         # whenever the grant caps grip force below HARD_GRIP_N.
         scale_max = granted_max if granted_max is not None else HARD_GRIP_N
         if USE_HW:
+            missing = self._hw_arm_missing(arm)
+            if missing is not None:
+                return missing
             return self._hw_arms[arm].grasp(force, scale_max)
         a = self.arms[arm]
         a["holding"] = True
@@ -1690,6 +1724,9 @@ class XLeRobot:
         if arm not in ("left", "right"):
             return {"outcome": "stalled", "detail": f"unknown arm '{arm}' (use left|right)"}
         if USE_HW:
+            missing = self._hw_arm_missing(arm)
+            if missing is not None:
+                return missing
             return self._hw_arms[arm].release()
         a = self.arms[arm]
         was = a["holding"]
