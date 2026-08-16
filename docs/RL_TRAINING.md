@@ -516,7 +516,11 @@ there is nothing to recompute the claims from. The one exception is
 attempt 11, whose replay artifacts survived: its governed-replay trail
 is committed as `docs/trails/attempt11.jsonl` and a `VERIFIED` record
 (all nine claims re-derived bit-exact, including the 0.744 m mean /
-1.329 m max x-overshoot) supersedes the imported entry. So the store
+1.329 m max x-overshoot) supersedes the imported entry. The trained
+policy itself is also preserved: `docs/checkpoints/attempt11.zip`
+(sha256 `fc7f1b32fe28…51cb7949`) is the sb3 PPO checkpoint the trail
+was replayed from, so the rollout is reproducible end to end, not just
+recheckable. So the store
 now holds the full series — thirteen attempts, two of them backed by
 recomputable evidence — and `notebooklab verify` over the whole store
 exits 0.
