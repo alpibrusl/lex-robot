@@ -472,6 +472,26 @@ make xlerobot-voice
 #   muted robot → denied: skill listen not in grant   ← NEVER SENT
 ```
 
+**Touchscreen consent — the display's input path as a granted capability**
+(`make xlerobot-touch`): the kiosk display (`GET /display`, the page a
+7-inch panel on the robot runs in a kiosk browser) has exactly one
+interactive kind. `show_prompt` puts a question with large tap targets on
+the screen; a tap posts back to the sidecar; `read_touch`
+(`src/sense.lex`) hands the tapped option to the governed program. The
+halves are separate skills on purpose — showing a question is an act on
+the world (like `show_text`), reading the answer is a sense (like
+`listen`) — so a grant can allow *asking* without allowing *hearing the
+answer*. A tap is only accepted while its prompt is still showing, and a
+new prompt discards any unread tap, so a stale answer never leaks into a
+newer question.
+
+```sh
+make xlerobot-touch
+#   prompt on screen: Fetch the cup from the kitchen?  [yes] [no]
+#   tap: yes                                      ← the human's answer
+#   ask-only robot → denied: skill read_touch not in grant   ← NEVER SENT
+```
+
 **"Bring me the cup" — vision-grounded object fetch** (`make xlerobot-find` /
 `xlerobot-find-sim`): naming an object isn't the same as knowing where it is —
 an LLM planner can say "the cup" but has no `move_arm` target until *something*

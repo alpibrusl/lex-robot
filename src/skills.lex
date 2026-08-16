@@ -422,6 +422,26 @@ fn show_report(r :: t.Robot, image_source :: Str, items :: List[Str], caption ::
   }
 }
 
+# Put a question with large tap targets on the robot's screen — the display's
+# one interactive kind (xlerobot_sidecar.py's DisplayState "prompt"). Showing
+# the prompt is an act on the world exactly like show_text; READING the answer
+# is a separate sense (read_touch, below), so a grant can allow asking without
+# allowing hearing the answer — and refusing either is auditable.
+fn show_prompt(r :: t.Robot, question :: Str, options :: List[Str]) -> [net, sense, actuate] t.Outcome {
+  if grant.skill_allowed(r.grant, "show_prompt") {
+    let options_json := JList(list.map(options, fn (s :: Str) -> jv.Json {
+      JStr(s)
+    }))
+    let body := jv.stringify(JObj([("question", JStr(question)), ("options", options_json)]))
+    match client.call(r.sidecar_url, "show_prompt", body) {
+      Err(e) => Stalled(e),
+      Ok(resp) => parse_outcome(resp),
+    }
+  } else {
+    Denied("skill show_prompt not in grant")
+  }
+}
+
 fn http_err_str(e :: HttpError) -> Str {
   match e {
     TimeoutError => "timeout",
@@ -513,6 +533,12 @@ fn move_base_claimed(r :: t.Robot, arbiter_url :: Str, robot_id :: Str, target :
 # Microphone (grant-gated, privacy-sensitive) — see sense.listen.
 fn listen(r :: t.Robot, seconds :: Int) -> [net, sense] Result[Str, Str] {
   sense.listen(r, seconds)
+}
+
+# Touchscreen tap (grant-gated, an input sensor like the mic) — see
+# sense.read_touch.
+fn read_touch(r :: t.Robot) -> [net, sense] Result[Str, Str] {
+  sense.read_touch(r)
 }
 
 # Base floor pose (refuses unparseable responses) — see sense.read_base.

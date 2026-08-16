@@ -35,7 +35,10 @@ fn nth1(xs :: List[Str]) -> Str {
 }
 
 fn head_or(xs :: List[Str], dflt :: Str) -> Str {
-  match list.head(xs) { Some(v) => v, None => dflt }
+  match list.head(xs) {
+    Some(v) => v,
+    None => dflt,
+  }
 }
 
 # Extract a numeric field from a flat JSON object. key e.g. "\"x\":".
@@ -95,6 +98,21 @@ fn listen(r :: t.Robot, seconds :: Int) -> [net, sense] Result[Str, Str] {
   }
 }
 
+# Read the one unread tap from the robot's touchscreen prompt and return the
+# sidecar's JSON ({"option": "...", "detail"?}) — "" for option means no tap
+# (or no prompt showing). The touch layer is an input sensor exactly like the
+# mic: what a person tapped is something the program SENSES, so it is
+# grant-gated the same way listen is — a program whose grant does not name
+# "read_touch" can show a prompt (if granted show_prompt) but never learn the
+# answer; the request is never sent.
+fn read_touch(r :: t.Robot) -> [net, sense] Result[Str, Str] {
+  if grant.skill_allowed(r.grant, "read_touch") {
+    client.call(r.sidecar_url, "read_touch", "{}")
+  } else {
+    Err("skill read_touch not in grant")
+  }
+}
+
 # Read the base's current floor pose. A response without an "x" field (e.g.
 # {"error":"unknown skill"} from the wrong sidecar on the shared port) is an
 # Err — never silently decoded as a pose at the origin, because this reading
@@ -131,11 +149,7 @@ fn locate_object(r :: t.Robot, name :: Str) -> [net, sense] Result[t.Located, St
       if str.contains(s, "\"found\"") {
         let w := jobj(s, "\"world\":")
         let af := jobj(s, "\"arm_frame\":")
-        Ok({
-          arm: jstr(af, "\"arm\":", "left"),
-          world: { x: jfloat(w, "\"x\":", 0.0), y: jfloat(w, "\"y\":", 0.0), z: jfloat(w, "\"z\":", 0.0) },
-          offset: { x: jfloat(af, "\"x\":", 0.0), y: jfloat(af, "\"y\":", 0.0), z: jfloat(af, "\"z\":", 0.0) },
-        })
+        Ok({ arm: jstr(af, "\"arm\":", "left"), world: { x: jfloat(w, "\"x\":", 0.0), y: jfloat(w, "\"y\":", 0.0), z: jfloat(w, "\"z\":", 0.0) }, offset: { x: jfloat(af, "\"x\":", 0.0), y: jfloat(af, "\"y\":", 0.0), z: jfloat(af, "\"z\":", 0.0) } })
       } else {
         Err(str.concat("locate_object: ", s))
       }
@@ -156,14 +170,11 @@ fn transform_to_arm(r :: t.Robot, world :: t.Vec3) -> [net, sense] Result[t.Loca
     Ok(s) => {
       if str.contains(s, "\"found\"") {
         let af := jobj(s, "\"arm_frame\":")
-        Ok({
-          arm: jstr(af, "\"arm\":", "left"),
-          world: world,
-          offset: { x: jfloat(af, "\"x\":", 0.0), y: jfloat(af, "\"y\":", 0.0), z: jfloat(af, "\"z\":", 0.0) },
-        })
+        Ok({ arm: jstr(af, "\"arm\":", "left"), world: world, offset: { x: jfloat(af, "\"x\":", 0.0), y: jfloat(af, "\"y\":", 0.0), z: jfloat(af, "\"z\":", 0.0) } })
       } else {
         Err(str.concat("transform_to_arm: ", s))
       }
     },
   }
 }
+
