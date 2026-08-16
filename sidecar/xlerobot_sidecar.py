@@ -29,6 +29,7 @@ protocol (SIDECAR.md), plus XLeRobot's own skills:
     show_prompt {"question","options":["...", ...]}     → outcome
     read_touch  {}                                      → {"option": "...", "detail"?}
     clear_display {}                                    → outcome
+    detect_object {"name": "..."}                       → {"found","cx","cy","w","h","confidence","detail"}
 
 `render_qr`/`scan_qr` are the QR half of src/a2a_bootstrap.lex's stranger
 handshake (two robots that don't know each other bootstrap trust from a QR
@@ -128,6 +129,19 @@ crashing the sidecar:
     LEX_XLE_CAMERA_INDEX        legacy alias for LEX_XLE_CAMERA_HEAD_INDEX
                                  (used if LEX_XLE_CAMERA_HEAD_INDEX is unset)
 
+Split-compute vision (`detect_object` — see deploy/VISION_SPLIT.md):
+    LEX_XLE_VISION_URL        base URL of a running sidecar/vision_service.py
+                               (e.g. http://mac-studio.local:8901). When set,
+                               detect_object captures a head-camera frame and
+                               sends it there for judgment — the camera read
+                               stays on the robot; only the already-captured
+                               JPEG crosses the LAN (the same [net]-judgment
+                               posture as list_visible_items). When unset:
+                               Tier-3 says so honestly; the Tier-1 stub falls
+                               back to an explicitly-labeled canned detection
+                               (same convention as locate_object).
+    LEX_XLE_VISION_TIMEOUT_S  per-call budget (default 15)
+
 Mic + local transcription (only imported if `listen` is actually called):
     LEX_XLE_MIC_DEVICE     sounddevice input device index/name (default: system default)
     LEX_XLE_WHISPER_MODEL  faster-whisper model name (default "base.en")
@@ -189,6 +203,8 @@ import json
 import math
 import mimetypes
 import os
+import urllib.error
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HOST = "127.0.0.1"
@@ -1555,6 +1571,54 @@ class XLeRobot:
     def clear_display(self):
         return self.display.clear()
 
+    # ---- split-compute vision (deploy/VISION_SPLIT.md) -------------------
+    # 2D detection: capture a head-camera frame HERE (the [sense] effect
+    # stays on the robot), ship the already-captured JPEG to the vision
+    # service for judgment, and pass its normalized bounding box through.
+    # Deliberately NOT a 3D pose: turning a box into a world position needs
+    # depth or calibration this robot doesn't have — locate_object on Tier-3
+    # keeps saying so rather than pretending (see that method).
+    def detect_object_2d(self, name):
+        if not name:
+            return {"found": False, "detail": "detect_object needs a non-empty name"}
+        vision_url = os.environ.get("LEX_XLE_VISION_URL", "").rstrip("/")
+        if vision_url:
+            frame = self.read_camera("head")
+            jpeg = frame.get("jpeg_b64", "") if isinstance(frame, dict) else ""
+            timeout_s = float(os.environ.get("LEX_XLE_VISION_TIMEOUT_S", "15"))
+            body = json.dumps({"image_b64": jpeg, "name": name}).encode()
+            req = urllib.request.Request(f"{vision_url}/vision/detect", data=body,
+                                         headers={"Content-Type": "application/json"})
+            try:
+                with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+                    out = json.loads(resp.read())
+            except Exception as e:
+                return {"found": False,
+                        "detail": f"vision service unreachable at {vision_url}: {e}"}
+            if not isinstance(out, dict):
+                return {"found": False, "detail": "vision service returned non-object JSON"}
+            out["source"] = "vision_service"
+            if not jpeg:
+                # The judgment was real but the frame wasn't — say so, don't
+                # let a service answer imply the camera worked.
+                out["detail"] = (str(out.get("detail", "")) +
+                                 " (frame had no jpeg bytes — camera unavailable"
+                                 " or Pillow missing)").strip()
+            return out
+        if USE_HW:
+            return {"found": False,
+                    "detail": "no LEX_XLE_VISION_URL configured — real-camera detection"
+                              " needs the split-compute vision service, see"
+                              " deploy/VISION_SPLIT.md"}
+        # Tier-1 stub without a service: explicitly-labeled canned detection,
+        # same honesty convention as locate_object's canned lookup.
+        if name in CANNED_OBJECT_WORLD:
+            return {"found": True, "cx": 0.62, "cy": 0.55, "w": 0.18, "h": 0.22,
+                    "confidence": 1.0, "source": "stub",
+                    "detail": "(stub) canned 2D detection"}
+        return {"found": False, "source": "stub",
+                "detail": f"(stub) unknown object '{name}' (stub knows: cup)"}
+
     def locate_object(self, name):
         if USE_HW:
             # No real-camera object-detection model wired up yet — say so
@@ -1702,6 +1766,8 @@ def handle_skill(name, args):
                                float(args.get("speed", 0.3)))
     if name == "locate_object":
         return ROBOT.locate_object(args.get("name", ""))
+    if name == "detect_object":
+        return ROBOT.detect_object_2d(args.get("name", ""))
     if name == "transform_to_arm":
         return ROBOT.transform_to_arm(float(args.get("x", 0.0)), float(args.get("y", 0.0)), float(args.get("z", 0.0)))
     return {"error": f"unknown skill: {name}"}

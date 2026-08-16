@@ -546,6 +546,11 @@ fn read_base(r :: t.Robot) -> [net, sense] Result[t.Vec3, Str] {
   sense.read_base(r)
 }
 
+# 2D detection via the split-compute vision service — see sense.detect_object.
+fn detect_object(r :: t.Robot, name :: Str) -> [net, sense] Result[Str, Str] {
+  sense.detect_object(r, name)
+}
+
 # Vision-based object localization — see sense.locate_object.
 fn locate_object(r :: t.Robot, name :: Str) -> [net, sense] Result[t.Located, Str] {
   sense.locate_object(r, name)

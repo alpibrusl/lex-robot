@@ -492,6 +492,26 @@ make xlerobot-touch
 #   ask-only robot → denied: skill read_touch not in grant   ← NEVER SENT
 ```
 
+**Split-compute vision — the Pi drives, a GPU box sees** (`make
+vision-split`): the sidecar (a Raspberry Pi on the robot) owns the camera —
+capturing a frame is the `[sense]` effect and stays on the robot — while
+*judging* the frame runs wherever the model horsepower lives
+(`sidecar/vision_service.py` on a Mac Studio serving Ollama, a Jetson, or
+anything behind a LiteLLM proxy; one OpenAI-compatible call covers them
+all). The new `detect_object` skill ships the already-captured JPEG across
+and returns a **2D normalized bounding box** — deliberately not a world
+pose, because that needs depth or calibration this hardware doesn't have,
+and Tier-3 `locate_object` keeps saying so rather than pretending. The demo
+runs everywhere with a mock service (canned, labeled answers);
+`deploy/VISION_SPLIT.md` is the two-machine runbook.
+
+```sh
+make vision-split
+#   detect: cup found (judged by the vision service)   ← frame captured on-robot, judged off-robot
+#   items from the vision service:                     ← list_visible_items, same [net]-judgment seam
+#     - (mock) a cup
+```
+
 **"Bring me the cup" — vision-grounded object fetch** (`make xlerobot-find` /
 `xlerobot-find-sim`): naming an object isn't the same as knowing where it is —
 an LLM planner can say "the cup" but has no `move_arm` target until *something*

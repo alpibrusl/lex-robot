@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- launchd job for the vision service on a Mac (Studio or otherwise).
+       cp deploy/mac/com.lex-robot.vision.plist ~/Library/LaunchAgents/
+       launchctl load ~/Library/LaunchAgents/com.lex-robot.vision.plist
+     Edit the WorkingDirectory path and the model/env values first.
+     Assumes Ollama is running with a vision model pulled (deploy/VISION_SPLIT.md). -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.lex-robot.vision</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/env</string>
+    <string>python3</string>
+    <string>sidecar/vision_service.py</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/you/lex-robot</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>LEX_VISION_LLM_URL</key><string>http://127.0.0.1:11434/v1</string>
+    <key>LEX_VISION_MODEL</key><string>qwen2.5vl:7b</string>
+    <key>LEX_VISION_PORT</key><string>8901</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/tmp/lex-vision.log</string>
+  <key>StandardErrorPath</key><string>/tmp/lex-vision.log</string>
+</dict>
+</plist>

@@ -1,0 +1,26 @@
+# systemd unit for the XLeRobot sidecar on the robot's Raspberry Pi.
+#   sudo cp deploy/pi/xlerobot-sidecar.service /etc/systemd/system/
+#   sudo systemctl enable --now xlerobot-sidecar
+# Edit the paths, user, and Environment lines for your install — the full
+# hardware env-var list is SIDECAR.md "Real hardware — environment variables".
+[Unit]
+Description=lex-robot XLeRobot sidecar (servos, cameras, display/touch)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=pi
+WorkingDirectory=/home/pi/lex-robot
+ExecStart=/usr/bin/python3 sidecar/xlerobot_sidecar.py
+Restart=on-failure
+RestartSec=3
+# --- stub tier by default; uncomment + fill for real hardware ---
+#Environment=LEX_ROBOT_HW=1
+#Environment=LEX_XLE_LEFT_PORT=/dev/ttyACM0
+#Environment=LEX_XLE_RIGHT_PORT=/dev/ttyACM1
+#Environment=LEX_XLE_CAMERA_HEAD_INDEX=0
+# --- split-compute vision: point at the GPU box (deploy/VISION_SPLIT.md) ---
+#Environment=LEX_XLE_VISION_URL=http://mac-studio.local:8901
+
+[Install]
+WantedBy=multi-user.target

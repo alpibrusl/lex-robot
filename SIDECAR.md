@@ -27,6 +27,7 @@ only caller; it adds effect typing, grant enforcement, and the audit trail.
 | `listen` | `{ "seconds": N }` | `{ "transcript": "...", "confidence": 0.9 }` — mic capture + LOCAL transcription; raw audio never leaves the sidecar |
 | `show_prompt` | `{ "question", "options": ["...", ...] }` | outcome — a question with large tap targets on the kiosk display (`GET /display`), its one interactive kind |
 | `read_touch` | `{}` | `{ "option": "...", "detail"? }` — the one unread tap answering the prompt currently showing; `""` when nothing was tapped (or no prompt is up). The tap itself arrives via `POST /display/touch` from the kiosk page, never through `/skill/` — a human's tap is input at the sidecar, and the governed program only sees it through this grant-gated read |
+| `detect_object` | `{ "name": "..." }` | `{ "found": bool, "cx","cy","w","h", "confidence", "detail" }` — 2D normalized bounding box (deliberately not a world pose). The sidecar captures a head-camera frame locally and ships the JPEG to the split-compute vision service named by `LEX_XLE_VISION_URL` (`sidecar/vision_service.py` — a Mac Studio, Jetson, or any box serving an OpenAI-compatible VLM; see `deploy/VISION_SPLIT.md`). Without the URL, Tier-3 says so honestly; the Tier-1 stub answers with an explicitly-labeled canned detection |
 
 ### `run_policy` is asynchronous
 A full closed-loop rollout runs tens of seconds — longer than the Lex `std.http`
