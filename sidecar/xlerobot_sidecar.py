@@ -1754,6 +1754,12 @@ class XLeRobot:
 ROBOT = XLeRobot()
 
 
+def _stream_sample():
+    """One /stream frame: both arms' joints + the base pose."""
+    return {"joints": {"left": ROBOT.read_joints("left"), "right": ROBOT.read_joints("right")},
+            "base": ROBOT.read_base()}
+
+
 def handle_skill(name, args):
     if name == "reset":
         return ROBOT.reset()
@@ -1855,6 +1861,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = self.path.split("?", 1)[0]
+        if path == "/stream":
+            # The streaming state channel (SIDECAR.md): joint + base state as
+            # WebSocket text frames at LEX_STREAM_HZ, consumed in Lex via
+            # net.dial_ws — see examples/stream_demo.lex.
+            from sidecar_lib import maybe_stream
+            if maybe_stream(self, _stream_sample,
+                            hz=float(os.environ.get("LEX_STREAM_HZ", "10")),
+                            max_frames=int(os.environ.get("LEX_STREAM_MAX_FRAMES", "0"))):
+                return
+            return self._send(400, {"error": "/stream requires a WebSocket upgrade"})
         if path == "/health":
             return self._send(200, {"ok": True, "hardware": USE_HW, "base": ROBOT.base})
         if path == "/display":

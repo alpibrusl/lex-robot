@@ -61,6 +61,8 @@ expect xlerobot_vision "(mock) a cup" "vision split: list_visible_items round-tr
 expect vision_pose "cup at world x=322mm y=30mm z=0mm" "vision pose: the 2D box projects onto the calibrated plane"
 expect vision_pose "→ reached (5 cm above the cup)" "vision pose: the projected position is reachable by a granted arm"
 expect vision_pose "below the 0.995 floor — refusing to guess a position" "vision pose: the confidence floor refuses instead of guessing"
+expect stream 'stream frame: {"joints"' "stream: /stream pushes joint+base state over WebSocket into dial_ws"
+expect stream "stream closed cleanly (server-bounded)" "stream: the bounded stream ends with a clean server-side close"
 expect home_wash "REFUSED: peak tariff above the 15c/kWh ceiling" "home wash: peak-tariff start refused by the examples-tested gate, never sent"
 expect home_wash "washer started in off-peak window" "home wash: same request passes in the valley window"
 expect home_wash "denied: skill appliance_start not in grant" "home wash: observer grant may read the house but not actuate it"
