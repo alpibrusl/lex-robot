@@ -110,6 +110,138 @@ _STOCK_STATE = {
     for item in _STALL_INVENTORIES.get(STALL_NAME, [])
 }
 
+# ── AP2 mandate layer (issue #24) ─────────────────────────────────────────────
+# Two sidecar personalities share this block:
+#   LEX_ROLE=credential_provider — issues Payment Mandates: verifies the
+#     shopper's sealed Checkout Mandate (HS256, the agent secret issued at
+#     enrollment), re-derives its total from the line items, enforces the
+#     instrument's spend ceiling, and only then signs a Payment Mandate under
+#     the payment NETWORK secret. A refusal returns {"status":"refused"} and
+#     no mandate exists.
+#   LEX_AP2=1 (stall) — complete_sale requires both mandates: the network's
+#     signature on the payment mandate, its checkout_hash binding to the
+#     EXACT checkout token presented, expiry, the cart naming this item at
+#     this stall's price, and the ceiling covering it.
+# The stall never verifies the shopper's own signature — it trusts the
+# network signature, and the network's credential provider verified the
+# shopper. Tokens are real JWTs (lex-jose on the Lex side; the ~30 lines
+# below are the stdlib-only verify/sign half).
+import base64 as _b64
+import hashlib as _hashlib
+import hmac as _hmac
+
+AP2_ROLE = os.environ.get("LEX_ROLE", "")
+AP2_REQUIRED = os.environ.get("LEX_AP2", "") == "1"
+_AP2_AGENT_SECRET = os.environ.get("LEX_AP2_AGENT_SECRET", "ap2-agent-secret-demo").encode()
+_AP2_NETWORK_SECRET = os.environ.get("LEX_AP2_NETWORK_SECRET", "ap2-network-secret-demo").encode()
+# Per-instrument spend ceilings, integer credits. The grant analog on the
+# payment side: card-lex-petty exists so a refusal is demonstrable.
+_AP2_INSTRUMENTS = {"card-lex-1": 100, "card-lex-petty": 10}
+
+
+def _ap2_b64url(b: bytes) -> str:
+    return _b64.urlsafe_b64encode(b).rstrip(b"=").decode()
+
+
+def _ap2_b64url_decode(s: str) -> bytes:
+    return _b64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
+
+
+def _ap2_jwt_sign(payload: dict, secret: bytes) -> str:
+    header = _ap2_b64url(json.dumps({"alg": "HS256", "typ": "JWT"}, separators=(",", ":")).encode())
+    body = _ap2_b64url(json.dumps(payload, separators=(",", ":")).encode())
+    signing_input = f"{header}.{body}"
+    sig = _hmac.new(secret, signing_input.encode(), _hashlib.sha256).digest()
+    return f"{signing_input}.{_ap2_b64url(sig)}"
+
+
+def _ap2_jwt_verify(token: str, secret: bytes):
+    """Return the payload dict iff the HS256 signature verifies; else None."""
+    try:
+        header_b64, body_b64, sig_b64 = token.split(".")
+        header = json.loads(_ap2_b64url_decode(header_b64))
+        if header.get("alg") != "HS256":
+            return None
+        expected = _hmac.new(secret, f"{header_b64}.{body_b64}".encode(), _hashlib.sha256).digest()
+        if not _hmac.compare_digest(expected, _ap2_b64url_decode(sig_b64)):
+            return None
+        return json.loads(_ap2_b64url_decode(body_b64))
+    except Exception:
+        return None
+
+
+def _ap2_checkout_hash(checkout_jwt: str) -> str:
+    # Must match lex-jose mandate.checkout_hash: base64url(SHA-256(token)).
+    return _ap2_b64url(_hashlib.sha256(checkout_jwt.encode()).digest())
+
+
+def _ap2_issue_payment_mandate(args: dict) -> dict:
+    checkout_jwt = args.get("checkout_jwt", "")
+    instrument_id = args.get("instrument_id", "")
+    checkout = _ap2_jwt_verify(checkout_jwt, _AP2_AGENT_SECRET)
+    if checkout is None:
+        result = {"status": "refused", "why": "checkout mandate signature invalid"}
+    elif checkout.get("expires_at", 0) <= int(_time.time()):
+        result = {"status": "refused", "why": "checkout mandate expired"}
+    else:
+        total = sum(it.get("qty", 0) * it.get("unit_cents", 0) for it in checkout.get("items", []))
+        ceiling = _AP2_INSTRUMENTS.get(instrument_id)
+        if total != checkout.get("total_cents", -1) or total <= 0:
+            result = {"status": "refused", "why": "total does not match the line items"}
+        elif ceiling is None:
+            result = {"status": "refused", "why": f"unknown instrument {instrument_id}"}
+        elif total > ceiling:
+            result = {"status": "refused",
+                      "why": f"exceeds instrument ceiling ({total} > {ceiling} for {instrument_id})"}
+        else:
+            payment = {
+                "checkout_hash": _ap2_checkout_hash(checkout_jwt),
+                "instrument_id": instrument_id,
+                "max_cents": total,
+                "expires_at": checkout["expires_at"],
+            }
+            result = {"status": "issued", "payment_jwt": _ap2_jwt_sign(payment, _AP2_NETWORK_SECRET)}
+    _notify_bg({"kind": "mandate_issued", "type": "payment", "provider": "CredentialProvider",
+                "instrument": instrument_id, "status": result["status"],
+                "why": result.get("why", "")})
+    return result
+
+
+def _ap2_check_sale_mandates(args: dict) -> dict | None:
+    """Return a refusal dict, or None when the presented mandates verify."""
+    checkout_jwt = args.get("checkout_jwt", "")
+    payment_jwt = args.get("payment_jwt", "")
+    item_id = args.get("item_id", "")
+    if not checkout_jwt or not payment_jwt:
+        return {"status": "mandate_required",
+                "why": "AP2 stall: present checkout_jwt and payment_jwt"}
+    payment = _ap2_jwt_verify(payment_jwt, _AP2_NETWORK_SECRET)
+    if payment is None:
+        return {"status": "mandate_invalid", "why": "payment mandate signature invalid"}
+    if payment.get("checkout_hash", "") != _ap2_checkout_hash(checkout_jwt):
+        return {"status": "mandate_invalid",
+                "why": "payment mandate bound to a different checkout"}
+    if payment.get("expires_at", 0) <= int(_time.time()):
+        return {"status": "mandate_invalid", "why": "payment mandate expired"}
+    # The cart itself: the network-verified payment binds this exact checkout
+    # token, so its payload is trustworthy to the extent the provider checked
+    # it. The merchant still re-checks its OWN facts: this item, at MY price.
+    try:
+        checkout = json.loads(_ap2_b64url_decode(checkout_jwt.split(".")[1]))
+    except Exception:
+        return {"status": "mandate_invalid", "why": "checkout mandate unparseable"}
+    with _STOCK_LOCK:
+        price = _STOCK_STATE.get(item_id, {}).get("price")
+    named = [it for it in checkout.get("items", []) if it.get("sku") == item_id]
+    if not named:
+        return {"status": "mandate_invalid", "why": "checkout mandate does not name this item"}
+    if price is not None and named[0].get("unit_cents") != price:
+        return {"status": "mandate_invalid",
+                "why": f"checkout price {named[0].get('unit_cents')} != stall price {price}"}
+    if price is not None and payment.get("max_cents", 0) < price:
+        return {"status": "mandate_invalid", "why": "payment mandate does not cover the price"}
+    return None
+
 _STATION_BREACH_SEALED = False
 _TRADING_STATE_LOCK = threading.Lock()
 _TRADING_STATE = {
@@ -305,9 +437,24 @@ def handle_skill(name: str, args: dict) -> dict:
         _notify_bg({"kind": "skill_recv", "stall": STALL_NAME, "skill": "reserve_item",
                     "item_id": item_id, "status": result.get("status")})
         return result
+    if name == "issue_payment_mandate":
+        if AP2_ROLE != "credential_provider":
+            return {"status": "refused", "why": "this sidecar is not a credential provider"}
+        result = _ap2_issue_payment_mandate(args)
+        record_skill_trail(name, {"instrument_id": args.get("instrument_id", "")}, result)
+        return result
     if name == "complete_sale":
         item_id = args.get("item_id", "")
         payment = args.get("payment", 0)
+        if AP2_REQUIRED:
+            refusal = _ap2_check_sale_mandates(args)
+            _notify_bg({"kind": "mandate_presented", "stall": STALL_NAME, "item_id": item_id,
+                        "verified": refusal is None,
+                        "why": "" if refusal is None else refusal.get("why", "")})
+            if refusal is not None:
+                _notify_bg({"kind": "skill_recv", "stall": STALL_NAME, "skill": "complete_sale",
+                            "item_id": item_id, "status": refusal.get("status")})
+                return refusal
         with _STOCK_LOCK:
             if item_id not in _STOCK_STATE or not _STOCK_STATE[item_id]["reserved"]:
                 result = {"status": "not_reserved"}
@@ -318,6 +465,11 @@ def handle_skill(name: str, args: dict) -> dict:
                 else:
                     del _STOCK_STATE[item_id]
                     result = {"status": "sold", "change": payment - price}
+                    if AP2_REQUIRED:
+                        # Receipt names the payment mandate that settled it.
+                        result["receipt"] = "ap2-%s-%s" % (
+                            item_id,
+                            _hashlib.sha256(args.get("payment_jwt", "").encode()).hexdigest()[:12])
         _notify_bg({"kind": "skill_recv", "stall": STALL_NAME, "skill": "complete_sale",
                     "item_id": item_id, "payment": payment, "status": result.get("status")})
         return result

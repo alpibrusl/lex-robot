@@ -63,6 +63,11 @@ expect home_wash "washer started in off-peak window" "home wash: same request pa
 expect home_wash "denied: skill appliance_start not in grant" "home wash: observer grant may read the house but not actuate it"
 expect xlerobot_find "located 'cup' at world" "xlerobot find: locate_object turns an object name into a real position"
 expect xlerobot_find "grasp 15N                  → reached" "xlerobot find: vision-driven approach + grasp succeeds"
+expect ap2 "sale completed: Red Ceramic Bowl for 8 cr (receipt ap2-pot-001-" "ap2: mandate-backed sale completes with a receipt"
+expect ap2 "REFUSED by credential provider: exceeds instrument ceiling" "ap2: over-ceiling payment mandate is never signed"
+expect ap2 "REFUSED by stall: mandate_required" "ap2: the stall refuses a sale without mandates"
+expect ap2 "REFUSED by stall: mandate_invalid: payment mandate bound to a different checkout" "ap2: hash binding refuses a swapped checkout"
+expect ap2 "denied: skill complete_sale not in grant (never sent)" "ap2: browse-only grant cannot buy — refused before any request exists"
 
 # The LLM planner's tool-dispatch loop, verified for real with a scripted
 # mock model (no OpenCode API key / network needed): both tool calls it

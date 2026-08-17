@@ -27,10 +27,11 @@ case "$DEMO" in
   xlerobot_touch) SIDECAR=xlerobot_sidecar; FILE=examples/xlerobot_touch_demo.lex; EFF="net,sense,actuate,io" ;;
   xlerobot_vision) SIDECAR=xlerobot_sidecar; FILE=examples/vision_split_demo.lex; EFF="net,sense,actuate,io,env"; VISION=1 ;;
   home_wash)   SIDECAR=ha_sidecar;    FILE=examples/home_wash_demo.lex;      EFF="net,sense,actuate,io" ;;
+  ap2)         SIDECAR=sim_sidecar;   FILE=examples/ap2_bazaar_demo.lex;     EFF="env,io,net,time"; AP2=1 ;;
   xlerobot_find) SIDECAR=xlerobot_sidecar; FILE=examples/find_and_fetch_demo.lex; EFF="net,sense,actuate,io" ;;
   mcp_grant)   NO_SIDECAR=1;          FILE=tests/test_mcp_grant.lex;         EFF="io,time,crypto,random,sql,fs_read,fs_write,net,concurrent,llm,proc,sense,actuate,approval" ;;
   a2a_grant)   NO_SIDECAR=1;          FILE=tests/test_a2a_robot_grant.lex;   EFF="io,time,crypto,random,sql,fs_read,fs_write,net,concurrent,llm,proc,sense,actuate,stream,approval" ;;
-  *) echo "unknown demo '$DEMO' (use: grant | llm | task | budget | depot | xlerobot | xlerobot_task | xlerobot_voice | xlerobot_touch | xlerobot_vision | xlerobot_find | home_wash | dynamic_keepout | tool_fire | mcp_grant | a2a_grant)" >&2; exit 2 ;;
+  *) echo "unknown demo '$DEMO' (use: grant | llm | task | budget | depot | xlerobot | xlerobot_task | xlerobot_voice | xlerobot_touch | xlerobot_vision | xlerobot_find | home_wash | ap2 | dynamic_keepout | tool_fire | mcp_grant | a2a_grant)" >&2; exit 2 ;;
 esac
 
 command -v lex >/dev/null || { echo "error: 'lex' not on PATH — see README Install" >&2; exit 1; }
@@ -58,10 +59,27 @@ else
     export LEX_VISION_URL="http://127.0.0.1:$VPORT"
   fi
 
+  # AP2 demo: the stall runs AS the pottery stall with the mandate wall up,
+  # and a SECOND sim_sidecar instance plays the credential provider on :8910.
+  CP_PID=""
+  if [ -n "${AP2:-}" ]; then
+    CPPORT="${LEX_AP2_CP_PORT:-8910}"
+    CPLOG="$(mktemp)"
+    LEX_ROLE=credential_provider LEX_ROBOT_SIDECAR_PORT="$CPPORT" \
+      "$PY" sidecar/sim_sidecar.py >"$CPLOG" 2>&1 &
+    CP_PID=$!
+    for _ in $(seq 1 50); do
+      if curl -sf "http://127.0.0.1:$CPPORT/health" >/dev/null 2>&1; then break; fi
+      sleep 0.1
+    done
+    export LEX_AP2_CP_URL="http://127.0.0.1:$CPPORT"
+    export LEX_STALL_NAME=pottery LEX_AP2=1
+  fi
+
   LOG="$(mktemp)"
   "$PY" "sidecar/$SIDECAR.py" >"$LOG" 2>&1 &
   SID=$!
-  cleanup() { kill "$SID" 2>/dev/null || true; [ -n "$VIS_PID" ] && kill "$VIS_PID" 2>/dev/null || true; }
+  cleanup() { kill "$SID" 2>/dev/null || true; [ -n "$VIS_PID" ] && kill "$VIS_PID" 2>/dev/null || true; [ -n "$CP_PID" ] && kill "$CP_PID" 2>/dev/null || true; }
   trap cleanup EXIT
 
   # Wait for the sidecar's /health (both stubs expose it).

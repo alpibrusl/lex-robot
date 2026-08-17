@@ -20,7 +20,7 @@ grep -oE '(examples|sidecar|scripts|src|media|manifests|box)/[A-Za-z0-9_./-]+\.(
   done
 
 echo "== make targets referenced by README =="
-grep -oE 'make [a-z][a-z-]*' README.md | awk '{print $2}' | sort -u | while read -r t; do
+grep -oE 'make [a-z][a-z0-9-]*' README.md | awk '{print $2}' | sort -u | while read -r t; do
     grep -qE "^$t:" Makefile && ok "make $t" || bad "make $t (in README, not in Makefile)"
   done
 
@@ -30,7 +30,7 @@ miss=0
 for p in $(grep -oE '(examples|sidecar|scripts|src|media|manifests|box)/[A-Za-z0-9_./-]+\.(lex|py|sh|gif|json|md|txt)' README.md | sort -u); do
   [ -e "$p" ] || miss=1
 done
-for t in $(grep -oE 'make [a-z][a-z-]*' README.md | awk '{print $2}' | sort -u); do
+for t in $(grep -oE 'make [a-z][a-z0-9-]*' README.md | awk '{print $2}' | sort -u); do
   grep -qE "^$t:" Makefile || miss=1
 done
 echo
