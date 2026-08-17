@@ -266,6 +266,17 @@ _DISASTER_STATE = {
 _TOOL_LOCK = threading.Lock()
 _TOOL_STATE = {"clamped": False}
 
+# ── Dispensing state (issue #7) ──────────────────────────────────────────────
+# Per-well accumulated volume in integer µl, plus a per-well pump-fault flag:
+# the FIRST dispense into well B2 delivers only 70% (a deterministic short
+# dispense), so the demo's short → top-up → pass arc is reproducible in CI.
+# The scale under the well is the ground truth read_scale reports; the pump
+# never self-reports a delivered volume the Lex side would have to trust.
+_DISPENSE_LOCK = threading.Lock()
+_DISPENSE_STATE: dict = {}          # well -> accumulated µl
+_DISPENSE_SHORTED: set = set()      # wells whose one-time short already fired
+_DISPENSE_SHORT_WELLS = {"B2"}      # wells with a first-dispense pump fault
+
 # ── Dynamic keep-out state ────────────────────────────────────────────────────
 # Shared step counter for the dynamic-keepout demo. policy_action advances it;
 # read_bystander reads it without advancing (both see the same step per loop).
@@ -437,6 +448,28 @@ def handle_skill(name: str, args: dict) -> dict:
         _notify_bg({"kind": "skill_recv", "stall": STALL_NAME, "skill": "reserve_item",
                     "item_id": item_id, "status": result.get("status")})
         return result
+    if name == "dispense":
+        well = args.get("well", "")
+        volume_ul = int(args.get("volume_ul", 0))
+        with _DISPENSE_LOCK:
+            if well in _DISPENSE_SHORT_WELLS and well not in _DISPENSE_SHORTED:
+                _DISPENSE_SHORTED.add(well)
+                delivered = volume_ul * 7 // 10  # one-time pump fault: 30% short
+            else:
+                delivered = volume_ul
+            _DISPENSE_STATE[well] = _DISPENSE_STATE.get(well, 0) + delivered
+        # REAL: drive the pipette/pump; the scale is the only evidence.
+        result = {"outcome": "reached"}
+        record_skill_trail(name, {"well": well, "volume_ul": volume_ul}, result)
+        _notify_bg({"kind": "skill_recv", "stall": STALL_NAME, "skill": "dispense",
+                    "well": well, "volume_ul": volume_ul})
+        return result
+    if name == "read_scale":
+        well = args.get("well", "")
+        with _DISPENSE_LOCK:
+            measured = _DISPENSE_STATE.get(well, 0)
+        # REAL: read the balance/level sensor under the well.
+        return {"well": well, "measured_ul": measured}
     if name == "issue_payment_mandate":
         if AP2_ROLE != "credential_provider":
             return {"status": "refused", "why": "this sidecar is not a credential provider"}

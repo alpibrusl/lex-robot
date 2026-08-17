@@ -68,6 +68,11 @@ expect ap2 "REFUSED by credential provider: exceeds instrument ceiling" "ap2: ov
 expect ap2 "REFUSED by stall: mandate_required" "ap2: the stall refuses a sale without mandates"
 expect ap2 "REFUSED by stall: mandate_invalid: payment mandate bound to a different checkout" "ap2: hash binding refuses a swapped checkout"
 expect ap2 "denied: skill complete_sale not in grant (never sent)" "ap2: browse-only grant cannot buy — refused before any request exists"
+expect dispense "B2: short — 210/300 µl; top-up 90 µl" "dispense: the scale catches the short dispense; bounded top-up"
+expect dispense "task SUCCESS — all 3 wells within tolerance (Verify gate passed)" "dispense: SUCCESS only when every well verifies"
+expect dispense "REFUSED: well D4 not in the granted wells (never sent)" "dispense: well allowlist refuses before any request exists"
+expect dispense "REFUSED: 900 µl above the 500 µl single-dispense ceiling (never sent)" "dispense: volume ceiling refuses before any request exists"
+expect dispense "TAMPERED entry detected: forged measured_ul fails the content-hash check" "dispense: a doctored audit record is caught by chain verify"
 
 # The LLM planner's tool-dispatch loop, verified for real with a scripted
 # mock model (no OpenCode API key / network needed): both tool calls it
