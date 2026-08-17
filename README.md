@@ -554,6 +554,28 @@ make ap2
 #   denied: skill complete_sale not in grant (never sent)               ← browse-only grant
 ```
 
+**Evidence-gated dispensing — the scale is the referee** (`make dispense`,
+issue #7): pipetting where "done" is only true when a real sensor confirms
+it. Each well's dispense passes Verify only when the measured volume lands
+within target ± tolerance (`src/dispense.lex`'s pure, examples-tested
+gates — integer microliters, never floats in a dose); a short dispense
+gets a bounded top-up retry; and every attempt is appended to a
+hash-chained lex-trail — a tamper-evident GMP record where a doctored
+`measured_ul` fails the content-hash check. Same protocol-coupled-Verify
+pattern as the EV OCPP gate, pointed at a scale. The well allowlist and
+the single-dispense volume ceiling refuse **before any request is sent**.
+
+```sh
+make dispense
+#   B2: short — 210/300 µl; top-up 90 µl              ← the scale catches the pump fault
+#   B2: 300/300 µl — within ±5 (Verify passed, attempt 2)
+#   task SUCCESS — all 3 wells within tolerance (Verify gate passed)
+#   REFUSED: well D4 not in the granted wells (never sent)
+#   REFUSED: 900 µl above the 500 µl single-dispense ceiling (never sent)
+#   audit: 5 events, 5 valid → chain intact (tamper-evident)
+#   TAMPERED entry detected: forged measured_ul fails the content-hash check
+```
+
 **"Bring me the cup" — vision-grounded object fetch** (`make xlerobot-find` /
 `xlerobot-find-sim`): naming an object isn't the same as knowing where it is —
 an LLM planner can say "the cup" but has no `move_arm` target until *something*
