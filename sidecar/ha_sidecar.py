@@ -54,10 +54,8 @@ import json
 import os
 import urllib.error
 import urllib.request
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-HOST = "127.0.0.1"
-PORT = int(os.environ.get("LEX_ROBOT_SIDECAR_PORT", "8900"))
+from sidecar_lib import serve
 
 HA_URL = os.environ.get("LEX_HA_URL", "").rstrip("/")
 HA_TOKEN = os.environ.get("LEX_HA_TOKEN", "")
@@ -187,43 +185,13 @@ def handle_skill(name, args):
     return {"error": f"unknown skill: {name}"}
 
 
-class Handler(BaseHTTPRequestHandler):
-    def _json(self, code, payload):
-        body = json.dumps(payload, separators=(",", ":")).encode()
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def do_GET(self):
-        if self.path.split("?", 1)[0] == "/health":
-            return self._json(200, {"ok": True, "ha": USE_HA,
-                                    "mode": "home-assistant" if USE_HA else "stub house"})
-        return self._json(404, {"error": "not found"})
-
-    def do_POST(self):
-        n = int(self.headers.get("Content-Length", "0") or "0")
-        try:
-            args = json.loads(self.rfile.read(n) or b"{}")
-        except json.JSONDecodeError:
-            return self._json(400, {"error": "invalid json"})
-        if self.path.startswith("/skill/"):
-            return self._json(200, handle_skill(self.path[len("/skill/"):], args))
-        return self._json(404, {"error": "not found"})
-
-    def log_message(self, *a):
-        print("[ha]", self.command, self.path)
+def _health():
+    return {"ha": USE_HA, "mode": "home-assistant" if USE_HA else "stub house"}
 
 
 def main():
     mode = f"HOME ASSISTANT @ {HA_URL}" if USE_HA else "stub house (no HA)"
-    srv = ThreadingHTTPServer((HOST, PORT), Handler)
-    print(f"lex-robot HA sidecar [{mode}] on http://{HOST}:{PORT}  (Ctrl-C to stop)")
-    try:
-        srv.serve_forever()
-    except KeyboardInterrupt:
-        srv.shutdown()
+    serve(handle_skill, tag="ha", banner=f"lex-robot HA sidecar [{mode}]", health=_health)
 
 
 if __name__ == "__main__":

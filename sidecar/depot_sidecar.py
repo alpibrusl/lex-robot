@@ -16,14 +16,12 @@ Dependency-free (Python stdlib). Run:
     python3 sidecar/depot_sidecar.py            # 127.0.0.1:8900
 """
 
-import json
 import math
 import os
 import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-HOST = "127.0.0.1"
-PORT = int(os.environ.get("LEX_ROBOT_SIDECAR_PORT", "8900"))
+from sidecar_lib import serve
+
 ALIGN_TOL = float(os.environ.get("LEX_DEPOT_ALIGN_TOL", "0.08"))  # normalized distance
 HARD_FORCE_N = float(os.environ.get("LEX_DEPOT_HARD_FORCE_N", "40"))  # firmware floor
 
@@ -109,62 +107,33 @@ def handle_skill(name, args):
     return {"error": f"unknown skill: {name}"}
 
 
-class Handler(BaseHTTPRequestHandler):
-    def _send(self, code, payload):
-        body = json.dumps(payload).encode()
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+def _health():
+    return {"connected": DEPOT.connected, "active_tx": DEPOT.active_tx}
 
-    def _body(self):
-        n = int(self.headers.get("Content-Length", "0") or "0")
-        raw = self.rfile.read(n) if n else b"{}"
-        try:
-            return json.loads(raw or b"{}")
-        except json.JSONDecodeError:
-            return None
 
-    def do_POST(self):
-        args = self._body()
-        if args is None:
-            return self._send(400, {"error": "invalid json"})
+def _get_route(path):
+    if path == "/v1/sessions/active":
         with _LOCK:
-            # physical skills
-            if self.path.startswith("/skill/"):
-                return self._send(200, handle_skill(self.path[len("/skill/"):], args))
-            # OCPP-shaped charging API: /v1/chargers/<cp_id>/start|stop
-            parts = self.path.strip("/").split("/")
-            if len(parts) == 4 and parts[0] == "v1" and parts[1] == "chargers":
-                cp_id, action = parts[2], parts[3]
-                if action == "start":
-                    code, body = DEPOT.start_session(cp_id, int(args.get("connector_id", 1)), args.get("id_tag", "DEPOT-FLEET"))
-                    return self._send(code, body)
-                if action == "stop":
-                    code, body = DEPOT.stop_session(cp_id, int(args.get("transaction_id", 0)))
-                    return self._send(code, body)
-        return self._send(404, {"error": "not found"})
+            return 200, DEPOT.active_sessions()
+    return None
 
-    def do_GET(self):
-        if self.path == "/health":
-            return self._send(200, {"ok": True, "connected": DEPOT.connected, "active_tx": DEPOT.active_tx})
-        if self.path == "/v1/sessions/active":
-            with _LOCK:
-                return self._send(200, DEPOT.active_sessions())
-        return self._send(404, {"error": "not found"})
 
-    def log_message(self, *a):
-        print("[depot]", self.command, self.path)
+# OCPP-shaped charging API: /v1/chargers/<cp_id>/start|stop (consulted before
+# /skill/; the serialize lock is held by the server around this dispatch).
+def _post_route(path, args):
+    parts = path.strip("/").split("/")
+    if len(parts) == 4 and parts[0] == "v1" and parts[1] == "chargers":
+        cp_id, action = parts[2], parts[3]
+        if action == "start":
+            return DEPOT.start_session(cp_id, int(args.get("connector_id", 1)), args.get("id_tag", "DEPOT-FLEET"))
+        if action == "stop":
+            return DEPOT.stop_session(cp_id, int(args.get("transaction_id", 0)))
+    return None
 
 
 def main():
-    srv = ThreadingHTTPServer((HOST, PORT), Handler)
-    print(f"lex-robot depot sidecar on http://{HOST}:{PORT}  (Ctrl-C to stop)")
-    try:
-        srv.serve_forever()
-    except KeyboardInterrupt:
-        srv.shutdown()
+    serve(handle_skill, tag="depot", banner="lex-robot depot sidecar",
+          health=_health, get_route=_get_route, post_route=_post_route, lock=_LOCK)
 
 
 if __name__ == "__main__":
