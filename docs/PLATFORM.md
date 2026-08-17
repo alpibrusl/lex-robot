@@ -75,11 +75,13 @@ issued/scoped/revoked through a control plane rather than hardcoded.*
 
 1. **Real settlement.** x402 is mocked (the real Solana `exact` leg exists in
    `lex-guard`; it isn't wired live) — lex-robot#24, #45.
-2. **SD-JWT + AP2 mandate types.** `lex-jose` has the core JWT/JWS/JWK stack
-   (HS256/HS512/EdDSA; ES256 pending a toolchain primitive) and this repo now
-   signs on it, but selective-disclosure (`sd_jwt.lex`) and the AP2
-   `CheckoutMandate`/`PaymentMandate` types are still on lex-jose's roadmap —
-   lex-robot#23.
+2. **SD-JWT + AP2 mandate types: done.** `lex-jose` now carries the full
+   stack — HS256/HS512/EdDSA/ES256, selective disclosure (`sd_jwt.lex`), and
+   the AP2 `CheckoutMandate`/`PaymentMandate` types (lex-robot#23) — and the
+   bazaar spends through them (`make ap2`, lex-robot#24): a credential
+   provider enforcing instrument ceilings, a stall that completes no sale
+   without a network-signed, hash-bound mandate pair. Key-binding (KB-JWT)
+   and array disclosures remain on lex-jose's roadmap.
 3. **Hosted verify-as-a-service + trust anchoring.** Verification runs locally;
    a platform would offer hosted replay + anchor trail roots so third parties
    trust a score without re-running it.

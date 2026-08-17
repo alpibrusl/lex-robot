@@ -532,6 +532,28 @@ make home-wash
 #   observer → denied: skill appliance_start not in grant   ← may read, not touch
 ```
 
+**AP2 mandates in the bazaar — governed agent payments** (`make ap2`,
+issue #24): the shopping robot pays through real [AP2](https://ap2-protocol.org)
+Checkout + Payment Mandates — signed JWTs from
+[lex-jose](https://github.com/alpibrusl/lex-jose)'s mandate module (#23) —
+instead of a bare `complete_sale` call. Three parties, each a wall: the
+shopper seals a `CheckoutMandate` for the exact cart it reserved
+(`src/ap2_mandate.lex`); a **credential provider** sidecar verifies it and
+refuses to sign a `PaymentMandate` above the instrument's spend ceiling (a
+refusal means no mandate exists — there is nothing to present); the stall
+completes no sale without the payment network's signature, hash-bound to the
+exact checkout presented. Present a re-sealed cheaper checkout with a valid
+payment mandate and the binding refuses it.
+
+```sh
+make ap2
+#   sale completed: Red Ceramic Bowl for 8 cr (receipt ap2-pot-001-…)   ← both mandates verified
+#   REFUSED by credential provider: exceeds instrument ceiling (12 > 10 …)
+#   REFUSED by stall: mandate_required: …                               ← no mandates, no sale
+#   REFUSED by stall: mandate_invalid: payment mandate bound to a different checkout
+#   denied: skill complete_sale not in grant (never sent)               ← browse-only grant
+```
+
 **"Bring me the cup" — vision-grounded object fetch** (`make xlerobot-find` /
 `xlerobot-find-sim`): naming an object isn't the same as knowing where it is —
 an LLM planner can say "the cup" but has no `move_arm` target until *something*
