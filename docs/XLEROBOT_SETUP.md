@@ -103,7 +103,7 @@ Python **3.10+** is required (`lerobot`'s own floor). Then install the
 [lex-lang releases](https://github.com/alpibrusl/lex-lang/releases):
 
 ```sh
-V=v0.10.10; T=aarch64-apple-darwin   # or x86_64-apple-darwin / x86_64-unknown-linux-gnu / aarch64-unknown-linux-gnu
+V=v0.10.11; T=aarch64-apple-darwin   # or x86_64-apple-darwin / x86_64-unknown-linux-gnu / aarch64-unknown-linux-gnu
 curl -fsSL "https://github.com/alpibrusl/lex-lang/releases/download/$V/lex-$V-$T.tar.gz" | tar -xz
 sudo mv "lex-$V-$T/lex" /usr/local/bin/ && lex version
 ```
