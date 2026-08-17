@@ -186,6 +186,7 @@ rate below 50% and break the 0.75m x-lean plateau.
 | 11 | 3M timesteps, clip curriculum + **grant-pull 0.2** | (single run) | 50%, x-overshoot back at 0.744m | see below — deterministic SUCCESS recovered; pull strength directly trades competence against compliance |
 | 12 | 3M timesteps, clip curriculum + **pull anneal 0.5 → 0.1** | (single run) | 50%, x-overshoot 0.410m | see below — no better than constant 0.4; deep parking achieved but the argmax policy freezes in the inner-bound tuck |
 | 13 | **6M timesteps**, clip curriculum + pull 0.4 | (single run) | 50%, **both evals FAILED**, z drifts out | see below — more time entrenches the tuck; refutes the "more time converges" precedent for shaped landscapes. First entry with **committed, notebooklab-verified evidence** |
+| 14 | **asymmetric pull** (`--pull-mode outer`), 3M, const 0.4 | (single run) | 50%, **both evals FAILED**, x-lean **3.36m** — worst of the series | see below — freeing the inner side unleashes the stretch: the symmetric field's inner tax was half the counterweight, not just a tax on rest |
 
 **Attempt 3's bug, fixed regardless of what came next**: the wrapper's
 reward was computed from the *pre-clip* position, so the dominant
@@ -525,23 +526,64 @@ now holds the full series — thirteen attempts, two of them backed by
 recomputable evidence — and `notebooklab verify` over the whole store
 exits 0.
 
-### Where the series stands after thirteen runs
+**Attempt 14 — the asymmetric pull (`--pull-mode outer`)**: the last
+idea on the shaping side, and the one the attempt-13 writeup nominated:
+the arm's natural rest pose sits *below* the box's x lower bound, so the
+symmetric pull taxes resting, and 10/12/13 all converged to a hover-tuck
+paying that small inner rent forever. Attempt 14 frees the inner side —
+rent only beyond each axis's upper bound, so rest pose, approach, and
+the whole task solution form one tax-free basin. Attempt 10's exact
+recipe otherwise (3M, 4 envs, constant 0.4, clip curriculum) — a clean
+A/B against the symmetric baseline:
 
-The apparatus is complete and every cheap hypothesis is tested —
-including, as of attempt 13, "just give it more time." What
-the thirteen runs establish: walls (fixed, annealed, deny, phase-mixed)
-never dislodge the stretch strategy; reward shaping does, reliably —
-but at every shaping schedule tried, the deterministic policy lands in
-one of two attractors (far-stretch at weak pull, inner-tuck at strong
-pull) and only the stochastic policy threads between them. The
-remaining ideas are qualitatively different investments, not knob
-turns: an **asymmetric pull** (tax the outer bound, leave the inner
-approach free — the tuck is only an attractor because the tax field is
-symmetric around a box that excludes home), **PPO hyperparameter work**
-aimed at deterministic convergence (entropy schedule, learning-rate
-decay), a much larger timestep budget, or accepting the stochastic
-policy and hardening around it. The apparatus — training loop,
-usage-driven retraining, curriculum walls in both semantics, constant
-and annealed reward shaping, a committed experiment ledger — is the
-durable deliverable; the converged compliant deterministic policy
-remains open.
+```
+== deterministic eval ==   FAILED — 600 ticks, return -1436.22   (worst of the series)
+== stochastic eval ==      FAILED — 600 ticks, return -1299.51
+== grant-gate replay ==    48 actions, 24 denied (50%)
+  move_to.x: 24 violations, mean 3.355m, max 4.168m   (prior worst mean: 2.022m, attempt 8)
+  move_to.z: 20 violations, mean 0.158m    move_to.y: 4 violations, mean 0.019m
+```
+
+The hypothesis is refuted in the most instructive way possible: the
+policy didn't stop tucking and solve the task — it ran away *outward*,
+diving to x ≈ 4.6m in the ungoverned eval, the most extreme stretch the
+series has produced. Reading: the symmetric field's inner tax was never
+just a tax on rest — it was **half the counterweight that kept the
+outward stretch bounded**. The total field shaped a bounded oscillation;
+remove the inner wall of the valley and the gradient toward the target
+(which lies outward, past the box, when the base hasn't driven close
+enough) faces no opposing slope until the outer rent — which at 0.4/m
+is evidently cheaper than the detour of driving the base. Both
+one-sided deformations of the field now have verdicts: weaker pull
+(attempt 11) restores the far-stretch, and inner-free pull (attempt 14)
+amplifies it. The symmetric tuck was not an artifact of taxing home —
+it was the field's honest minimum.
+
+This attempt is recorded with the full evidence apparatus: trail
+committed (`docs/trails/attempt14.jsonl`), notebooklab-verified entry
+(all twelve claims re-derived from the trail — including two means the
+verifier corrected from the usage log's display rounding, 3.356→3.355
+and 0.159→0.158, exactly the drift it exists to catch), and the policy
+checkpoint preserved (`docs/checkpoints/attempt14.zip`) so the rollout
+is reproducible end to end.
+
+### Where the series stands after fourteen runs
+
+The apparatus is complete and the shaping design space is now closed:
+walls (fixed, annealed, deny, phase-mixed) never dislodge the stretch;
+symmetric shaping trades one attractor for another (far-stretch at weak
+pull, inner-tuck at strong pull); and, as of attempt 14, asymmetric
+shaping is refuted too — freeing the inner side doesn't release the
+tuck into the task, it releases the stretch from its counterweight.
+Every deformation of the reward field that has been tried lands the
+deterministic policy in a non-compliant attractor; only the stochastic
+policy threads between them. What remains is genuinely not a shaping
+knob: **PPO hyperparameter work** aimed at deterministic convergence
+(entropy schedule, learning-rate decay), or **accepting the stochastic
+policy and hardening around it** (the governed replay already gates
+every command it emits). The apparatus — training loop, usage-driven
+retraining, curriculum walls in both semantics, symmetric and
+asymmetric shaping, and a committed, notebooklab-verified experiment
+ledger — is the durable deliverable; the converged compliant
+deterministic policy remains open, and the evidence now says the reward
+field alone cannot produce it.
