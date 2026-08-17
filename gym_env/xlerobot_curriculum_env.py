@@ -54,9 +54,10 @@ class CurriculumXLeRobotFetchEnv(GovernedXLeRobotFetchEnv):
     def __init__(self, env, horizon_steps: int, warmup_frac: float = 0.35,
                  final_frac: float = 0.85, axis_weights: dict | None = None,
                  arm_mode: str = "clip", deny_from: float | None = None,
-                 grant_pull: float = 0.0, grant_pull_end: float | None = None):
+                 grant_pull: float = 0.0, grant_pull_end: float | None = None,
+                 pull_mode: str = "both"):
         super().__init__(env, axis_weights=axis_weights, arm_mode=arm_mode,
-                         grant_pull=grant_pull)
+                         grant_pull=grant_pull, pull_mode=pull_mode)
         # grant_pull_end: optional pull anneal — the incentive-side mirror of
         # the wall curriculum. Attempts 10/11 bracketed the stretch-strategy
         # attractor's escape price between 0.2 (too weak: the policy pays the
@@ -114,10 +115,12 @@ class CurriculumXLeRobotFetchEnv(GovernedXLeRobotFetchEnv):
 def make_curriculum_env(horizon_steps: int, warmup_frac: float = 0.35,
                         final_frac: float = 0.85, axis_weights: dict | None = None,
                         arm_mode: str = "clip", deny_from: float | None = None,
-                        grant_pull: float = 0.0, grant_pull_end: float | None = None):
+                        grant_pull: float = 0.0, grant_pull_end: float | None = None,
+                        pull_mode: str = "both"):
     import xlerobot_env  # noqa: F401 — registers LexXLeRobotFetch-v0
     base = gym.make("LexXLeRobotFetch-v0")
     return CurriculumXLeRobotFetchEnv(
         base, horizon_steps=horizon_steps, warmup_frac=warmup_frac,
         final_frac=final_frac, axis_weights=axis_weights, arm_mode=arm_mode,
-        deny_from=deny_from, grant_pull=grant_pull, grant_pull_end=grant_pull_end)
+        deny_from=deny_from, grant_pull=grant_pull, grant_pull_end=grant_pull_end,
+        pull_mode=pull_mode)
