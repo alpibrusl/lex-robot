@@ -8,8 +8,12 @@ only caller; it adds effect typing, grant enforcement, and the audit trail.
 - Transport: HTTP on `127.0.0.1:8900` (default). Localhost only ⇒ no auth.
 - Request: `POST /skill/<name>` with a JSON body.
 - Response: JSON. Actuating skills return `{ "outcome": "...", "detail": "..." }`.
-- A future streaming channel (joint/camera at rate) is a WebSocket add-on
-  (`/stream`), consumed in Lex via `net.dial_ws`. Not in v1.
+- Streaming: `GET /stream` upgrades to a WebSocket pushing joint + base
+  state as JSON text frames at `LEX_STREAM_HZ` (default 10; served by the
+  xlerobot sidecar via `sidecar_lib.maybe_stream`). Consumed in Lex via
+  `net.dial_ws` — see `examples/stream_demo.lex`. A dial_ws handler's
+  `WsAction` cannot hang up, so a bounded stream ends server-side
+  (`LEX_STREAM_MAX_FRAMES`; 0 = unbounded).
 
 ## Skills
 

@@ -2,7 +2,7 @@
 # python3 (no pip). The ML demos (keep-out / MuJoCo / learned policy) need the
 # Python deps in sidecar/requirements.txt — see the README dependency matrix.
 
-.PHONY: help check smoke demo grant task budget depot xlerobot xlerobot-task xlerobot-voice xlerobot-touch vision-split vision-serve vision-pose home-wash ap2 dispense xlerobot-sim xlerobot-find xlerobot-find-sim keepout dynamic_keepout tool_fire mcp-grant a2a-grant xlerobot-rl-train xlerobot-rl-run xlerobot-rl-usage xlerobot-rl-finetune xlerobot-llm-mock xlerobot-llm fleet-clean-house bazaar-visit skill-acquisition skill-catalog fridge-report deps clean
+.PHONY: help check smoke demo grant task budget depot xlerobot xlerobot-task xlerobot-voice xlerobot-touch vision-split vision-serve vision-pose stream home-wash ap2 dispense xlerobot-sim xlerobot-find xlerobot-find-sim keepout dynamic_keepout tool_fire mcp-grant a2a-grant xlerobot-rl-train xlerobot-rl-run xlerobot-rl-usage xlerobot-rl-finetune xlerobot-llm-mock xlerobot-llm fleet-clean-house bazaar-visit skill-acquisition skill-catalog fridge-report deps clean
 
 help: ## Show this help
 	@grep -hE '^[a-z-]+:.*##' $(MAKEFILE_LIST) | sed -E 's/:.*## /\t/' | sort
@@ -48,6 +48,9 @@ vision-serve: ## Run the vision service for real (on the GPU box; needs an OpenA
 
 vision-pose: ## Tier-2 vision: the 2D detection box becomes a reachable world position via the calibrated plane (no ML deps)
 	@bash scripts/demo.sh vision_pose
+
+stream: ## /stream WebSocket state channel: joint+base frames at rate into net.dial_ws (no ML deps)
+	@bash scripts/demo.sh stream
 
 home-wash: ## "Wash when energy is cheap": HA appliances as granted, tariff-gated capabilities (no ML deps)
 	@bash scripts/demo.sh home_wash
