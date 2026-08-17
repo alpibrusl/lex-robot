@@ -512,6 +512,24 @@ make vision-split
 #     - (mock) a cup
 ```
 
+**Tier-2: the 2D box becomes a reachable position** (`make vision-pose`):
+what the split deliberately left open — turning `detect_object`'s normalized
+image box into a world pose — is closed for tabletop objects by
+`src/camera.lex`: pure, examples-tested pinhole geometry that intersects the
+pixel ray with the calibrated table plane. Calibration is data (camera
+position + orientation basis vectors + normalized focals), refusals are
+explicit (a ray that misses the plane is an error, not `(0,0,0)`; a
+detection under the confidence floor yields *no* position), and the result
+feeds straight into `transform_to_arm` + `move_arm` under the grant. Full
+per-pixel depth stays Tier-3 and open.
+
+```sh
+make vision-pose
+#   cup at world x=322mm y=30mm z=0mm (2D box + calibrated plane — no depth sensor)
+#   approach: move_arm left → reached (5 cm above the cup)
+#   detect_object_pose: confidence 0.99 below the 0.995 floor — refusing to guess a position
+```
+
 **The house as a governed robot — "wash when energy is cheap"** (`make
 home-wash`): one Home Assistant sidecar (`sidecar/ha_sidecar.py`) makes
 every HA device a grant-gated lex skill — an appliance command is an
