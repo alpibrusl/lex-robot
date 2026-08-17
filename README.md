@@ -65,6 +65,7 @@ is public and fetched automatically on first run.
 | "bring me the cup": vision-grounded fetch (`locate_object`) | `make xlerobot-find` | **`lex` + `python3` only** (canned Tier-1 lookup) |
 | same, with real color-detection + ray-cast vision | `make xlerobot-find-sim` | + `pip install mujoco numpy` (+ a GL backend — `MUJOCO_GL=osmesa` headless) |
 | LLM planner tool-dispatch (scripted mock model) | `make xlerobot-llm-mock` | **`lex` + `python3` only** — no API key, no ML deps |
+| LLM planner, spoken/typed goal, LOCAL model (Ollama / LiteLLM) | `make xlerobot-llm-local` | a running Ollama with a tool-calling model (`ollama pull qwen2.5`) — **no API key** |
 | LLM planner, spoken/typed goal, real OpenCode model | `make xlerobot-llm` | `OPENCODE_API_KEY` (opencode.ai/zen) |
 | `speak` (Kokoro TTS) through a real speaker | Tier-3 hardware only (`LEX_ROBOT_HW=1`) | + `pip install kokoro sounddevice` (pulls torch, transformers) |
 | keep-out (learned policy vs. grant) | `make keepout` | + `pip install -r sidecar/requirements.txt` (gym-pusht, lerobot) |
@@ -670,13 +671,23 @@ decides both: `move_base` (in-bounds) reaches; `speak` (not granted in that
 demo's grant) is denied.
 
 ```sh
-OPENCODE_API_KEY=sk-... make xlerobot-llm
+make xlerobot-llm-local                  # local Ollama plans — no cloud key
+OPENCODE_API_KEY=sk-... make xlerobot-llm   # or a hosted OpenCode model
 ```
 
-`xlerobot-llm` is the live end of the same mechanism, with a real hosted
-model deciding what to do — set `OPENCODE_API_KEY` (from
-[opencode.ai/zen](https://opencode.ai/zen)) and optionally `OPENCODE_MODEL`,
-or `GOAL="..."` for a typed goal instead of a spoken one. This has NOT been
+`xlerobot-llm` is the live end of the same mechanism, with a real model
+deciding what to do. `src/llm_provider.lex` is the one seam that picks it:
+`LEX_LLM_PROVIDER=ollama` (the default with no key set — a local Ollama,
+the same split-compute posture as vision: the Mac Studio plans, nothing
+leaves the LAN), `openai` (any OpenAI-compatible endpoint — point
+`LEX_LLM_URL` at a LiteLLM proxy), or `opencode` (selected automatically
+when `OPENCODE_API_KEY` is set). `LEX_LLM_MODEL` overrides the per-provider
+default model; `GOAL="..."` gives a typed goal instead of a spoken one.
+Workspace denials now carry the granted envelope in the message
+("outside granted workspace (granted: x 0.05..0.45, ...)"), so a refused
+planner can replan *inside* the box instead of guessing — the mock test
+proves the loop delivers that teaching denial and that the same
+conversation can act on it. This has NOT been
 run against a real OpenCode call while building this (this environment has
 no API key and no network path to opencode.ai) — everything up to the
 network call is verified for real by `xlerobot-llm-mock` above; a real

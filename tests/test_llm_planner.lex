@@ -116,10 +116,58 @@ fn test_tool_calls_reach_real_grant_gated_server() -> [net, crypto, llm, io, pro
   }
 }
 
+# ── Deny → replan: the denial TEACHES and the loop carries it ─────────────
+#
+# Same scripted-provider technique, exercising the enriched workspace
+# denial (grant.ws_str): turn 0 proposes an arm move far outside the
+# granted box; the REAL server refuses with the envelope in the message;
+# turn 1 fires only if that denial text actually names the envelope
+# ("granted:"), then proposes a target inside it; turn 2 echoes both
+# results. What this proves: the loop delivers a teaching denial back to
+# the model and the SAME conversation can act on it — the mechanical half
+# of "replan inside the envelope". Whether a real model uses it well is
+# the live-model half (make xlerobot-llm / xlerobot-llm-local).
+fn mock_replan_provider() -> prov.Provider {
+  { name: "mock-replan", chat: fn (model :: prov.ModelRef, messages :: List[msg.Message], tools :: List[t.Tool]) -> [net, llm] Iter[d.Delta] {
+    let seen := tool_msg_contents(messages)
+    let n := list.len(seen)
+    let deltas := if n == 0 {
+      [ToolCallBegin("call_1", "move_arm"), ToolArgChunk("call_1", "{\"arm\":\"left\",\"x\":5.0,\"y\":0.2,\"z\":0.2}"), FinishDelta("tool_calls")]
+    } else {
+      if n == 1 {
+        let first := match list.head(seen) {
+          Some(s) => s,
+          None => "",
+        }
+        if str.contains(first, "granted:") {
+          [ToolCallBegin("call_2", "move_arm"), ToolArgChunk("call_2", "{\"arm\":\"left\",\"x\":0.3,\"y\":0.2,\"z\":0.2}"), FinishDelta("tool_calls")]
+        } else {
+          [TextChunk(str.concat("denial did not teach — no envelope in: ", first)), FinishDelta("stop")]
+        }
+      } else {
+        [TextChunk(str.concat("saw: ", str.join(seen, " || "))), FinishDelta("stop")]
+      }
+    }
+    iter.from_list(deltas)
+  } }
+}
+
+fn test_denial_teaches_and_replan_succeeds() -> [net, crypto, llm, io, proc, approval] Result[Unit, Str] {
+  let steps := planner.plan("http://localhost:8766", "mocktest-2", mock_replan_provider(), prov.make_model_ref("mock", "mock-2"), "reach into the box")
+  let final := planner.final_text(steps)
+  match assert_contains("teaching denial", final, "denied: left arm target outside granted workspace (granted:") {
+    Err(e) => Err(e),
+    Ok(_) => assert_contains("replanned move reached", final, "reached"),
+  }
+}
+
 fn main() -> [net, crypto, llm, io, proc, approval] Nil {
   match test_tool_calls_reach_real_grant_gated_server() {
-    Ok(_) => io.print("ALL PASS: llm_planner tool-dispatch reaches the real grant-gated server"),
     Err(reason) => io.print(str.concat("FAIL: ", reason)),
+    Ok(_) => match test_denial_teaches_and_replan_succeeds() {
+      Err(reason) => io.print(str.concat("FAIL: ", reason)),
+      Ok(_) => io.print("ALL PASS: llm_planner tool-dispatch reaches the real grant-gated server, and a teaching denial replans"),
+    },
   }
 }
 
