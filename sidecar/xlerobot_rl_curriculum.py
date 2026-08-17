@@ -48,6 +48,11 @@ def main() -> int:
                     help="always-on soft cost per metre the arm offset sits outside the FINAL "
                          "grant box, from step 0 (0 = off). Shapes strategy toward near-body "
                          "reaches without hard walls; keep well below the wall PENALTY_SCALE (5.0)")
+    ap.add_argument("--pull-mode", choices=("both", "outer"), default="both",
+                    help="which side of the grant box the pull taxes: 'both' (symmetric, "
+                         "attempts 9-13) or 'outer' (asymmetric, attempt 14 -- rent only "
+                         "beyond each axis's upper bound, so the rest pose and the task "
+                         "solution sit in one tax-free basin)")
     ap.add_argument("--grant-pull-end", type=float, default=None,
                     help="anneal the pull linearly from --grant-pull down to this value over the "
                          "run (default: constant pull). Strong early breaks the stretch; the decay "
@@ -81,7 +86,7 @@ def main() -> int:
     def make_one():
         e = make_curriculum_env(horizon_steps=horizon, warmup_frac=args.warmup, final_frac=args.final,
                                 arm_mode=args.arm_mode, deny_from=args.deny_from, grant_pull=args.grant_pull,
-                                grant_pull_end=args.grant_pull_end)
+                                grant_pull_end=args.grant_pull_end, pull_mode=args.pull_mode)
         e.n_steps = start_n
         e._apply_schedule()
         return e

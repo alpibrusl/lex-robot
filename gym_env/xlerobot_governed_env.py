@@ -54,7 +54,7 @@ class GovernedXLeRobotFetchEnv(gym.Wrapper):
     floor area every step, penalizing (and clipping) violations."""
 
     def __init__(self, env, axis_weights: dict | None = None, arm_mode: str = "clip",
-                 grant_pull: float = 0.0):
+                 grant_pull: float = 0.0, pull_mode: str = "both"):
         super().__init__(env)
         # axis_weights keys look like "move_to.x" / "move_base.y" (the same
         # shape xlerobot_usage_log.py prints) — default to 1.0 (unweighted,
@@ -91,6 +91,22 @@ class GovernedXLeRobotFetchEnv(gym.Wrapper):
         # more expensive than driving the base, inside a dense-gradient
         # landscape, instead of fencing it out after the fact. Keep it well
         # below PENALTY_SCALE: this shapes preference, it is not a wall.
+        #
+        # pull_mode: which side of the box the pull taxes (attempt 14).
+        #   "both"  — symmetric (attempts 9-13): rent on every metre outside
+        #             the box, inner AND outer. But the arm's natural rest
+        #             pose (offset ~0, i.e. BELOW the box's x lower bound)
+        #             is then taxed too, and 10/12/13 all converged to a
+        #             hover-tuck that pays that small inner rent forever
+        #             instead of doing the task.
+        #   "outer" — asymmetric: rent only BEYOND each axis's upper bound,
+        #             so everything at-or-inside the outer wall — the rest
+        #             pose, the approach, and the whole task solution — is
+        #             one tax-free basin, and only the far-stretch (the
+        #             violation the grant actually fears) pays.
+        if pull_mode not in ("both", "outer"):
+            raise ValueError(f"pull_mode must be 'both' or 'outer', got {pull_mode!r}")
+        self.pull_mode = pull_mode
         self.grant_pull = float(grant_pull)
 
     def _w(self, skill, axis):
@@ -139,7 +155,10 @@ class GovernedXLeRobotFetchEnv(gym.Wrapper):
             pull = 0.0
             for i, axis in enumerate(("x", "y", "z")):
                 lo, hi = ARM_BOUNDS[axis]
-                pull += max(0.0, lo - raw.ee_off[i]) + max(0.0, raw.ee_off[i] - hi)
+                if self.pull_mode == "outer":
+                    pull += max(0.0, raw.ee_off[i] - hi)
+                else:
+                    pull += max(0.0, lo - raw.ee_off[i]) + max(0.0, raw.ee_off[i] - hi)
             penalty += self.grant_pull * pull
 
         # Base: clip the cart's world position into the floor area (and
