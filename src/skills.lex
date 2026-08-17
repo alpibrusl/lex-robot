@@ -38,6 +38,8 @@ import "./client" as client
 
 import "./sense" as sense
 
+import "./camera" as camera
+
 import "./fleet_client" as fleet
 
 # ── JSON helpers (manual; scaffold avoids a json dep) ────────────────────────
@@ -554,6 +556,12 @@ fn detect_object(r :: t.Robot, name :: Str) -> [net, sense] Result[Str, Str] {
 # Vision-based object localization — see sense.locate_object.
 fn locate_object(r :: t.Robot, name :: Str) -> [net, sense] Result[t.Located, Str] {
   sense.locate_object(r, name)
+}
+
+# Tier-2: 2D detection box → world position via the calibrated table plane —
+# see sense.detect_object_pose and src/camera.lex.
+fn detect_object_pose(r :: t.Robot, name :: Str, cam :: camera.CameraModel, plane_z :: Float, min_confidence :: Float) -> [net, sense] Result[t.Vec3, Str] {
+  sense.detect_object_pose(r, name, cam, plane_z, min_confidence)
 }
 
 # Re-project a world position into the current arm frame — see sense.transform_to_arm.

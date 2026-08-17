@@ -26,6 +26,8 @@ import "./grant" as grant
 
 import "./client" as client
 
+import "./camera" as camera
+
 # ── tiny JSON field helpers (shared with skills.lex via re-export) ───────────
 fn nth1(xs :: List[Str]) -> Str {
   match list.head(list.tail(xs)) {
@@ -163,11 +165,37 @@ fn locate_object(r :: t.Robot, name :: Str) -> [net, sense] Result[t.Located, St
 # bounding box back — deploy/VISION_SPLIT.md). Returns the sidecar's raw
 # JSON ({"found": bool, "cx","cy","w","h", "confidence", "detail"}) —
 # deliberately 2D image coordinates, not a world pose: turning a box into a
-# position needs depth or calibration, which is locate_object's (still
-# honest, still open) Tier-3 problem. Sensing-only, no grant check — same
-# reasoning as locate_object: detection never moves anything.
+# position needs depth or calibration. The calibrated-plane answer is
+# detect_object_pose below (Tier-2, src/camera.lex); full per-pixel depth
+# stays Tier-3 and open. Sensing-only, no grant check — same reasoning as
+# locate_object: detection never moves anything.
 fn detect_object(r :: t.Robot, name :: Str) -> [net, sense] Result[Str, Str] {
   client.call(r.sidecar_url, "detect_object", str.join(["{\"name\":\"", name, "\"}"], ""))
+}
+
+# Tier-2 vision: detect via the split-compute vision service, then turn the
+# 2D box into a WORLD position by intersecting the pixel ray with the
+# calibrated table plane (src/camera.lex). Two refusals instead of guesses:
+# a detection below `min_confidence` yields NO position, and a ray that
+# misses the plane (parallel / behind) is a geometry error, not (0,0,0).
+# Only valid for objects standing on the calibrated plane — that is the
+# Tier-2 deal, stated in camera.lex's module header.
+fn detect_object_pose(r :: t.Robot, name :: Str, cam :: camera.CameraModel, plane_z :: Float, min_confidence :: Float) -> [net, sense] Result[t.Vec3, Str] {
+  match detect_object(r, name) {
+    Err(e) => Err(e),
+    Ok(s) => {
+      if str.contains(str.replace(s, " ", ""), "\"found\":true") {
+        let conf := jfloat(s, "\"confidence\":", 0.0)
+        if conf >= min_confidence {
+          camera.project_to_plane(cam, jfloat(s, "\"cx\":", 0.5), jfloat(s, "\"cy\":", 0.5), plane_z)
+        } else {
+          Err(str.join(["detect_object_pose: confidence ", flt.to_str(conf), " below the ", flt.to_str(min_confidence), " floor — refusing to guess a position"], ""))
+        }
+      } else {
+        Err(str.concat("detect_object_pose: not found: ", s))
+      }
+    },
+  }
 }
 
 # Re-project a world position (e.g. from an earlier locate_object call) into
