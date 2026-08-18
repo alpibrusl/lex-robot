@@ -1,7 +1,10 @@
 # lex-robot/examples/llm_command_demo.lex — "bring me the cup," spoken to the
 # robot and answered out loud: voice in (listen, faster-whisper), a REAL
-# OpenCode-backed LLM plan (src/llm_planner.lex), grant-gated execution over
-# the robot's own A2A server, voice out (speak, Kokoro).
+# LLM plan (src/llm_planner.lex) from whichever provider src/llm_provider.lex
+# resolves — a LOCAL Ollama by default (the same split-compute posture as
+# vision: the Mac Studio plans, no cloud key), a LiteLLM/OpenAI-compatible
+# endpoint, or OpenCode Zen — then grant-gated execution over the robot's
+# own A2A server, voice out (speak, Kokoro).
 #
 # This is the live end of the mechanism tests/test_llm_planner.lex verifies
 # mechanically with a scripted mock model (no API key needed there — see
@@ -24,7 +27,12 @@
 # grant doing its job, not a bug in this demo.
 #
 # Prereqs (see Makefile):
-#   OPENCODE_API_KEY set (get one at opencode.ai/zen)
+#   a model to plan with — ONE of (src/llm_provider.lex resolves it):
+#     LEX_LLM_PROVIDER=ollama   (default; a local Ollama with a tool-calling
+#                                model pulled, e.g. `ollama pull qwen2.5`)
+#     LEX_LLM_PROVIDER=openai   + LEX_LLM_URL pointing at a LiteLLM proxy /
+#                                any OpenAI-compatible endpoint
+#     OPENCODE_API_KEY set      (selects opencode when LEX_LLM_PROVIDER unset)
 #   sidecar/xlerobot_mujoco_sidecar.py (or the Tier-1 stub) running on :8900
 #   examples/a2a_robot_demo.lex running on :8766 (its grant covers
 #     move_arm/grasp_arm/move_base/read_base; speak/listen/locate_object/
@@ -52,6 +60,8 @@ import "../src/types" as t
 import "../src/sense" as sense
 
 import "../src/llm_planner" as planner
+
+import "../src/llm_provider" as llmp
 
 fn sensor_robot() -> t.Robot {
   { sidecar_url: "http://localhost:8900", grant: { skills: ["listen"], ws_min: { x: 0.0, y: 0.0, z: 0.0 }, ws_max: { x: 0.0, y: 0.0, z: 0.0 }, max_velocity: 0.0, max_force: 0.0, max_grip_force: 0.0, budget_actions: 10, budget_wall_ms: 60000 } }
@@ -85,26 +95,15 @@ fn goal_from_voice() -> [net, sense, io] Str {
 }
 
 fn run_goal(goal_text :: Str) -> [net, crypto, llm, io, proc, env, stream, approval] Unit {
-  let api_key := match env.get("OPENCODE_API_KEY") {
-    None => "",
-    Some(v) => v,
-  }
-  if str.is_empty(api_key) {
-    io.print("error: OPENCODE_API_KEY not set — get one at opencode.ai/zen")
-  } else {
-    let model_name := match env.get("OPENCODE_MODEL") {
-      None => planner.default_model(),
-      Some(v) => if str.is_empty(v) {
-        planner.default_model()
-      } else {
-        v
-      },
-    }
-    let __0 := io.print(str.concat("goal: ", goal_text))
-    let __1 := io.print(str.concat("model: opencode-go/", model_name))
-    let steps := planner.plan_opencode("http://localhost:8766", "llmcmd-1", api_key, model_name, goal_text)
-    let lines := planner.steps_to_lines(steps)
-    io.print(str.join(lines, "\n"))
+  match llmp.from_env() {
+    Err(e) => io.print(str.concat("error: ", e)),
+    Ok(sel) => {
+      let __0 := io.print(str.concat("goal: ", goal_text))
+      let __1 := io.print(str.concat("model: ", sel.label))
+      let steps := planner.plan("http://localhost:8766", "llmcmd-1", sel.provider, sel.model, goal_text)
+      let lines := planner.steps_to_lines(steps)
+      io.print(str.join(lines, "\n"))
+    },
   }
 }
 

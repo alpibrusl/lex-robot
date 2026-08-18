@@ -178,7 +178,7 @@ fn move_to(r :: t.Robot, target :: t.Pose) -> [net, sense, actuate] t.Outcome {
         Ok(resp) => parse_outcome(resp),
       }
     } else {
-      Denied("target outside granted workspace")
+      Denied(str.join(["target outside granted workspace (", grant.ws_str(r.grant), ")"], ""))
     }
   } else {
     Denied("skill move_to not in grant")
@@ -283,7 +283,7 @@ fn move_arm(r :: t.Robot, arm :: Str, target :: t.Pose) -> [net, sense, actuate]
         Ok(resp) => parse_outcome(resp),
       }
     } else {
-      Denied(str.concat(arm, " arm target outside granted workspace"))
+      Denied(str.join([arm, " arm target outside granted workspace (", grant.ws_str(r.grant), ")"], ""))
     }
   } else {
     Denied("skill move_arm not in grant")
@@ -503,7 +503,7 @@ fn move_base(r :: t.Robot, target :: t.Vec3, speed :: Float) -> [net, sense, act
         Ok(resp) => parse_outcome(resp),
       }
     } else {
-      Denied("base target outside granted floor area")
+      Denied(str.join(["base target outside granted floor area (", grant.ws_str(r.grant), ")"], ""))
     }
   } else {
     Denied("skill move_base not in grant")

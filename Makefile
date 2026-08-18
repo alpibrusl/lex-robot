@@ -2,7 +2,7 @@
 # python3 (no pip). The ML demos (keep-out / MuJoCo / learned policy) need the
 # Python deps in sidecar/requirements.txt — see the README dependency matrix.
 
-.PHONY: help check smoke demo grant task budget depot xlerobot xlerobot-task xlerobot-voice xlerobot-touch vision-split vision-serve vision-pose stream home-wash ap2 dispense xlerobot-sim xlerobot-find xlerobot-find-sim keepout dynamic_keepout tool_fire mcp-grant a2a-grant xlerobot-rl-train xlerobot-rl-run xlerobot-rl-usage xlerobot-rl-finetune xlerobot-llm-mock xlerobot-llm fleet-clean-house bazaar-visit skill-acquisition skill-catalog fridge-report deps clean
+.PHONY: help check smoke demo grant task budget depot xlerobot xlerobot-task xlerobot-voice xlerobot-touch vision-split vision-serve vision-pose stream home-wash ap2 dispense xlerobot-sim xlerobot-find xlerobot-find-sim keepout dynamic_keepout tool_fire mcp-grant a2a-grant xlerobot-rl-train xlerobot-rl-run xlerobot-rl-usage xlerobot-rl-finetune xlerobot-llm-mock xlerobot-llm xlerobot-llm-local fleet-clean-house bazaar-visit skill-acquisition skill-catalog fridge-report deps clean
 
 help: ## Show this help
 	@grep -hE '^[a-z-]+:.*##' $(MAKEFILE_LIST) | sed -E 's/:.*## /\t/' | sort
@@ -101,7 +101,10 @@ a2a-grant: ## A2A grant gate smoke test: same skills over standard Google A2A (n
 xlerobot-llm-mock: ## LLM planner tool-dispatch, verified for real with a scripted mock model (no API key, no ML deps)
 	@bash scripts/llm_planner_mock_test.sh
 
-xlerobot-llm: ## "Bring me the cup", spoken + a REAL OpenCode-backed plan (NEEDS: OPENCODE_API_KEY; GOAL="..." for a typed goal)
+xlerobot-llm-local: ## "Bring me the cup" planned by a LOCAL model — Ollama by default, no API key (NEEDS: ollama serve + `ollama pull qwen2.5`; LEX_LLM_URL/LEX_LLM_MODEL to override, GOAL="..." for a typed goal)
+	@LEX_LLM_PROVIDER=$${LEX_LLM_PROVIDER:-ollama} $(MAKE) xlerobot-llm
+
+xlerobot-llm: ## "Bring me the cup", spoken + a REAL model plan — provider via LEX_LLM_PROVIDER/OPENCODE_API_KEY, see src/llm_provider.lex (GOAL="..." for a typed goal)
 	@python3 sidecar/xlerobot_sidecar.py & echo $$! > /tmp/lex-robot-xle-llm-sc.pid; \
 	 lex run --allow-effects io,time,crypto,random,sql,fs_read,fs_write,net,concurrent,llm,proc,sense,actuate,approval \
 	   examples/a2a_robot_demo.lex run & echo $$! > /tmp/lex-robot-xle-llm-a2a.pid; \
