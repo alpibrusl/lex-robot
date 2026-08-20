@@ -225,6 +225,23 @@ def test_grasp_arm_unrestricted_when_no_grant_configured():
     assert "20.0N" in result["detail"]
 
 
+def test_hw_base_missing_when_no_base_configured():
+    # Mirrors _hw_arm_missing's contract: an arms-only build with no base
+    # wired up must refuse honestly, not crash trying to call a method on
+    # None (the read_base/move_base bug this guard fixes).
+    robot = XLeRobot()
+    missing = robot._hw_base_missing()
+    assert missing is not None
+    assert missing["ok"] is False
+    assert "not configured" in missing["detail"]
+
+
+def test_hw_base_missing_when_base_configured():
+    robot = XLeRobot()
+    robot._hw_base = object()  # presence is all _hw_base_missing checks for
+    assert robot._hw_base_missing() is None
+
+
 def test_missing_arm_refuses_instead_of_substituting():
     # Partial-build honesty: a request for an unconfigured arm is refused
     # with a named reason — never silently routed to the other physical arm.

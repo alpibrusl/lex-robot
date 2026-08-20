@@ -134,8 +134,12 @@ What it does and doesn't do:
   sidecar passes it a defensive copy. A browser jog/monitor interface is
   served at `GET /control`, showing live joint state, end-effector pose
   (via `read_arm_pose`), camera views, and buttons for manual jog and gripper
-  control — same pattern as `GET /display`. The "Enable control" toggle is
-  explicitly not a safety mechanism; it is UI convenience only.
+  control — same pattern as `GET /display`. Below the two arm panels, a
+  read-only third row shows the head camera feed and base/wheels telemetry
+  (dead-reckoned pose, and `wheel_temps_c` once a base is wired up) — no
+  drive controls, since `move_base` isn't exercised from this page. The
+  "Enable control" toggle is explicitly not a safety mechanism; it is UI
+  convenience only.
 - **Grasp** — position-based (gripper closed to a fraction of full-close
   scaled by the requested/firmware-capped force), *not* current/force
   closed-loop. `Present_Load` is read best-effort for the audit trail only
@@ -180,6 +184,25 @@ What it does and doesn't do:
   base for real will need those env vars set explicitly, and the tower's
   pan/tilt servos (7/8) have no code path at all yet (the camera here is
   still a plain fixed `OpenCVCamera`, no pan/tilt control).
+
+  **Known gap for whoever wires the base up next:** `_HwDiffBase` assumes
+  `LEX_XLE_BASE_PORT` is its own dedicated serial device (the README example
+  below uses `/dev/ttyACM2`, a third port) — but on this unit the wheels
+  share the *same* physical bus/port as one arm's own 6 servos (see the
+  layout above), and `_HwArm` already owns that port via its own
+  `SO101Follower`/`FeetechMotorsBus` connection. Pointing `LEX_XLE_BASE_PORT`
+  at that same `/dev/ttyACM*` device would mean two independent
+  `FeetechMotorsBus` objects each trying to open one serial port — almost
+  certainly the same "port in use" failure mode chased for most of this
+  session's servo-ID debugging, just at the process level instead of the
+  ID-collision level. The likely fix is adding `wheel_left`/`wheel_right` as
+  two more motors on the *existing* bus object owned by whichever arm shares
+  that board (`_HwArm.follower.bus`), not a second bus on the same port —
+  not yet implemented, and not bench-verified against real hardware.
+  `read_base`/`move_base` do at least fail honestly now instead of crashing
+  when no base is configured (`_hw_base_missing()`, same pattern as
+  `_hw_arm_missing()`), and `_HwDiffBase.read()` reports best-effort
+  `wheel_temps_c` once a base *is* wired up.
 - **Camera** — three independent, best-effort slots ("head", "left", "right")
   via `lerobot.cameras.opencv.OpenCVCamera`. Each slot is opened only if its
   corresponding env var is set (`LEX_XLE_CAMERA_HEAD_INDEX`, `LEX_XLE_CAMERA_LEFT_INDEX`,
