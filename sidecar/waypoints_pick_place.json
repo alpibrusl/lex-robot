@@ -1,0 +1,41 @@
+{
+  "_comment": [
+    "PLACEHOLDER TRAJECTORY -- these numbers are deliberately small and near",
+    "home. They are NOT a working pick-and-place for your scene and will not",
+    "grasp anything as-is. Author real ones with sidecar/capture_waypoints.py,",
+    "which snapshots the arm's actual normalized pose while you hold it in",
+    "place. Units are normalized: body joints -100..100, gripper 0..100.",
+    "'jitter': true marks the waypoints whose pose is randomised per episode --",
+    "that is what gives the dataset variety without a human moving the object.",
+    "move_s = seconds ramping to this pose, hold_s = seconds dwelling on it."
+  ],
+  "fps": 30,
+  "cycle": [
+    {"name": "home",          "move_s": 1.5, "hold_s": 0.5,
+     "pose": {"shoulder_pan": 0, "shoulder_lift": 0, "elbow_flex": 0, "wrist_flex": 0, "wrist_roll": 0, "gripper": 60}},
+
+    {"name": "approach_pick", "move_s": 2.0, "hold_s": 0.3, "jitter": true,
+     "pose": {"shoulder_pan": -10, "shoulder_lift": -12, "elbow_flex": 15, "wrist_flex": 5, "wrist_roll": 0, "gripper": 60}},
+
+    {"name": "descend_pick",  "move_s": 1.2, "hold_s": 0.3, "jitter": true,
+     "pose": {"shoulder_pan": -10, "shoulder_lift": -20, "elbow_flex": 22, "wrist_flex": 8, "wrist_roll": 0, "gripper": 60}},
+
+    {"name": "close_gripper", "move_s": 0.8, "hold_s": 0.5,
+     "pose": {"shoulder_pan": -10, "shoulder_lift": -20, "elbow_flex": 22, "wrist_flex": 8, "wrist_roll": 0, "gripper": 8}},
+
+    {"name": "lift",          "move_s": 1.2, "hold_s": 0.2,
+     "pose": {"shoulder_pan": -10, "shoulder_lift": -5, "elbow_flex": 12, "wrist_flex": 5, "wrist_roll": 0, "gripper": 8}},
+
+    {"name": "traverse",      "move_s": 2.0, "hold_s": 0.2, "jitter": true,
+     "pose": {"shoulder_pan": 10, "shoulder_lift": -5, "elbow_flex": 12, "wrist_flex": 5, "wrist_roll": 0, "gripper": 8}},
+
+    {"name": "descend_place", "move_s": 1.2, "hold_s": 0.3,
+     "pose": {"shoulder_pan": 10, "shoulder_lift": -18, "elbow_flex": 20, "wrist_flex": 8, "wrist_roll": 0, "gripper": 8}},
+
+    {"name": "open_gripper",  "move_s": 0.8, "hold_s": 0.5,
+     "pose": {"shoulder_pan": 10, "shoulder_lift": -18, "elbow_flex": 20, "wrist_flex": 8, "wrist_roll": 0, "gripper": 60}},
+
+    {"name": "retreat",       "move_s": 1.5, "hold_s": 0.2,
+     "pose": {"shoulder_pan": 10, "shoulder_lift": 0, "elbow_flex": 5, "wrist_flex": 0, "wrist_roll": 0, "gripper": 60}}
+  ]
+}
