@@ -1291,12 +1291,16 @@ function updateButtonStates() {
 // "x/y/z" says nothing about which way the gripper actually goes. Each axis is
 // labelled with what it does physically, with the axis letter kept as a
 // secondary cue so the numbers on screen still tie back to the API.
-// Deliberately NOT claiming which physical side +y is: that was never
-// established on this unit, so the FROM ABOVE map shows the direction rather
-// than the label asserting it.
+// +y = the robot's LEFT (viewed from behind, the same convention the arms are
+// named by). Established three ways that agree: the left arm's shoulder_pan
+// hits a mechanical stop on DECREASING ticks; a human watching the arm sweep
+// reported that as "cannot turn further left"; and FK at the working pose puts
+// decreasing ticks at +0.025 m of y. That matches the standard URDF convention
+// (x forward, y left, z up), but it is measured here, not assumed -- the URDF
+// fixes each arm's own frame, not how the arm is mounted.
 const AXIS_LABEL = {
   x: {name: 'reach', neg: 'in', pos: 'out'},
-  y: {name: 'across', neg: '-y', pos: '+y'},
+  y: {name: 'across', neg: 'right', pos: 'left'},
   z: {name: 'height', neg: 'down', pos: 'up'},
 };
 
@@ -1425,8 +1429,10 @@ function drawMap(svg, arm, hAxis, vAxis, pose, hLabel, vLabel) {
 
 function renderMaps(arm, pose) {
   // FROM ABOVE: reach runs up the screen (away from the robot), across runs
-  // left-to-right. FROM THE SIDE: reach runs right, height runs up.
-  drawMap(document.getElementById(`maptop-${arm}`), arm, 'y', 'x', pose, 'across (y)', 'reach (x)');
+  // left-to-right -- and +y is the robot's left, so the map is drawn as seen
+  // FROM BEHIND the robot, matching how the arms themselves are named.
+  // FROM THE SIDE: reach runs right, height runs up.
+  drawMap(document.getElementById(`maptop-${arm}`), arm, 'y', 'x', pose, 'right &lt;- across (y) -&gt; left', 'reach (x)');
   drawMap(document.getElementById(`mapside-${arm}`), arm, 'x', 'z', pose, 'reach (x)', 'height (z)');
 }
 
