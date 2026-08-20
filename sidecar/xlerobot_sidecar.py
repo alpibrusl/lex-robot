@@ -718,7 +718,30 @@ class _HwCamera:
             from lerobot.cameras.opencv import OpenCVCamera, OpenCVCameraConfig
         except ImportError as e:
             raise HardwareError(f"lerobot's OpenCVCamera isn't importable ({e}).") from e
-        self.camera = OpenCVCamera(OpenCVCameraConfig(index_or_path=index))
+        # Resolution is not just bandwidth economy on a three-camera build.
+        # These UVC cameras negotiate 1920x1080 by default, and this unit's USB
+        # topology cannot carry three of those at once. Bench-measured on the
+        # real hardware: opened ONE AT A TIME all three deliver distinct frames;
+        # held open together at 1080p the third returns NO frame at all, and the
+        # /control page renders it as "camera unavailable"; dropped to 640x480
+        # all three stream concurrently and distinctly. Left unset, a
+        # multi-camera build silently loses a camera, so anything reading two
+        # views at once (episode verification, multi-camera recording) needs
+        # these set. Note the fourcc request is best-effort -- lerobot logs
+        # "failed to set fourcc=MJPG" on this stack and continues; 640x480 alone
+        # was enough.
+        w = os.environ.get("LEX_XLE_CAMERA_WIDTH")
+        h = os.environ.get("LEX_XLE_CAMERA_HEIGHT")
+        fps = os.environ.get("LEX_XLE_CAMERA_FPS")
+        fourcc = os.environ.get("LEX_XLE_CAMERA_FOURCC")
+        cfg = {"index_or_path": index}
+        if w and h:
+            cfg["width"], cfg["height"] = int(w), int(h)
+        if fps:
+            cfg["fps"] = int(fps)
+        if fourcc:
+            cfg["fourcc"] = fourcc
+        self.camera = OpenCVCamera(OpenCVCameraConfig(**cfg))
         self.camera.connect()
 
     def capture(self):

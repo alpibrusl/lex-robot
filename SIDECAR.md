@@ -217,6 +217,10 @@ What it does and doesn't do:
   `read_base`/`move_base` also fail honestly now instead of crashing when no
   base is configured at all (`_hw_base_missing()`, same pattern as
   `_hw_arm_missing()`).
+- **Ready-made env for this unit:** `deploy/mac/xlerobot.env.example` carries
+  the whole working configuration (ports, camera indices and the mandatory
+  640x480 cap, URDF path, shared-bus base) with the provenance of each value.
+  `set -a && source deploy/mac/xlerobot.env.example && set +a`.
 - **Camera** — three independent, best-effort slots ("head", "left", "right")
   via `lerobot.cameras.opencv.OpenCVCamera`. Each slot is opened only if its
   corresponding env var is set (`LEX_XLE_CAMERA_HEAD_INDEX`, `LEX_XLE_CAMERA_LEFT_INDEX`,
