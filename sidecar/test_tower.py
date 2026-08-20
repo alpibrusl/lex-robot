@@ -7,7 +7,8 @@ applied before anything is commanded).
 import pytest
 
 import tower
-from tower import CENTRE_TICKS, TowerDriver, clamp_ticks, deg_to_ticks, plan_steps, ticks_to_deg
+from tower import (CENTRE_TICKS, DEFAULT_PAN_LIMITS, DEFAULT_TILT_LIMITS, TILT_HARD_STOP_MIN,
+                   TowerDriver, clamp_ticks, deg_to_ticks, plan_steps, ticks_to_deg)
 
 
 # ── pure helpers ────────────────────────────────────────────────────────────
@@ -172,3 +173,22 @@ def test_read_reports_ticks_degrees_and_hold_state():
     assert r["pan_deg"] == pytest.approx(-40.25, abs=0.01)
     assert r["held"] is False
     assert d.hold()["held"] is True
+
+
+def test_tilt_envelope_stays_above_the_measured_hard_stop():
+    """Regression: a single symmetric envelope for both axes allowed commanding
+    tilt to 1024, straight through the mechanical stop measured at 2483."""
+    assert DEFAULT_TILT_LIMITS[0] > TILT_HARD_STOP_MIN
+    assert clamp_ticks(1024, DEFAULT_TILT_LIMITS) > TILT_HARD_STOP_MIN
+
+
+def test_pan_and_tilt_envelopes_are_not_the_same():
+    assert DEFAULT_PAN_LIMITS != DEFAULT_TILT_LIMITS
+
+
+def test_driver_defaults_clamp_tilt_away_from_the_stop():
+    d, bus = fake_driver(pan=1590, tilt=2838)
+    bus.writes.clear()
+    d.move_to(tilt_ticks=1024)
+    goals = [v for n, s, v in bus.writes if n == "Goal_Position" and s == 8]
+    assert min(goals) >= DEFAULT_TILT_LIMITS[0]

@@ -195,7 +195,13 @@ What it does and doesn't do:
   camera frame (7 -> dx=-40.0px, dy=+8.6px; 8 -> dx=-0.3px, dy=-71.1px).
   The tower is UNCALIBRATED (`Homing_Offset=85`, range `[0,4095]` — factory
   defaults), so `TowerDriver`'s degrees are relative to tick 2048, not to any
-  mechanical zero. Note the tower ships with torque OFF: since the head
+  mechanical zero. **Bench-probed travel** (reduced torque, stall detected by
+  position-tracking error): tilt has a REAL mechanical stop at **2483 ticks**
+  (+38.2°, 46 ticks of tracking error at load 300) — do not command below it.
+  The other three bounds were not found; the probe hit its own ±600-tick
+  excursion cap first, so pan `[1000, 2100]` and tilt max `3400` are
+  *verified traversable*, not measured limits. Going further risks straining
+  the head camera's USB cable, which no servo-side protection detects. Note the tower ships with torque OFF: since the head
   camera rides it, `TowerDriver.hold()` should be called before calibrating
   a `CameraModel`, or the mount can sag and silently invalidate it.
 

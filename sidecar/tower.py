@@ -47,11 +47,23 @@ MODEL = "sts3215"
 TICKS_PER_REV = 4096
 CENTRE_TICKS = 2048
 
-# Conservative default envelope: +/-90 deg around centre. These are GUESSES --
-# the tower's real mechanical range has never been recorded. Narrow them once
-# you know it; a pan/tilt mount driven into its own hard stop will stall the
-# servo and can strain the camera cable.
-DEFAULT_LIMITS = (CENTRE_TICKS - 1024, CENTRE_TICKS + 1024)   # (1024, 3072)
+# Envelopes, from a bench probe at reduced torque (Torque_Limit 300/1000,
+# 15-tick steps, stall detected by position-tracking error).
+#
+# TILT HAS A REAL MECHANICAL STOP AT 2483 ticks (+38.2 deg): the servo stopped
+# tracking with 46 ticks of error at load 300. The minimum below leaves a 40-
+# tick margin above it. An earlier version of this file applied one symmetric
+# +/-90 deg envelope to BOTH axes, which allowed commanding tilt down to 1024 --
+# straight through that stop and into a stall. Per-axis limits are not a nicety.
+#
+# The other three bounds were NOT found: the probe hit its own +/-600-tick
+# excursion cap first, so these are "verified traversable", not measured limits.
+# The real stops are somewhere beyond. Widening is a deliberate decision, not a
+# default, because the failure mode out there is straining the head camera's
+# USB cable -- which no servo-side protection detects.
+TILT_HARD_STOP_MIN = 2483          # measured; do not command below this
+DEFAULT_PAN_LIMITS = (1000, 2100)          # traversed clean; true stops unknown
+DEFAULT_TILT_LIMITS = (TILT_HARD_STOP_MIN + 40, 3400)   # (2523, 3400)
 
 
 # ── pure helpers (no hardware; unit-tested in test_tower.py) ────────────────
@@ -95,7 +107,7 @@ class TowerDriver:
     """Position-mode control of the two tower servos over a (possibly shared) bus."""
 
     def __init__(self, shared_bus=None, port=None, pan_id=7, tilt_id=8,
-                 pan_limits=DEFAULT_LIMITS, tilt_limits=DEFAULT_LIMITS,
+                 pan_limits=DEFAULT_PAN_LIMITS, tilt_limits=DEFAULT_TILT_LIMITS,
                  step_ticks=15, dwell_s=0.05):
         if (port is None) == (shared_bus is None):
             raise ValueError("TowerDriver needs exactly one of port or shared_bus")
