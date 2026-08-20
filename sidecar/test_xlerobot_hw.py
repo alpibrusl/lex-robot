@@ -8,7 +8,9 @@ seam we *can* verify without a physical XLeRobot.
 """
 import math
 
-from xlerobot_sidecar import DisplayState, XLeRobot, bearing_and_turn, clamp, diff_drive_wheel_speeds
+import pytest
+
+from xlerobot_sidecar import DisplayState, XLeRobot, _HwDiffBase, bearing_and_turn, clamp, diff_drive_wheel_speeds
 
 
 def test_clamp_bounds():
@@ -253,3 +255,20 @@ def test_missing_arm_refuses_instead_of_substituting():
     r._hw_arms["left"] = object()
     assert r._hw_arm_missing("left") is None
     assert r._hw_arm_missing("right") is not None
+
+
+# ---- _HwDiffBase's port/shared_bus contract ---------------------------------
+#
+# The wheels on this hardware family share a physical bus with one arm's own
+# servos rather than having a dedicated port (see SIDECAR.md), so _HwDiffBase
+# accepts exactly one of port or shared_bus. This validation happens before
+# any lerobot import or hardware I/O, so it's testable without a real bus.
+
+def test_hw_diff_base_rejects_neither_port_nor_shared_bus():
+    with pytest.raises(ValueError, match="exactly one of port or shared_bus"):
+        _HwDiffBase(1, 2, 0.05, 0.30)
+
+
+def test_hw_diff_base_rejects_both_port_and_shared_bus():
+    with pytest.raises(ValueError, match="exactly one of port or shared_bus"):
+        _HwDiffBase(1, 2, 0.05, 0.30, port="/dev/ttyACM0", shared_bus=object())
