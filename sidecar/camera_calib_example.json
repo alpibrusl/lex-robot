@@ -1,0 +1,16 @@
+{
+  "_comment": [
+    "EXAMPLE camera calibration -- an overhead head camera 0.6 m above the",
+    "arm frame's origin, looking straight down. Identical to camera.lex's",
+    "`overhead_camera` helper, whose documented projections the tests assert.",
+    "REPLACE with your own: 'pos' is the camera position in the ARM frame,",
+    "and right/down/forward are its axes as world-frame vectors. fx/fy are",
+    "normalized focal lengths, cx0/cy0 the principal point in 0..1 image",
+    "coordinates. Wrong numbers here yield confidently wrong world positions."
+  ],
+  "pos":     [0.25, 0.0, 0.6],
+  "right":   [1.0, 0.0, 0.0],
+  "down":    [0.0, 1.0, 0.0],
+  "forward": [0.0, 0.0, -1.0],
+  "fx": 1.0, "fy": 1.0, "cx0": 0.5, "cy0": 0.5
+}
