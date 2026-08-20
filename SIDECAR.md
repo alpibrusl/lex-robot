@@ -160,6 +160,26 @@ What it does and doesn't do:
   so `reached` on the base is an estimate, not a guarantee. Wheel slip on
   a real floor will drift it; a future encoder/AprilTag localization pass
   is the fix.
+
+  **This unit's physical servo bus layout** (bench-verified, not yet wired
+  into any code — the base/tower aren't driven by this sidecar yet, this is
+  a hardware-configuration reference for whoever writes that next): each
+  arm's own 6 servos keep the standard IDs 1-6, but the wheels and the
+  central-tower (camera pan/tilt) servos are wired onto the *same* physical
+  bus as one arm apiece — a fresh Feetech servo defaults to ID 1 out of the
+  box, which collides with that arm's own `shoulder_pan`, so each was
+  reassigned via `FeetechMotorsBus.setup_motor()` (isolate the one new
+  servo alone on the bus, since the exact-match ID scan can't disambiguate
+  multiple unconfigured devices, then reprogram it) to a non-colliding ID:
+  **wheels = 9, 10; tower = 7, 8**. Confirmed via `scan_port` with
+  everything reconnected in its final layout: one bus reports
+  `[1,2,3,4,5,6,7,8]` (that arm + the tower), the other
+  `[1,2,3,4,5,6,9,10]` (the other arm + both wheels) — no ID conflicts
+  anywhere. `LEX_XLE_BASE_LEFT_ID`/`LEX_XLE_BASE_RIGHT_ID`'s code defaults
+  (1/2) do **not** match this unit's actual wheel IDs (9/10) — driving the
+  base for real will need those env vars set explicitly, and the tower's
+  pan/tilt servos (7/8) have no code path at all yet (the camera here is
+  still a plain fixed `OpenCVCamera`, no pan/tilt control).
 - **Camera** — three independent, best-effort slots ("head", "left", "right")
   via `lerobot.cameras.opencv.OpenCVCamera`. Each slot is opened only if its
   corresponding env var is set (`LEX_XLE_CAMERA_HEAD_INDEX`, `LEX_XLE_CAMERA_LEFT_INDEX`,
