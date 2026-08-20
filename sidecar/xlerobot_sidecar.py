@@ -115,7 +115,11 @@ Grant enforcement (all tiers, not just LEX_ROBOT_HW=1 — see SIDECAR.md
                                                 everything else optional in this file).
 
 Base — LEX_XLE_BASE=diff (default, XLeRobot 0.4.0) or =omni (0.3.0-era LeKiwi kit):
-    diff:  LEX_XLE_BASE_PORT (required), LEX_XLE_BASE_LEFT_ID / _RIGHT_ID (default 1/2),
+    diff:  LEX_XLE_BASE_PORT (a dedicated serial port for the base) OR
+           LEX_XLE_BASE_SHARED_ARM=left|right (the wheels share that arm's
+           own bus instead — mutually exclusive with LEX_XLE_BASE_PORT; see
+           SIDECAR.md's servo-bus-layout note for when this applies),
+           LEX_XLE_BASE_LEFT_ID / _RIGHT_ID (default 1/2),
            LEX_XLE_WHEEL_RADIUS_M (default 0.05), LEX_XLE_TRACK_WIDTH_M (default 0.30)
     omni:  LEX_XLE_BASE_PORT (required), LEX_XLE_BASE_ID (default xle_base) — drives
            the real LeKiwi 3-omni-wheel base via lerobot.robots.lekiwi
@@ -515,30 +519,67 @@ class _HwDiffBase:
     """XLeRobot 0.4.0's dual-wheel differential base, driven directly over a
     Feetech motor bus in velocity mode. No canonical lerobot Robot class
     covers this base shape yet (only the 3-omni-wheel LeKiwi is upstream),
-    so this talks to the bus directly — see the module docstring."""
+    so this talks to the bus directly — see the module docstring.
 
-    def __init__(self, port, left_id, right_id, wheel_radius_m, track_width_m):
+    On this hardware family the wheels are wired onto the *same* physical
+    serial bus as one arm's own 6 servos, not a dedicated port (see
+    SIDECAR.md's servo-bus-layout note) — so this accepts exactly one of:
+    `port` (a genuinely dedicated serial connection for the base) or
+    `shared_bus` (an already-connected FeetechMotorsBus reused from an
+    _HwArm, i.e. `_HwArm.follower.bus`).
+
+    Reusing an arm's bus means NEVER touching its `.motors`/`.calibration`
+    dicts: those belong to the owning SO101Follower, whose own
+    get_observation()/send_action() read/write "all configured motors" via
+    the bus's public name-keyed API with no explicit motor list. Registering
+    the wheels there (tried first, and it looked like it worked — Operating_
+    Mode set fine, wheel_temps_c read fine) went on to silently break the
+    arm: get_observation() started sync_read-ing Present_Position for the
+    wheels too, and that register IS calibration-normalized, so it KeyError'd
+    on the wheels' missing calibration entry the moment anything polled arm
+    pose (`read_arm_pose`/the /control page). So this instead drives the
+    wheels through the bus's private, ID-based primitives (`_write`, `_read`,
+    `_sync_write`, `_sync_read` — addr/length looked up once via
+    `get_address`, sign-magnitude encoding done by hand for the signed
+    Goal_Velocity register), which touch only the raw serial protocol and
+    never consult `.motors`/`.calibration` at all -- safe on a shared bus,
+    and works identically for a genuinely dedicated port.
+    """
+
+    _MODEL = "sts3215"
+    _VELOCITY_SIGN_BIT = 15  # STS3215 Goal_Velocity is sign-magnitude, not two's complement
+    _STEPS_PER_DEG = 4096.0 / 360.0  # same convention as lekiwi's _degps_to_raw
+
+    def __init__(self, left_id, right_id, wheel_radius_m, track_width_m, port=None, shared_bus=None):
+        if (port is None) == (shared_bus is None):
+            raise ValueError("_HwDiffBase needs exactly one of port or shared_bus")
         try:
-            from lerobot.motors import Motor, MotorNormMode
+            from lerobot.motors.encoding_utils import decode_sign_magnitude, encode_sign_magnitude
             from lerobot.motors.feetech import FeetechMotorsBus
+            from lerobot.motors.motors_bus import get_address
         except ImportError as e:
             raise HardwareError(
                 f"lerobot's FeetechMotorsBus isn't importable ({e}). Install with "
                 "`pip install \"lerobot[feetech]\"` — see SIDECAR.md."
             ) from e
+        self._encode_sign_magnitude = encode_sign_magnitude
+        self._decode_sign_magnitude = decode_sign_magnitude
         self.wheel_radius_m = wheel_radius_m
         self.track_width_m = track_width_m
-        self.bus = FeetechMotorsBus(
-            port=port,
-            motors={
-                "wheel_left": Motor(left_id, "sts3215", MotorNormMode.RANGE_M100_100),
-                "wheel_right": Motor(right_id, "sts3215", MotorNormMode.RANGE_M100_100),
-            },
-        )
-        self.bus.connect()
+        self.left_id = left_id
+        self.right_id = right_id
+        self._owns_bus = shared_bus is None
+        if shared_bus is not None:
+            self.bus = shared_bus
+        else:
+            self.bus = FeetechMotorsBus(port=port, motors={})
+            self.bus.connect()
+        self._op_mode_addr, self._op_mode_len = get_address(self.bus.model_ctrl_table, self._MODEL, "Operating_Mode")
+        self._goal_vel_addr, self._goal_vel_len = get_address(self.bus.model_ctrl_table, self._MODEL, "Goal_Velocity")
+        self._temp_addr, self._temp_len = get_address(self.bus.model_ctrl_table, self._MODEL, "Present_Temperature")
         try:
-            self.bus.write("Operating_Mode", "wheel_left", 1)   # 1 == velocity/wheel mode
-            self.bus.write("Operating_Mode", "wheel_right", 1)
+            self.bus._write(self._op_mode_addr, self._op_mode_len, left_id, 1)   # 1 == velocity/wheel mode
+            self.bus._write(self._op_mode_addr, self._op_mode_len, right_id, 1)
         except Exception as e:
             raise HardwareError(f"could not set base wheels to velocity mode: {e}") from e
         # Dead-reckoning pose estimate — there is no encoder-feedback
@@ -546,14 +587,20 @@ class _HwDiffBase:
         # therefore a commanded-time estimate, not sensor-verified.
         self.pose = {"x": 0.0, "y": 0.0, "heading": 0.0}
 
+    def _degps_to_raw(self, degps):
+        max_magnitude = (1 << self._VELOCITY_SIGN_BIT) - 1  # encode_sign_magnitude's own ceiling
+        raw = int(round(degps * self._STEPS_PER_DEG))
+        return max(-max_magnitude, min(max_magnitude, raw))
+
     def _set_wheel_velocity(self, v_mps, omega_rad_s):
         left_w, right_w = diff_drive_wheel_speeds(v_mps, omega_rad_s, self.wheel_radius_m, self.track_width_m)
         # deg/s, matching the STS3215 velocity-mode convention used elsewhere
         # in lerobot (see lekiwi's _body_to_wheel_raw for the same unit choice).
-        self.bus.sync_write("Goal_Velocity", {
-            "wheel_left": math.degrees(left_w),
-            "wheel_right": math.degrees(right_w),
-        })
+        ids_values = {
+            self.left_id: self._encode_sign_magnitude(self._degps_to_raw(math.degrees(left_w)), self._VELOCITY_SIGN_BIT),
+            self.right_id: self._encode_sign_magnitude(self._degps_to_raw(math.degrees(right_w)), self._VELOCITY_SIGN_BIT),
+        }
+        self.bus._sync_write(self._goal_vel_addr, self._goal_vel_len, ids_values)
 
     def drive(self, x, y, speed, timeout_s):
         import time as _time
@@ -588,9 +635,10 @@ class _HwDiffBase:
     def _read_wheel_temps(self):
         # Best-effort, audit-trail only -- same spirit as _HwArm's gripper
         # load read: never blocks or fails the pose read if the bus hiccups.
+        # Present_Temperature isn't a signed register, so no sign decoding.
         try:
-            raw = self.bus.sync_read("Present_Temperature", ["wheel_left", "wheel_right"])
-            return {"left": float(raw["wheel_left"]), "right": float(raw["wheel_right"])}
+            raw, _comm = self.bus._sync_read(self._temp_addr, self._temp_len, [self.left_id, self.right_id])
+            return {"left": float(raw[self.left_id]), "right": float(raw[self.right_id])}
         except Exception:
             return None
 
@@ -604,7 +652,13 @@ class _HwDiffBase:
     def disconnect(self):
         try:
             self._set_wheel_velocity(0.0, 0.0)
-            self.bus.disconnect()
+            # A shared bus belongs to the _HwArm that owns it -- that arm's
+            # own disconnect() closes it. Closing it here too would pull the
+            # arm's connection out from under it if the base is torn down
+            # first (_disconnect_partial disconnects arms and the base
+            # independently, order not guaranteed).
+            if self._owns_bus:
+                self.bus.disconnect()
         except Exception:
             pass
 
@@ -1447,6 +1501,11 @@ class XLeRobot:
         left_port = os.environ.get("LEX_XLE_LEFT_PORT")
         right_port = os.environ.get("LEX_XLE_RIGHT_PORT")
         base_port = os.environ.get("LEX_XLE_BASE_PORT")
+        # "left" | "right": the base wheels share a physical bus with that
+        # arm's own servos rather than having a dedicated port -- see
+        # _HwDiffBase's docstring and SIDECAR.md's servo-bus-layout note.
+        # Mutually exclusive with LEX_XLE_BASE_PORT (a real dedicated port).
+        base_shared_arm = os.environ.get("LEX_XLE_BASE_SHARED_ARM")
         # Each arm slot is optional so a partial build runs during bring-up —
         # one calibrated SO-101 on the bench, or a single-arm second robot
         # (a LeKiwi) — but a hardware sidecar with NO arm at all is almost
@@ -1458,6 +1517,12 @@ class XLeRobot:
                 "A missing arm stays unavailable (its skills return an honest "
                 "error); LEX_XLE_BASE_PORT is likewise optional."
             )
+        if base_port and base_shared_arm:
+            raise SystemExit(
+                "LEX_XLE_BASE_PORT and LEX_XLE_BASE_SHARED_ARM are mutually "
+                "exclusive -- the base either has its own dedicated serial "
+                "port, or shares an arm's bus, not both."
+            )
         max_rel = os.environ.get("LEX_XLE_MAX_REL_TARGET")
         max_rel = float(max_rel) if max_rel else None
         try:
@@ -1465,16 +1530,22 @@ class XLeRobot:
                 self._hw_arms["left"] = _HwArm("left", left_port, os.environ.get("LEX_XLE_LEFT_ID", "xle_left"), max_rel)
             if right_port:
                 self._hw_arms["right"] = _HwArm("right", right_port, os.environ.get("LEX_XLE_RIGHT_ID", "xle_right"), max_rel)
-            if base_port:
+            if base_port or base_shared_arm:
+                if base_shared_arm and base_shared_arm not in self._hw_arms:
+                    raise SystemExit(
+                        f"LEX_XLE_BASE_SHARED_ARM={base_shared_arm} but that arm isn't "
+                        f"configured -- also set LEX_XLE_{base_shared_arm.upper()}_PORT."
+                    )
                 if BASE_MODE == "omni":
                     self._hw_base = _HwOmniBase(base_port, os.environ.get("LEX_XLE_BASE_ID", "xle_base"))
                 else:
                     self._hw_base = _HwDiffBase(
-                        base_port,
                         int(os.environ.get("LEX_XLE_BASE_LEFT_ID", "1")),
                         int(os.environ.get("LEX_XLE_BASE_RIGHT_ID", "2")),
                         float(os.environ.get("LEX_XLE_WHEEL_RADIUS_M", "0.05")),
                         float(os.environ.get("LEX_XLE_TRACK_WIDTH_M", "0.30")),
+                        port=base_port if base_port else None,
+                        shared_bus=self._hw_arms[base_shared_arm].follower.bus if base_shared_arm else None,
                     )
         except HardwareError as e:
             self._disconnect_partial()
@@ -1512,7 +1583,8 @@ class XLeRobot:
         an arms-only build with no base is expected and must not crash."""
         if self._hw_base is not None:
             return None
-        return {"ok": False, "detail": "base not configured (no LEX_XLE_BASE_PORT) -- partial build"}
+        return {"ok": False,
+                "detail": "base not configured (no LEX_XLE_BASE_PORT / LEX_XLE_BASE_SHARED_ARM) -- partial build"}
 
     def _disconnect_partial(self):
         """Leave nothing energized behind on a failed bring-up."""

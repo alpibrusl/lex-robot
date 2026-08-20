@@ -185,24 +185,34 @@ What it does and doesn't do:
   pan/tilt servos (7/8) have no code path at all yet (the camera here is
   still a plain fixed `OpenCVCamera`, no pan/tilt control).
 
-  **Known gap for whoever wires the base up next:** `_HwDiffBase` assumes
-  `LEX_XLE_BASE_PORT` is its own dedicated serial device (the README example
-  below uses `/dev/ttyACM2`, a third port) — but on this unit the wheels
-  share the *same* physical bus/port as one arm's own 6 servos (see the
-  layout above), and `_HwArm` already owns that port via its own
-  `SO101Follower`/`FeetechMotorsBus` connection. Pointing `LEX_XLE_BASE_PORT`
-  at that same `/dev/ttyACM*` device would mean two independent
-  `FeetechMotorsBus` objects each trying to open one serial port — almost
-  certainly the same "port in use" failure mode chased for most of this
-  session's servo-ID debugging, just at the process level instead of the
-  ID-collision level. The likely fix is adding `wheel_left`/`wheel_right` as
-  two more motors on the *existing* bus object owned by whichever arm shares
-  that board (`_HwArm.follower.bus`), not a second bus on the same port —
-  not yet implemented, and not bench-verified against real hardware.
-  `read_base`/`move_base` do at least fail honestly now instead of crashing
-  when no base is configured (`_hw_base_missing()`, same pattern as
-  `_hw_arm_missing()`), and `_HwDiffBase.read()` reports best-effort
-  `wheel_temps_c` once a base *is* wired up.
+  **Bus-sharing (bench-verified against real hardware):** on this unit the
+  wheels share the *same* physical bus/port as one arm's own 6 servos (see
+  the layout above), not a dedicated port. `_HwDiffBase` accepts either
+  `LEX_XLE_BASE_PORT` (a genuinely dedicated port) or
+  `LEX_XLE_BASE_SHARED_ARM=left|right` (reuse that arm's already-connected
+  bus — mutually exclusive with `LEX_XLE_BASE_PORT`). The first attempt at
+  sharing a bus registered `wheel_left`/`wheel_right` directly into the
+  arm's `FeetechMotorsBus.motors` dict — that looked like it worked (wheels
+  spun up into velocity mode, `wheel_temps_c` read back fine) but silently
+  broke the arm: `SO101Follower.get_observation()` reads `Present_Position`
+  for *every* motor in `.motors` with no explicit list, and that register is
+  calibration-normalized, so it `KeyError`'d on the wheels' missing
+  calibration the moment anything polled arm pose (`read_arm_pose`, the
+  `/control` page). The fix: `_HwDiffBase` now drives the wheels through the
+  bus's private, ID-based primitives (`_write`/`_sync_write`/`_sync_read`,
+  register addresses looked up once via `get_address`, sign-magnitude
+  encoding done by hand for the signed `Goal_Velocity` register) — these
+  touch only the raw serial protocol and never consult `.motors` or
+  `.calibration`, so they can't collide with the owning `_HwArm`'s own
+  bookkeeping. Confirmed live: `wheel_temps_c` reads real values (~38-40°C)
+  and `read_arm_pose`/`read_joints` on the sharing arm keep working
+  correctly, polled repeatedly, while the base is attached. `move_base`
+  (actually spinning the wheels) has not yet been exercised — the velocity
+  math and sign-magnitude encoding are implemented per the STS3215
+  convention (matching lekiwi's `_degps_to_raw`) but not bench-verified.
+  `read_base`/`move_base` also fail honestly now instead of crashing when no
+  base is configured at all (`_hw_base_missing()`, same pattern as
+  `_hw_arm_missing()`).
 - **Camera** — three independent, best-effort slots ("head", "left", "right")
   via `lerobot.cameras.opencv.OpenCVCamera`. Each slot is opened only if its
   corresponding env var is set (`LEX_XLE_CAMERA_HEAD_INDEX`, `LEX_XLE_CAMERA_LEFT_INDEX`,
