@@ -93,19 +93,23 @@ round-trip "denied".
 
 `sidecar/xlerobot_sidecar.py` drives a physical XLeRobot 0.4.0 when
 `LEX_ROBOT_HW=1` is set, through LeRobot's own SO-101 (`SOFollower`) and
-motor-bus (`FeetechMotorsBus`) APIs. **Both SO-101 arms and both left/right
-cameras have been bench-tested against this code** (`lerobot` 0.6.1, low
-torque, hand on the e-stop): serial connect, calibration, joint-space moves,
-Cartesian `move_to` via `RobotKinematics`/`placo`, `read_arm_pose`,
-multi-camera capture, and the `GET /control` browser page (jog + gripper,
-live joint/pose/camera view) all confirmed working end-to-end, including a
-live browser session. **Not yet exercised against real hardware**: the
-dual-wheel base and force-based grasp — those are still bench-test starting
-points, not plug-and-drive certainties. Community XLeRobot software —
-especially the 0.4.0 dual-wheel differential base — moves fast and isn't
-merged upstream into `lerobot`, so if your installed version's API doesn't
-match, the sidecar fails loudly at connect time (`SystemExit` naming the
-mismatch) rather than silently running with the wrong assumptions.
+motor-bus (`FeetechMotorsBus`) APIs. **Both SO-101 arms, both left/right
+cameras, the head camera, and the dual-wheel base have been bench-tested
+against this code** (`lerobot` 0.6.1, low torque, hand on the e-stop): serial
+connect, calibration, joint-space moves, Cartesian `move_to` via
+`RobotKinematics`/`placo`, `read_arm_pose`, multi-camera capture, the base
+sharing a bus port with an arm (see "Base" below), and `move_base` actually
+driving the base forward — confirmed by eye, multiple times — plus the `GET
+/control` browser page (jog + gripper, live joint/pose/camera view, head
+camera + base telemetry) all confirmed working end-to-end, including a live
+browser session. **Not yet exercised against real hardware**: force-based
+grasp (still position-based, see "Grasp" below) and turning the base
+(`move_base` has only been driven straight forward so far — turn-in-place
+and the `omega` branch of `drive()` are untested). Community XLeRobot
+software — especially the 0.4.0 dual-wheel differential base — moves fast
+and isn't merged upstream into `lerobot`, so if your installed version's API
+doesn't match, the sidecar fails loudly at connect time (`SystemExit` naming
+the mismatch) rather than silently running with the wrong assumptions.
 
 What it does and doesn't do:
 - **Arms** — each SO-101 is brought up as a real `lerobot.robots.so_follower`
