@@ -1111,10 +1111,13 @@ CONTROL_PAGE_HTML = """<!doctype html>
   header h1 { font-size:14px; color:var(--cyan); letter-spacing:.08em; margin:0; }
   #gate { margin-left:auto; display:flex; align-items:center; gap:6px; }
   #notice { padding:8px 16px; color:var(--muted); font-size:11px; border-bottom:1px solid var(--border); }
+  /* Layout mirrors the robot: the tower camera sits above and between the two
+     arms, the base underneath -- so the page reads like the machine looks. */
+  #tower { display:flex; justify-content:center; border-bottom:1px solid var(--border); }
+  #tower .panel { width:100%; max-width:440px; }
   #arms { display:grid; grid-template-columns:1fr 1fr; gap:1px; background:var(--border); }
-  #extra { display:grid; grid-template-columns:1fr 1fr; gap:1px; background:var(--border);
-           border-top:1px solid var(--border); }
-  @media (max-width: 700px) { #arms, #extra { grid-template-columns:1fr; } }
+  #baserow { border-top:1px solid var(--border); }
+  @media (max-width: 700px) { #arms { grid-template-columns:1fr; } }
   .panel { background:var(--bg); padding:14px 16px; }
   .panel h2 { font-size:13px; color:var(--cyan); margin:0 0 10px; display:flex; align-items:center; gap:8px; }
   .dot { width:8px; height:8px; border-radius:50%; background:var(--red); flex-shrink:0; }
@@ -1136,9 +1139,18 @@ CONTROL_PAGE_HTML = """<!doctype html>
                          padding:4px 10px; cursor:pointer; }
   .gripper-row button:disabled { opacity:.35; cursor:not-allowed; }
   .status { margin-top:10px; font-size:11px; color:var(--muted); min-height:14px; }
-  .camera { width:100%; aspect-ratio:4/3; background:var(--bg3); border:1px solid var(--border);
-            margin-bottom:12px; display:flex; align-items:center; justify-content:center;
-            overflow:hidden; }
+  /* Capped, not full-bleed: at full panel width a 4:3 feed pushed the joint
+     table and jog controls below the fold on a laptop screen. */
+  .camera { width:100%; max-width:300px; aspect-ratio:4/3; background:var(--bg3);
+            border:1px solid var(--border); margin:0 auto 12px; display:flex;
+            align-items:center; justify-content:center; overflow:hidden; }
+  #tower .camera { max-width:400px; }
+  .maps { display:flex; gap:10px; margin-bottom:12px; justify-content:center; }
+  .mapwrap { text-align:center; }
+  .mapwrap .caption { color:var(--muted); font-size:10px; letter-spacing:.05em; }
+  svg.map { width:120px; height:120px; background:var(--bg3); border:1px solid var(--border); }
+  .hint { color:var(--muted); font-size:11px; margin-bottom:8px; line-height:1.5; }
+  .axis-row label { width:auto; min-width:112px; }
   .camera img { width:100%; height:100%; object-fit:contain; display:block; }
   .camera .unavail { color:var(--muted); font-size:11px; padding:8px; text-align:center; }
 </style></head>
@@ -1150,11 +1162,26 @@ CONTROL_PAGE_HTML = """<!doctype html>
 <div id="notice">"Enable control" only gates this page's buttons -- it is not a
   safety system. The sidecar's own joint clamp, Lex grants, and the hardware
   e-stop are the real safety boundary.</div>
+<div id="tower">
+  <div class="panel">
+    <h2><span class="dot" id="dot-head"></span>HEAD / TOWER CAMERA</h2>
+    <div class="camera" id="camera-head"><span class="unavail">camera: --</span></div>
+  </div>
+</div>
 <div id="arms">
   <div class="panel" data-arm="left">
     <h2><span class="dot" id="dot-left"></span>LEFT ARM</h2>
     <div class="camera" id="camera-left"><span class="unavail">camera: --</span></div>
     <table class="joints" id="joints-left"></table>
+    <div class="hint">GRIPPER POSITION -- where the gripper tip is in space,
+      not joint angles. The maps below show it from above and from the side;
+      the outlined box is the granted workspace.</div>
+    <div class="maps">
+      <div class="mapwrap"><svg class="map" id="maptop-left" viewBox="0 0 100 100"></svg>
+        <div class="caption">FROM ABOVE</div></div>
+      <div class="mapwrap"><svg class="map" id="mapside-left" viewBox="0 0 100 100"></svg>
+        <div class="caption">FROM THE SIDE</div></div>
+    </div>
     <div class="pose" id="pose-left">pose: --</div>
     <div id="jog-left"></div>
     <div class="step-row">step (m) <input type="number" id="step-left" value="0.01" step="0.005" min="0.001"></div>
@@ -1169,6 +1196,15 @@ CONTROL_PAGE_HTML = """<!doctype html>
     <h2><span class="dot" id="dot-right"></span>RIGHT ARM</h2>
     <div class="camera" id="camera-right"><span class="unavail">camera: --</span></div>
     <table class="joints" id="joints-right"></table>
+    <div class="hint">GRIPPER POSITION -- where the gripper tip is in space,
+      not joint angles. The maps below show it from above and from the side;
+      the outlined box is the granted workspace.</div>
+    <div class="maps">
+      <div class="mapwrap"><svg class="map" id="maptop-right" viewBox="0 0 100 100"></svg>
+        <div class="caption">FROM ABOVE</div></div>
+      <div class="mapwrap"><svg class="map" id="mapside-right" viewBox="0 0 100 100"></svg>
+        <div class="caption">FROM THE SIDE</div></div>
+    </div>
     <div class="pose" id="pose-right">pose: --</div>
     <div id="jog-right"></div>
     <div class="step-row">step (m) <input type="number" id="step-right" value="0.01" step="0.005" min="0.001"></div>
@@ -1180,11 +1216,7 @@ CONTROL_PAGE_HTML = """<!doctype html>
     <div class="status" id="status-right"></div>
   </div>
 </div>
-<div id="extra">
-  <div class="panel">
-    <h2><span class="dot" id="dot-head"></span>HEAD CAMERA</h2>
-    <div class="camera" id="camera-head"><span class="unavail">camera: --</span></div>
-  </div>
+<div id="baserow">
   <div class="panel">
     <h2><span class="dot" id="dot-base"></span>BASE / WHEELS</h2>
     <div class="pose" id="base-info">base: --</div>
@@ -1256,15 +1288,28 @@ function updateButtonStates() {
   }
 }
 
+// "x/y/z" says nothing about which way the gripper actually goes. Each axis is
+// labelled with what it does physically, with the axis letter kept as a
+// secondary cue so the numbers on screen still tie back to the API.
+// Deliberately NOT claiming which physical side +y is: that was never
+// established on this unit, so the FROM ABOVE map shows the direction rather
+// than the label asserting it.
+const AXIS_LABEL = {
+  x: {name: 'reach', neg: 'in', pos: 'out'},
+  y: {name: 'across', neg: '-y', pos: '+y'},
+  z: {name: 'height', neg: 'down', pos: 'up'},
+};
+
 function buildJogControls() {
   for (const arm of ARMS) {
     const container = document.getElementById(`jog-${arm}`);
     for (const axis of AXES) {
+      const L = AXIS_LABEL[axis];
       const row = document.createElement('div');
       row.className = 'axis-row';
-      row.innerHTML = `<label>${axis}</label>` +
-        `<button data-axis="${axis}" data-dir="-1" disabled>-</button>` +
-        `<button data-axis="${axis}" data-dir="1" disabled>+</button>`;
+      row.innerHTML = `<label>${L.name} (${axis})</label>` +
+        `<button data-axis="${axis}" data-dir="-1" disabled>${L.neg}</button>` +
+        `<button data-axis="${axis}" data-dir="1" disabled>${L.pos}</button>`;
       container.appendChild(row);
     }
     container.querySelectorAll('button').forEach(btn => {
@@ -1324,6 +1369,67 @@ for (const arm of ARMS) {
   document.getElementById(`step-${arm}`).addEventListener('input', updateButtonStates);
 }
 
+// Fallback ranges when no grant is configured -- wide enough to contain any
+// pose this arm can actually reach, so the dot never lands off-canvas.
+const FALLBACK_RANGE = {x: {min: 0.0, max: 0.5}, y: {min: -0.35, max: 0.35}, z: {min: 0.0, max: 0.5}};
+
+function axisRange(arm, axis) {
+  const ws = grant && grant.arms && grant.arms[arm] && grant.arms[arm].workspace_m;
+  const b = ws && ws[AXES.indexOf(axis)];
+  if (b && typeof b.min === 'number' && typeof b.max === 'number' && b.max > b.min) return b;
+  return FALLBACK_RANGE[axis];
+}
+
+// Draw one 2D projection: `h` across the canvas, `v` up it. Both the granted
+// box and the current gripper position are drawn in the same frame, so "am I
+// near the edge of what I'm allowed?" is answerable at a glance.
+function drawMap(svg, arm, hAxis, vAxis, pose, hLabel, vLabel) {
+  const PAD = 12, SIZE = 100 - 2 * PAD;
+  // Plot a margin WIDER than the granted box, so the box reads as a region
+  // inside the view rather than coinciding with its border -- otherwise
+  // "how close am I to the edge of what I'm allowed?" is invisible, and a
+  // pose outside the grant would be clipped instead of shown escaping it.
+  const widen = (r) => {
+    const m = (r.max - r.min) * 0.18;
+    return {min: r.min - m, max: r.max + m};
+  };
+  const gh = axisRange(arm, hAxis), gv = axisRange(arm, vAxis);
+  const hr = widen(gh), vr = widen(gv);
+  const sx = (val) => PAD + ((val - hr.min) / (hr.max - hr.min)) * SIZE;
+  const sy = (val) => PAD + (1 - (val - vr.min) / (vr.max - vr.min)) * SIZE;   // v grows upward
+  const parts = [
+    `<rect x="${PAD}" y="${PAD}" width="${SIZE}" height="${SIZE}" fill="none"
+           stroke="#1e2050" stroke-width="1"/>`,
+    `<text x="50" y="97" fill="#5a6080" font-size="7" text-anchor="middle"
+           font-family="monospace">${hLabel}</text>`,
+    `<text x="4" y="50" fill="#5a6080" font-size="7" text-anchor="middle"
+           font-family="monospace" transform="rotate(-90 4 50)">${vLabel}</text>`,
+  ];
+  if (grant && grant.arms && grant.arms[arm] && grant.arms[arm].workspace_m) {
+    parts.push(`<rect x="${sx(gh.min)}" y="${sy(gv.max)}"
+      width="${sx(gh.max) - sx(gh.min)}" height="${sy(gv.min) - sy(gv.max)}"
+      fill="rgba(74,222,128,.07)" stroke="#4ade80" stroke-width="1" stroke-dasharray="3 2"/>`);
+  }
+  if (pose) {
+    const cx = sx(pose[hAxis]), cy = sy(pose[vAxis]);
+    // Red when the gripper is outside the granted box -- the thing actually
+    // worth noticing, rather than merely off the edge of the drawing.
+    const inside = pose[hAxis] >= gh.min && pose[hAxis] <= gh.max &&
+                   pose[vAxis] >= gv.min && pose[vAxis] <= gv.max;
+    parts.push(`<line x1="${PAD}" y1="${cy}" x2="${100 - PAD}" y2="${cy}" stroke="#22d3ee" stroke-width=".4" opacity=".4"/>`);
+    parts.push(`<line x1="${cx}" y1="${PAD}" x2="${cx}" y2="${100 - PAD}" stroke="#22d3ee" stroke-width=".4" opacity=".4"/>`);
+    parts.push(`<circle cx="${cx}" cy="${cy}" r="3.2" fill="${inside ? '#22d3ee' : '#f87171'}"/>`);
+  }
+  svg.innerHTML = parts.join('');
+}
+
+function renderMaps(arm, pose) {
+  // FROM ABOVE: reach runs up the screen (away from the robot), across runs
+  // left-to-right. FROM THE SIDE: reach runs right, height runs up.
+  drawMap(document.getElementById(`maptop-${arm}`), arm, 'y', 'x', pose, 'across (y)', 'reach (x)');
+  drawMap(document.getElementById(`mapside-${arm}`), arm, 'x', 'z', pose, 'reach (x)', 'height (z)');
+}
+
 async function pollArm(arm) {
   if (busy[arm]) return;
   polling[arm] = true;
@@ -1353,11 +1459,16 @@ async function pollArm(arm) {
 
     const poseEl = document.getElementById(`pose-${arm}`);
     if (pose.ok) {
-      poseEl.innerHTML = `pose: x=${pose.x.toFixed(3)} y=${pose.y.toFixed(3)} z=${pose.z.toFixed(3)}`;
+      // Centimetres: at this arm's scale a 0.01 m jog reads as "1 cm", which is
+      // easier to hold in your head than 0.010 m.
+      poseEl.innerHTML = `reach ${(pose.x * 100).toFixed(1)} cm &middot; ` +
+        `across ${(pose.y * 100).toFixed(1)} cm &middot; height ${(pose.z * 100).toFixed(1)} cm`;
       lastPose[arm] = pose;
+      renderMaps(arm, pose);
     } else {
       poseEl.innerHTML = `<span class="unavail">pose unavailable: ${pose.detail || 'n/a'}</span>`;
       lastPose[arm] = null;
+      renderMaps(arm, null);
     }
 
     const camEl = document.getElementById(`camera-${arm}`);
