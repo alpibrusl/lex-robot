@@ -16,7 +16,7 @@ protocol (SIDECAR.md), plus XLeRobot's own skills:
     move_arm  {"arm":"left|right", x,y,z,rx,ry,rz}   → outcome
     grasp_arm {"arm":"left|right", "force": N}        → outcome
     move_base {"x","y","speed"}                       → outcome
-    read_base {}                                      → {"x","y","heading"}
+    read_base {}                                      → { "ok": bool, "x","y","heading", "wheel_temps_c"?, "detail"? }
     read_arm_pose {"arm":"left|right"}                → { "ok": bool, "x","y","z", "detail"? }
     read_grant {}                                      → { "ok": bool, "arms","grippers" }
     render_qr {"payload": "..."}                       → {"ok","payload","detail"}
@@ -585,8 +585,21 @@ class _HwDiffBase:
                 "detail": f"base did not reach ({x:.2f},{y:.2f}) within {timeout_s}s "
                           f"(dead-reckoned at {self.pose['x']:.2f},{self.pose['y']:.2f})"}
 
+    def _read_wheel_temps(self):
+        # Best-effort, audit-trail only -- same spirit as _HwArm's gripper
+        # load read: never blocks or fails the pose read if the bus hiccups.
+        try:
+            raw = self.bus.sync_read("Present_Temperature", ["wheel_left", "wheel_right"])
+            return {"left": float(raw["wheel_left"]), "right": float(raw["wheel_right"])}
+        except Exception:
+            return None
+
     def read(self):
-        return dict(self.pose)
+        result = dict(self.pose)
+        temps = self._read_wheel_temps()
+        if temps is not None:
+            result["wheel_temps_c"] = temps
+        return result
 
     def disconnect(self):
         try:
@@ -1022,7 +1035,9 @@ CONTROL_PAGE_HTML = """<!doctype html>
   #gate { margin-left:auto; display:flex; align-items:center; gap:6px; }
   #notice { padding:8px 16px; color:var(--muted); font-size:11px; border-bottom:1px solid var(--border); }
   #arms { display:grid; grid-template-columns:1fr 1fr; gap:1px; background:var(--border); }
-  @media (max-width: 700px) { #arms { grid-template-columns:1fr; } }
+  #extra { display:grid; grid-template-columns:1fr 1fr; gap:1px; background:var(--border);
+           border-top:1px solid var(--border); }
+  @media (max-width: 700px) { #arms, #extra { grid-template-columns:1fr; } }
   .panel { background:var(--bg); padding:14px 16px; }
   .panel h2 { font-size:13px; color:var(--cyan); margin:0 0 10px; display:flex; align-items:center; gap:8px; }
   .dot { width:8px; height:8px; border-radius:50%; background:var(--red); flex-shrink:0; }
@@ -1086,6 +1101,16 @@ CONTROL_PAGE_HTML = """<!doctype html>
       force (N) <input type="number" id="force-right" value="10" min="0">
     </div>
     <div class="status" id="status-right"></div>
+  </div>
+</div>
+<div id="extra">
+  <div class="panel">
+    <h2><span class="dot" id="dot-head"></span>HEAD CAMERA</h2>
+    <div class="camera" id="camera-head"><span class="unavail">camera: --</span></div>
+  </div>
+  <div class="panel">
+    <h2><span class="dot" id="dot-base"></span>BASE / WHEELS</h2>
+    <div class="pose" id="base-info">base: --</div>
   </div>
 </div>
 <script>
@@ -1275,10 +1300,57 @@ async function pollArm(arm) {
   updateButtonStates();
 }
 
+let extraPolling = false;
+
+// Head camera + base/wheels telemetry -- both read-only in this UI (no
+// commands issued), so unlike pollArm there's no busy[] to coordinate with;
+// extraPolling just prevents two overlapping polls if a request runs long.
+async function pollExtra() {
+  if (extraPolling) return;
+  extraPolling = true;
+  try {
+    const cr = await fetchWithTimeout('/skill/read_camera', {method: 'POST', body: JSON.stringify({name: 'head'})});
+    const cam = await cr.json();
+    const camEl = document.getElementById('camera-head');
+    if (cam.jpeg_b64) {
+      camEl.innerHTML = `<img src="data:image/jpeg;base64,${cam.jpeg_b64}">`;
+      document.getElementById('dot-head').classList.add('ok');
+    } else {
+      camEl.innerHTML = `<span class="unavail">camera unavailable: ${cam.error || 'no frame'}</span>`;
+      document.getElementById('dot-head').classList.remove('ok');
+    }
+  } catch (e) {
+    document.getElementById('camera-head').innerHTML = `<span class="unavail">stale (last poll failed)</span>`;
+    document.getElementById('dot-head').classList.remove('ok');
+  }
+
+  try {
+    const br = await fetchWithTimeout('/skill/read_base', {method: 'POST', body: '{}'});
+    const base = await br.json();
+    const baseEl = document.getElementById('base-info');
+    if (base.ok === false) {
+      baseEl.innerHTML = `<span class="unavail">${base.detail}</span>`;
+      document.getElementById('dot-base').classList.remove('ok');
+    } else {
+      let html = `pose (dead-reckoned): x=${base.x.toFixed(3)} y=${base.y.toFixed(3)} heading=${base.heading.toFixed(3)}`;
+      if (base.wheel_temps_c) {
+        html += `<br>wheel temps: L=${base.wheel_temps_c.left.toFixed(0)}&deg;C R=${base.wheel_temps_c.right.toFixed(0)}&deg;C`;
+      }
+      baseEl.innerHTML = html;
+      document.getElementById('dot-base').classList.add('ok');
+    }
+  } catch (e) {
+    document.getElementById('base-info').innerHTML = `<span class="unavail">stale (last poll failed)</span>`;
+    document.getElementById('dot-base').classList.remove('ok');
+  }
+  extraPolling = false;
+}
+
 function poll() {
   for (const arm of ARMS) {
     if (!polling[arm]) pollArm(arm);
   }
+  pollExtra();
 }
 
 buildJogControls();
@@ -1435,6 +1507,13 @@ class XLeRobot:
         return {"outcome": "stalled",
                 "detail": f"{arm} arm not configured (no LEX_XLE_{arm.upper()}_PORT) -- partial build"}
 
+    def _hw_base_missing(self):
+        """None when the base is configured; an honest refusal otherwise --
+        an arms-only build with no base is expected and must not crash."""
+        if self._hw_base is not None:
+            return None
+        return {"ok": False, "detail": "base not configured (no LEX_XLE_BASE_PORT) -- partial build"}
+
     def _disconnect_partial(self):
         """Leave nothing energized behind on a failed bring-up."""
         for a in self._hw_arms.values():
@@ -1481,8 +1560,13 @@ class XLeRobot:
 
     def read_base(self):
         if USE_HW:
-            return self._hw_base.read()
-        return dict(self.base)
+            missing = self._hw_base_missing()
+            if missing is not None:
+                return missing
+            result = self._hw_base.read()
+            result["ok"] = True
+            return result
+        return dict(self.base, ok=True)
 
     def read_camera(self, name):
         if USE_HW:
@@ -1737,6 +1821,9 @@ class XLeRobot:
     def move_base(self, x, y, speed):
         v = min(speed, HARD_SPEED_MPS)
         if USE_HW:
+            missing = self._hw_base_missing()
+            if missing is not None:
+                return {"outcome": "stalled", "detail": missing["detail"]}
             timeout_s = float(os.environ.get("LEX_XLE_BASE_TIMEOUT_S", "20"))
             result = self._hw_base.drive(x, y, v, timeout_s)
             self.base = self._hw_base.read()
