@@ -185,9 +185,19 @@ What it does and doesn't do:
   `[1,2,3,4,5,6,9,10]` (the other arm + both wheels) — no ID conflicts
   anywhere. `LEX_XLE_BASE_LEFT_ID`/`LEX_XLE_BASE_RIGHT_ID`'s code defaults
   (1/2) do **not** match this unit's actual wheel IDs (9/10) — driving the
-  base for real will need those env vars set explicitly, and the tower's
-  pan/tilt servos (7/8) have no code path at all yet (the camera here is
-  still a plain fixed `OpenCVCamera`, no pan/tilt control).
+  base for real will need those env vars set explicitly. The tower's
+  pan/tilt servos (7/8) are driven by `sidecar/tower.py` (`TowerDriver`),
+  which shares the left arm's bus through the same ID-only primitives the
+  base uses; the camera itself is still a plain fixed `OpenCVCamera`, so
+  pan/tilt is commanded separately rather than through a camera object.
+  **Bench-verified against real hardware:** servo 7 is PAN and servo 8 is
+  TILT, established by moving each 70 ticks and phase-correlating the head
+  camera frame (7 -> dx=-40.0px, dy=+8.6px; 8 -> dx=-0.3px, dy=-71.1px).
+  The tower is UNCALIBRATED (`Homing_Offset=85`, range `[0,4095]` — factory
+  defaults), so `TowerDriver`'s degrees are relative to tick 2048, not to any
+  mechanical zero. Note the tower ships with torque OFF: since the head
+  camera rides it, `TowerDriver.hold()` should be called before calibrating
+  a `CameraModel`, or the mount can sag and silently invalidate it.
 
   **Bus-sharing (bench-verified against real hardware):** on this unit the
   wheels share the *same* physical bus/port as one arm's own 6 servos (see
