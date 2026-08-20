@@ -68,6 +68,18 @@ DESCRIBE_PROMPT = (
     "a JSON array of short item names (strings), no prose, no markdown fence."
 )
 
+# Deliberately phrased as an OUTCOME question, not a localization one: the
+# judge must not simply re-run the detector's reasoning. See sidecar/
+# episode_verifier.py -- correlated errors between the model that acted and
+# the model that grades would read as success.
+JUDGE_PROMPT = (
+    "You are grading whether a robot completed a task. Task: {question}\n"
+    "Look at the photo and decide. Be strict: if you cannot clearly see that "
+    "the task was completed, answer false. Reply with ONLY a JSON object, no "
+    'prose, no markdown fence: {{"success": true/false, "confidence": 0..1, '
+    '"reason": "one short sentence"}}'
+)
+
 DETECT_PROMPT = (
     "Locate the {name} in this photo. Reply with ONLY a JSON object, no prose, "
     'no markdown fence: {{"found": true/false, "cx": 0..1, "cy": 0..1, '
@@ -77,8 +89,11 @@ DETECT_PROMPT = (
 )
 
 
-def _chat(image_b64, prompt):
+def _chat(image_b64, prompt, model=None):
     """One OpenAI-compatible chat-completions call with the frame attached.
+
+    *model* overrides LEX_VISION_MODEL for this call — /vision/judge uses it so
+    an episode can be graded by a DIFFERENT model than the one that drove it.
 
     Raises on transport/HTTP errors; returns the assistant text otherwise.
     """
@@ -89,7 +104,7 @@ def _chat(image_b64, prompt):
             "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"},
         })
     body = json.dumps({
-        "model": MODEL,
+        "model": model or MODEL,
         "messages": [{"role": "user", "content": content}],
         "temperature": 0,
     }).encode()
@@ -163,6 +178,31 @@ def detect(image_b64, name):
             "detail": f"model {MODEL}"}
 
 
+def judge(image_b64, question, model=None):
+    """Grade an outcome from a frame. A JUDGMENT about data already in hand —
+    exactly the split this service exists to serve (see module docstring)."""
+    if not question:
+        return {"success": False, "confidence": 0.0,
+                "detail": "judge needs a non-empty question"}
+    if MOCK:
+        return {"success": True, "confidence": 0.99,
+                "reason": "(mock) canned verdict — no model consulted",
+                "detail": "(mock) canned verdict — no model consulted"}
+    if not image_b64:
+        return {"success": False, "confidence": 0.0,
+                "detail": "empty image_b64 — the sidecar's camera produced no frame"}
+    prompt = JUDGE_PROMPT.format(question=re.sub(r"[^\w \-.,?']", "", question))
+    try:
+        reply = _chat(image_b64, prompt, model=model)
+        v = _extract_json(reply, "{", "}")
+    except Exception as e:
+        return {"success": False, "confidence": 0.0, "detail": f"vision model failed: {e}"}
+    return {"success": bool(v.get("success")),
+            "confidence": _clamp01(v.get("confidence", 0.5)),
+            "reason": str(v.get("reason", ""))[:200],
+            "detail": f"model {model or MODEL}"}
+
+
 class Handler(BaseHTTPRequestHandler):
     def _json(self, code, payload):
         body = json.dumps(payload, separators=(",", ":")).encode()
@@ -189,6 +229,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, describe(args.get("image_b64", "")))
         if path == "/vision/detect":
             return self._json(200, detect(args.get("image_b64", ""), args.get("name", "")))
+        if path == "/vision/judge":
+            return self._json(200, judge(args.get("image_b64", ""), args.get("question", ""),
+                                         args.get("model") or None))
         return self._json(404, {"error": "not found"})
 
     def log_message(self, *a):
