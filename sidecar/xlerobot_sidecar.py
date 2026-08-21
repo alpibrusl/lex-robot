@@ -93,6 +93,13 @@ skills return an honest error rather than falling through to the other arm):
                                                 passed straight to SOFollowerConfig —
                                                 defense in depth independent of the grant
     LEX_XLE_ARM_TIMEOUT_S / LEX_XLE_ARM_TOL_M  closed-loop reach budget (default 8 / 0.01)
+    LEX_XLE_COLLISION=0                        disable the collision pre-check (default on)
+    LEX_XLE_GEOMETRY_PATH                      where the arms/tower/cart actually are
+                                                (default sidecar/robot_geometry.json) — move_arm
+                                                refuses a pose that collides, which joint limits
+                                                cannot catch since the constraint is coupled
+    LEX_XLE_STALL_ERROR_DEG / _STALL_CONFIRM   when a joint that stops tracking counts as
+                                                blocked rather than slow (default 8 deg / 3)
     LEX_XLE_URDF_PATH                          path to the SO-101 URDF on disk — lerobot
                                                 >=0.5's RobotKinematics (used for move_arm's
                                                 Cartesian IK/FK) needs this explicitly; there
@@ -262,6 +269,13 @@ ARM_JOINTS = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wris
 # 0.3.0-era kit was a 3-omni-wheel holonomic (LeKiwi) base. Matches the
 # BASE_MODE convention in gym_env/xlerobot_sim.py so grant/skill semantics
 # stay identical between sim and hardware.
+# A joint that stops tracking its commanded position by more than this, for
+# this many consecutive cycles, is blocked rather than slow. Bench-measured on
+# this hardware: free travel holds within a couple of degrees, while a real
+# obstruction parks the joint tens of degrees from its goal at full torque.
+STALL_ERROR_DEG = int(os.environ.get("LEX_XLE_STALL_ERROR_DEG", "8"))
+STALL_CONFIRM = int(os.environ.get("LEX_XLE_STALL_CONFIRM", "3"))
+
 BASE_MODE = os.environ.get("LEX_XLE_BASE", "diff")  # "diff" | "omni"
 YAW_RATE = float(os.environ.get("LEX_XLE_YAW_RATE", "1.0"))  # rad/s in-place turn rate
 
@@ -401,7 +415,7 @@ class _HwArm:
         x, y, z = ee
         return {"ok": True, "x": x, "y": y, "z": z}
 
-    def move_to(self, x, y, z, rx, ry, rz, timeout_s, tol_m):
+    def move_to(self, x, y, z, rx, ry, rz, timeout_s, tol_m, collision_check=None):
         if self._ik is None:
             raise HardwareError(
                 "no Cartesian IK available: either LEX_XLE_URDF_PATH isn't set, `placo` "
@@ -415,6 +429,16 @@ class _HwArm:
         deadline = _time.monotonic() + timeout_s
         last_dist = None
         fk_available = True
+        # Distinguishing "converging slowly" from "jammed against something"
+        # needs the joint-level tracking error, not the Cartesian distance: a
+        # blocked arm sits at a constant offset from the goal its servos were
+        # given. Same signal, same consecutive-confirmation rule, as
+        # probe_range.StallDetector -- one lagging sample is not a wall.
+        try:
+            from probe_range import StallDetector
+            stall = StallDetector(error_threshold=STALL_ERROR_DEG, confirm=STALL_CONFIRM)
+        except Exception:
+            stall = None
         while _time.monotonic() < deadline:
             try:
                 obs = self.follower.get_observation()
@@ -433,10 +457,31 @@ class _HwArm:
                 # ik(transition), not ik.action(...).
                 transition = create_transition(observation=obs, action=target)
                 joint_action = self._ik(transition)[TransitionKey.ACTION]
+                # Refuse BEFORE commanding. Joint limits cannot catch this: a
+                # perfectly in-range configuration can still put the gripper
+                # through the mast, because the constraint is coupled across
+                # joints and across arms (see sidecar/collision.py).
+                if collision_check is not None:
+                    hits = collision_check(joint_action)
+                    if hits:
+                        return {"outcome": "denied",
+                                "detail": f"{self.side} arm: that pose collides -- "
+                                          + "; ".join(str(h) for h in hits[:3])}
                 self.follower.send_action(joint_action)
                 _time.sleep(0.05)
                 obs = self.follower.get_observation()
                 joints = {f"{j}.pos": obs[f"{j}.pos"] for j in ARM_JOINTS}
+                if stall is not None:
+                    worst = max(
+                        (abs(float(joint_action[k]) - float(obs[k]))
+                         for k in joint_action if k.endswith(".pos") and k in obs),
+                        default=0.0)
+                    # feed the worst joint's error through the same detector
+                    if stall.update(0, int(round(worst))):
+                        return {"outcome": "stalled",
+                                "detail": f"{self.side} arm stopped tracking: worst joint "
+                                          f"{stall.worst} deg from its commanded position over "
+                                          f"{STALL_CONFIRM} samples -- blocked, not slow"}
                 ee = self._forward_kinematics_ee(joints)
             except Exception as e:
                 # A transient bus glitch (serial noise, a concurrent reader
@@ -462,7 +507,9 @@ class _HwArm:
                     "detail": f"{self.side} arm commanded to ({x:.2f},{y:.2f},{z:.2f}) "
                               "(no FK on this lerobot install — arrival unverified)"}
         return {"outcome": "timeout",
-                "detail": f"{self.side} arm did not settle within {timeout_s}s (last dist {last_dist})"}
+                "detail": f"{self.side} arm did not settle within {timeout_s}s (last dist "
+                          f"{last_dist}) -- tracking stayed within tolerance, so this is slow "
+                          f"convergence or an unreachable target, NOT a blockage"}
 
     def grasp(self, force_n, scale_max_n):
         # Position-based close, scaled by the requested force as a fraction
@@ -1718,6 +1765,67 @@ class XLeRobot:
         return {"outcome": "stalled",
                 "detail": f"{arm} arm not configured (no LEX_XLE_{arm.upper()}_PORT) -- partial build"}
 
+    def _collision_model(self):
+        """The coupled-constraint check, or None if it isn't configured.
+
+        Built once, lazily: it needs the same URDF move_arm's IK already
+        requires, plus a geometry file describing where the arms, tower and
+        cart actually are. Absent either, move_arm keeps its previous
+        behaviour rather than refusing everything -- this is a new guard, and
+        a missing config file must not brick a working robot.
+        """
+        if getattr(self, "_collision", "unset") != "unset":
+            return self._collision
+        self._collision = None
+        if os.environ.get("LEX_XLE_COLLISION", "1") != "1":
+            return None
+        urdf = os.environ.get("LEX_XLE_URDF_PATH")
+        geom = os.environ.get("LEX_XLE_GEOMETRY_PATH",
+                              os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                           "robot_geometry.json"))
+        if not urdf or not os.path.exists(geom):
+            print(f"[xlerobot] collision checking OFF (urdf={'set' if urdf else 'unset'}, "
+                  f"geometry={'found' if os.path.exists(geom) else 'missing'})")
+            return None
+        try:
+            from collision import RobotCollisionModel
+            self._collision = RobotCollisionModel.from_json(geom, urdf)
+            print("[xlerobot] collision checking ON")
+        except Exception as e:
+            print(f"[xlerobot] collision checking OFF (could not build model: {e})")
+        return self._collision
+
+    def _collision_check_for(self, arm):
+        """A callable move_to can use to veto a pose before commanding it.
+
+        Closes over the OTHER arm's current joints too, so arm-vs-arm is
+        checked -- the constraint neither arm can see on its own.
+        """
+        model = self._collision_model()
+        if model is None:
+            return None
+        other = "right" if arm == "left" else "left"
+
+        def check(joint_action):
+            try:
+                q = [float(joint_action[f"{j}.pos"]) for j in ARM_JOINTS[:5]]
+            except (KeyError, TypeError, ValueError):
+                return []          # cannot read the pose -> do not block on it
+            kw = {f"{arm}_joints_deg": q}
+            hw_other = self._hw_arms.get(other)
+            if hw_other is not None:
+                try:
+                    obs = hw_other.follower.get_observation()
+                    kw[f"{other}_joints_deg"] = [float(obs[f"{j}.pos"]) for j in ARM_JOINTS[:5]]
+                except Exception:
+                    pass           # other arm unreadable -> check this one alone
+            try:
+                return model.check(**kw)
+            except Exception as e:
+                print(f"[xlerobot] collision check failed, allowing move: {e}")
+                return []
+        return check
+
     def _hw_base_missing(self):
         """None when the base is configured; an honest refusal otherwise --
         an arms-only build with no base is expected and must not crash."""
@@ -1985,7 +2093,8 @@ class XLeRobot:
                 return missing
             timeout_s = float(os.environ.get("LEX_XLE_ARM_TIMEOUT_S", "8"))
             tol_m = float(os.environ.get("LEX_XLE_ARM_TOL_M", "0.01"))
-            return self._hw_arms[arm].move_to(x, y, z, 0.0, 0.0, 0.0, timeout_s, tol_m)
+            return self._hw_arms[arm].move_to(x, y, z, 0.0, 0.0, 0.0, timeout_s, tol_m,
+                                              collision_check=self._collision_check_for(arm))
         a = self.arms[arm]
         a["positions"] = [round(v, 3) for v in [x, y, z, 0.0, 0.0, a["positions"][5]]]
         return {"outcome": "reached", "detail": f"{arm} arm EE at ({x:.2f},{y:.2f},{z:.2f})"}

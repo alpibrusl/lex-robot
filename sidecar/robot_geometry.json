@@ -37,7 +37,7 @@
     }
   },
   "tower": {
-    "_provenance": "SOURCED position and height from head_pan_joint + head_tilt_joint; radius is an ESTIMATE.",
+    "_provenance": "Position and height SOURCED from head_pan_joint + head_tilt_joint. Radius is a CONSERVATIVE ESTIMATE covering the mast plus the cable loom running up it.",
     "base": [
       -0.178,
       0.0,
@@ -48,7 +48,7 @@
       0.0,
       1.168
     ],
-    "radius": 0.045
+    "radius": 0.06
   },
   "cart": {
     "_provenance": "SOURCED -- IKEA RASKOG 35 x 45 x 78 cm; arms bolt to the top tray at z=0.760.",
@@ -60,14 +60,14 @@
     "overall_height_m": 0.78
   },
   "link_radii": {
-    "_provenance": "ESTIMATE -- conservative capsules enclosing each link plus sleeve and cabling. Keyed by the link a capsule ENDS at.",
-    "default": 0.03,
-    "shoulder_link": 0.045,
-    "upper_arm_link": 0.04,
-    "lower_arm_link": 0.035,
-    "wrist_link": 0.035,
-    "gripper_link": 0.04,
-    "gripper_frame_link": 0.05
+    "_provenance": "ESTIMATE, deliberately CONSERVATIVE. The URDF ships meshes, not primitives, so no radius is published. These enclose each link plus its sleeve, cabling and the wrist camera bracket with room to spare. Erring large costs workspace; erring small costs hardware. Narrow them once measured.",
+    "default": 0.045,
+    "shoulder_link": 0.06,
+    "upper_arm_link": 0.055,
+    "lower_arm_link": 0.05,
+    "wrist_link": 0.05,
+    "gripper_link": 0.055,
+    "gripper_frame_link": 0.065
   },
   "margin_m": 0.01
 }

@@ -210,3 +210,22 @@ def test_checking_one_arm_alone_skips_arm_versus_arm():
         fk = FakeFK(); fk.index = i; m._fk[f] = fk
     assert m.check(left_joints_deg=ZERO) == []      # coincident arms, but only one given
     assert m.check(ZERO, ZERO), "both given -> the overlap must be found"
+
+
+def test_the_mounting_links_are_not_flagged_against_the_tray():
+    """REGRESSION: the base plate and shoulder are bolted to the tray, so they
+    sit within a capsule radius of it at EVERY pose. Checking them made the
+    guard fire on every pose once the radii were widened -- which, with a deny
+    verdict, would have refused all motion."""
+    m = synthetic_model(tray_z=0.0)
+    caps = m.arm_capsules("left", ZERO)
+    assert min(caps[1].a[2], caps[1].b[2]) - caps[1].radius < 0.0, "fixture must actually be near the tray"
+    hits = [h for h in m.check(left_joints_deg=ZERO) if h.b == "cart tray"]
+    assert not any(h.a == caps[0].name or h.a == caps[1].name for h in hits)
+
+
+def test_links_beyond_the_mount_are_still_checked_against_the_tray():
+    m = synthetic_model(tray_z=0.5)          # everything well below the tray
+    hits = [h.a for h in m.check(left_joints_deg=ZERO) if h.b == "cart tray"]
+    caps = m.arm_capsules("left", ZERO)
+    assert caps[2].name in hits, "a link that can be driven into the tray must still be caught"

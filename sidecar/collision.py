@@ -52,6 +52,11 @@ ARM_FRAMES = ["base_link", "shoulder_link", "upper_arm_link", "lower_arm_link",
               "wrist_link", "gripper_link", "gripper_frame_link"]
 ARM_JOINTS = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll"]
 
+# Capsules 0 and 1 (base->shoulder, shoulder->upper_arm) are the mounting
+# structure: bolted to the tray, in contact with it by construction, and their
+# clearance does not vary with the arm's pose.
+MOUNTED_LINKS = 2
+
 
 # ── geometry ────────────────────────────────────────────────────────────────
 
@@ -210,7 +215,14 @@ class RobotCollisionModel:
                     d = capsule_clearance(c, self.tower)
                     if d < self.margin:
                         hits.append(Collision(c.name, "tower", d))
-                if self.tray_z is not None and i > 0:
+                # The tray check starts past the mount. The base plate and the
+                # shoulder above it are BOLTED to the tray, so they sit within
+                # a capsule-radius of it at every pose -- structural contact,
+                # not a collision. Including them made the guard fire on every
+                # pose the moment the radii were widened, which with a deny
+                # verdict would have refused all motion. Only links that can
+                # actually be driven down into the tray are checked.
+                if self.tray_z is not None and i >= MOUNTED_LINKS:
                     d = capsule_plane_clearance(c, self.tray_z)
                     if d < self.margin:
                         hits.append(Collision(c.name, "cart tray", d))
