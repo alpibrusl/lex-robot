@@ -100,6 +100,11 @@ skills return an honest error rather than falling through to the other arm):
                                                 cannot catch since the constraint is coupled
     LEX_XLE_STALL_ERROR_DEG / _STALL_CONFIRM   when a joint that stops tracking counts as
                                                 blocked rather than slow (default 8 deg / 3)
+    LEX_XLE_GRIPPER_OPEN_PCT / _CLOSED_PCT     which end of the gripper's normalized range is
+                                                open vs shut (default 0/100). This follows from
+                                                CALIBRATION, not from the SO-101: on a unit
+                                                calibrated the other way, the defaults make
+                                                `release` close the gripper.
     LEX_XLE_URDF_PATH                          path to the SO-101 URDF on disk — lerobot
                                                 >=0.5's RobotKinematics (used for move_arm's
                                                 Cartesian IK/FK) needs this explicitly; there
@@ -276,6 +281,14 @@ ARM_JOINTS = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wris
 # this many consecutive cycles, is blocked rather than slow. Bench-measured on
 # this hardware: free travel holds within a couple of degrees, while a real
 # obstruction parks the joint tens of degrees from its goal at full torque.
+# Which end of the gripper's normalized 0..100 range is open, and which shut.
+# Not a constant of the hardware: RANGE_0_100 maps the CALIBRATED raw min to 0
+# and max to 100, so the direction depends on which way the gripper was swept.
+# Defaults preserve the original assumption (0 open, 100 closed); this unit
+# needs them swapped, and deploy/mac/xlerobot.env.example sets that.
+GRIPPER_OPEN_PCT = float(os.environ.get("LEX_XLE_GRIPPER_OPEN_PCT", "0"))
+GRIPPER_CLOSED_PCT = float(os.environ.get("LEX_XLE_GRIPPER_CLOSED_PCT", "100"))
+
 STALL_ERROR_DEG = int(os.environ.get("LEX_XLE_STALL_ERROR_DEG", "8"))
 STALL_CONFIRM = int(os.environ.get("LEX_XLE_STALL_CONFIRM", "3"))
 
@@ -524,7 +537,16 @@ class _HwArm:
         # Present_Load is read best-effort for the audit trail only — see
         # module docstring: this is NOT a closed-loop force controller.
         frac = clamp(force_n / max(scale_max_n, 1e-6), 0.0, 1.0)
-        gripper_pos = frac * 100.0  # SO-101 gripper.pos is roughly 0 (open) .. 100 (closed)
+        # Which END of the normalized range is "closed" is NOT a property of the
+        # SO-101 -- it falls out of how the gripper was calibrated, because
+        # RANGE_0_100 maps the recorded raw min to 0 and max to 100 with no
+        # notion of open or shut. This unit calibrates the other way round from
+        # what this file used to assume: 0 is CLOSED and 100 is OPEN, verified
+        # on hardware (raw 2048 = fingers touching, raw 3453 = wide). Assuming
+        # it made `release` drive the gripper further shut while reporting
+        # success. Configurable, defaulting to the previous assumption so no
+        # other robot changes behaviour.
+        gripper_pos = GRIPPER_OPEN_PCT + frac * (GRIPPER_CLOSED_PCT - GRIPPER_OPEN_PCT)
         # Direct bus write, bypassing SO101Follower.send_action()'s
         # max_relative_target clamp entirely. That clamp is a real,
         # intentional safety measure for move_arm's incremental jogging, but
@@ -548,8 +570,9 @@ class _HwArm:
     def release(self):
         # Direct bus write -- see the comment in grasp() for why this
         # bypasses send_action()'s max_relative_target clamp.
-        self.follower.bus.write("Goal_Position", "gripper", 0.0, normalize=True)
-        return {"outcome": "reached", "detail": f"{self.side} released"}
+        self.follower.bus.write("Goal_Position", "gripper", GRIPPER_OPEN_PCT, normalize=True)
+        return {"outcome": "reached",
+                "detail": f"{self.side} released (gripper to {GRIPPER_OPEN_PCT:.0f}%)"}
 
     def _read_gripper_load(self):
         try:
@@ -1178,6 +1201,14 @@ TEACH_PAGE_HTML = """<!doctype html>
   th { color:var(--muted); font-weight:normal; font-size:11px; }
   .ok { color:var(--lime); } .warn { color:var(--yellow); } .bad { color:var(--red); }
   .tag { background:var(--bg3); border:1px solid var(--border); padding:0 5px; margin-right:3px; }
+  .cams { display:flex; gap:10px; flex-wrap:wrap; margin:10px 0; }
+  .cam { flex:1; min-width:220px; max-width:320px; }
+  .cam .lbl { color:var(--muted); font-size:11px; letter-spacing:.05em; margin-bottom:3px; }
+  .cam .box { aspect-ratio:4/3; background:var(--bg3); border:1px solid var(--border);
+              display:flex; align-items:center; justify-content:center; overflow:hidden; }
+  .cam.rec .box { border-color:var(--red); }
+  .cam img { width:100%; height:100%; object-fit:contain; display:block; }
+  .cam .unavail { color:var(--muted); font-size:11px; text-align:center; padding:8px; }
 </style></head>
 <body>
 <header><h1>TEACH BY DEMONSTRATION</h1><a href="/control">&rarr; arm control</a></header>
@@ -1207,11 +1238,21 @@ TEACH_PAGE_HTML = """<!doctype html>
     <div><label>max seconds</label><input id="seconds" type="number" value="60" min="2"></div>
     <div><label>fps</label><input id="fps" type="number" value="20" min="2" max="50"></div>
   </div>
+  <label style="display:flex; align-items:center; gap:6px; margin-top:10px">
+    <input type="checkbox" id="freegrip" style="width:auto">
+    <span>also free the gripper &mdash; squeeze the fingers by hand instead of
+    commanding them from the control page</span>
+  </label>
   <div class="row" style="margin-top:12px">
     <button id="start" class="go">Start recording</button>
     <button id="stop" class="stop" disabled>Stop &amp; save</button>
   </div>
   <div class="status" id="recstatus"></div>
+  <div class="hint" style="margin-top:10px">
+    These are the views being written into the dataset &mdash; the scene camera and this
+    arm's wrist. If a frame looks wrong here, it is wrong in the training data.
+  </div>
+  <div class="cams" id="cams"></div>
 </div>
 
 <div class="panel">
@@ -1237,7 +1278,8 @@ $('start').onclick = async () => {
   const res = await skill('teach_start', {
     arm: $('arm').value, name, task: $('task').value.trim(),
     tags: $('tags').value.split(',').map(s=>s.trim()).filter(Boolean),
-    seconds: parseFloat($('seconds').value)||60, fps: parseFloat($('fps').value)||20});
+    seconds: parseFloat($('seconds').value)||60, fps: parseFloat($('fps').value)||20,
+    free_gripper: $('freegrip').checked});
   $('recstatus').innerHTML = res.ok
     ? '<span class="ok">' + res.detail + '</span> &mdash; limp: ' + (res.free||[]).join(', ')
     : '<span class="bad">' + res.detail + '</span>';
@@ -1253,10 +1295,49 @@ $('stop').onclick = async () => {
   $('recstatus').innerHTML = bits.join(' &middot; ');
   refresh();
 };
+// Which cameras a recording of THIS arm will capture: the scene camera plus
+// that arm's own wrist -- the pair the recorder defaults to.
+function previewSlots() { return ['head', $('arm').value]; }
+
+function ensureCamBoxes() {
+  const want = previewSlots().join(',');
+  const el = $('cams');
+  if (el.dataset.slots === want) return;
+  el.dataset.slots = want;
+  el.innerHTML = previewSlots().map(c =>
+    `<div class="cam" id="cam-${c}"><div class="lbl">${c.toUpperCase()}</div>
+       <div class="box"><span class="unavail">camera: --</span></div></div>`).join('');
+}
+$('arm').addEventListener('change', () => { ensureCamBoxes(); refreshCams(); });
+
+let camBusy = false;
+async function refreshCams() {
+  if (camBusy) return;          // never stack camera reads: they share the bus lock
+  camBusy = true;
+  try {
+    for (const c of previewSlots()) {
+      const box = document.querySelector(`#cam-${c} .box`);
+      if (!box) continue;
+      try {
+        const r = await skill('read_camera', {name: c});
+        box.innerHTML = r.jpeg_b64
+          ? `<img src="data:image/jpeg;base64,${r.jpeg_b64}">`
+          : `<span class="unavail">${r.error || 'no frame'}</span>`;
+      } catch (e) {
+        box.innerHTML = '<span class="unavail">stale</span>';
+      }
+    }
+  } finally { camBusy = false; }
+}
+
 async function poll() {
   const s = await skill('teach_status', {});
   $('start').disabled = s.recording;
   $('stop').disabled = !s.recording;
+  previewSlots().forEach(c => {
+    const el = document.getElementById('cam-' + c);
+    if (el) el.classList.toggle('rec', !!s.recording);
+  });
   if (s.recording) {
     $('recstatus').innerHTML = '<span class="warn">RECORDING</span> ' + s.name + ' &mdash; ' +
       s.frames + ' frames, ' + s.elapsed_s + 's &mdash; move the arm by hand';
@@ -1301,7 +1382,12 @@ async function del(name) {
   await skill('teach_delete', {name});
   refresh();
 }
-refresh(); poll(); setInterval(poll, 1000);
+ensureCamBoxes(); refreshCams(); refresh(); poll();
+setInterval(poll, 1000);
+// Slower than the status poll: each frame is a bus-locked read, and the
+// recorder needs that bus. A preview is for checking framing, not for
+// watching at rate.
+setInterval(refreshCams, 2000);
 </script></body></html>"""
 
 CONTROL_PAGE_HTML = """<!doctype html>
@@ -2348,7 +2434,7 @@ class _TeachRecorder:
     def recording(self):
         return self._thread is not None and self._thread.is_alive()
 
-    def start(self, arm, name, task, tags, fps, seconds, cameras=None):
+    def start(self, arm, name, task, tags, fps, seconds, cameras=None, free_gripper=False):
         import teach as _teach
         if self.recording:
             return {"ok": False, "detail": "already recording"}
@@ -2358,6 +2444,11 @@ class _TeachRecorder:
         # Default to the scene camera plus THIS arm's wrist -- the pair a vision
         # policy is normally trained on. Only slots that actually opened are
         # used, so a partial build records what it has instead of failing.
+        # Freeing the gripper too means squeezing the finray fingers by hand
+        # while also supporting the arm -- workable, and some people prefer it
+        # to reaching for the control page mid-demonstration. The caller
+        # chooses; the default keeps it powered.
+        free = _teach.ARM_JOINTS if free_gripper else _teach.BODY_JOINTS
         if cameras is None:
             cameras = [c for c in ("head", arm) if c in getattr(ROBOT, "_hw_cameras", {})]
         cameras = [c for c in cameras if not USE_HW or c in getattr(ROBOT, "_hw_cameras", {})]
@@ -2376,7 +2467,7 @@ class _TeachRecorder:
             try:
                 if USE_HW:
                     with hold_port(hw.follower.config.port):
-                        hw.follower.bus.disable_torque(_teach.BODY_JOINTS)
+                        hw.follower.bus.disable_torque(free)
                 deadline = time.time() + seconds
                 period = 1.0 / fps
                 origin = time.time()
@@ -2406,7 +2497,7 @@ class _TeachRecorder:
 
         self._thread = threading.Thread(target=run, daemon=True)
         self._thread.start()
-        return {"ok": True, "free": _teach.BODY_JOINTS, "cameras": list(cameras),
+        return {"ok": True, "free": list(free), "cameras": list(cameras),
                 "detail": f"recording {arm} arm at {fps:.0f} Hz"
                           + (f" with cameras {', '.join(cameras)}" if cameras
                              else " -- NO CAMERAS (state-only dataset)")}
@@ -2563,7 +2654,7 @@ def _handle_skill(name, args):
         return TEACH.start(args.get("arm", "left"), args.get("name", ""),
                            args.get("task", ""), args.get("tags", []),
                            float(args.get("fps", 20)), float(args.get("seconds", 120)),
-                           args.get("cameras"))
+                           args.get("cameras"), bool(args.get("free_gripper", False)))
     if name == "teach_stop":
         return TEACH.stop(bool(args.get("keep_still", False)))
     if name == "teach_status":
