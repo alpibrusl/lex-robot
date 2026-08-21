@@ -338,3 +338,72 @@ def test_a_real_discontinuity_is_still_a_problem():
     report = teach.validate(t)
     assert not report["ok"]
     assert any("dropped frame" in p for p in report["problems"])
+
+
+# ── the home pose ───────────────────────────────────────────────────────────
+
+def test_home_round_trips(tmp_path, monkeypatch):
+    import teach
+    monkeypatch.setenv("LEX_XLE_TEACH_DIR", str(tmp_path))
+    teach.save_home("left", ["a", "b"], [1.25, -2.5])
+    h = teach.load_home("left")
+    assert h["arm"] == "left" and h["joints"] == ["a", "b"]
+    assert h["positions"] == [1.25, -2.5]
+
+
+def test_missing_home_returns_none_rather_than_raising(tmp_path, monkeypatch):
+    import teach
+    monkeypatch.setenv("LEX_XLE_TEACH_DIR", str(tmp_path))
+    assert teach.load_home("right") is None
+
+
+def test_homes_are_per_arm(tmp_path, monkeypatch):
+    """A left-arm pose replayed on the right would be meaningless -- the arms
+    have different calibrations and different reachable space."""
+    import teach
+    monkeypatch.setenv("LEX_XLE_TEACH_DIR", str(tmp_path))
+    teach.save_home("left", ["a"], [1.0])
+    teach.save_home("right", ["a"], [2.0])
+    assert teach.load_home("left")["positions"] == [1.0]
+    assert teach.load_home("right")["positions"] == [2.0]
+
+
+def test_a_corrupt_home_file_returns_none(tmp_path, monkeypatch):
+    import teach
+    monkeypatch.setenv("LEX_XLE_TEACH_DIR", str(tmp_path))
+    teach.home_path("left").write_text("{not json")
+    assert teach.load_home("left") is None
+
+
+# ── go_to ───────────────────────────────────────────────────────────────────
+
+class _Bus:
+    def __init__(self, start): self.pos = dict(start); self.writes = []; self.torque = False
+    def sync_read(self, *_a, **_k): return dict(self.pos)
+    def sync_write(self, _reg, goals): self.writes.append(dict(goals)); self.pos.update(goals)
+    def enable_torque(self, *_a): self.torque = True
+
+
+def test_go_to_creeps_and_lands_on_the_target(monkeypatch):
+    import teach
+    monkeypatch.setattr(teach.time, "sleep", lambda *_a: None)
+    bus = _Bus({"a": 0.0, "b": 0.0})
+    r = teach.go_to(bus, ["a", "b"], [30.0, -18.0], max_step_deg=6.0)
+    assert r["outcome"] == "reached"
+    assert bus.writes[-1]["a"] == pytest.approx(30.0)
+    prev = {"a": 0.0, "b": 0.0}
+    for w in bus.writes:
+        assert max(abs(w[k] - prev[k]) for k in w) <= 6.0 + 1e-9
+        prev = w
+
+
+def test_go_to_is_vetoed_by_the_collision_check(monkeypatch):
+    """A saved home pose is not automatically safe to return to -- the other arm
+    or an object may have moved since it was saved."""
+    import teach
+    monkeypatch.setattr(teach.time, "sleep", lambda *_a: None)
+    bus = _Bus({"a": 0.0})
+    r = teach.go_to(bus, ["a"], [60.0], max_step_deg=6.0,
+                    collision_check=lambda f: ["a vs tower: -5 mm"] if f["a.pos"] > 20 else [])
+    assert r["outcome"] == "denied"
+    assert bus.pos["a"] <= 24.0, "must stop before the offending pose, not finish the move"
