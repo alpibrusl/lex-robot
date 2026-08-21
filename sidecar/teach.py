@@ -64,6 +64,30 @@ class Trajectory:
                               # reachable space; a left recording will not
                               # replay sensibly on the right
     created_at: str = ""
+    cameras: list[str] = field(default_factory=list)   # slots captured per frame
+    timestamps: list[float] = field(default_factory=list)  # ACTUAL capture times,
+                              # seconds from the start. Recorded rather than
+                              # assumed: if capture could not keep up with the
+                              # requested fps, a dataset stamped with the
+                              # requested rate would be quietly wrong.
+
+    @property
+    def achieved_fps(self) -> float:
+        """The rate actually captured, not the one asked for."""
+        if len(self.timestamps) < 2:
+            return self.fps
+        span = self.timestamps[-1] - self.timestamps[0]
+        return (len(self.timestamps) - 1) / span if span > 0 else self.fps
+
+    def image_dir(self, root: "Path | None" = None) -> "Path":
+        return (Path(root) if root else library_dir()) / (safe_name(self.name) + ".frames")
+
+    def image_path(self, camera: str, index: int, root=None) -> "Path":
+        return self.image_dir(root) / camera / f"{index:06d}.jpg"
+
+    @property
+    def has_images(self) -> bool:
+        return bool(self.cameras)
 
     @property
     def duration_s(self) -> float:
@@ -72,7 +96,8 @@ class Trajectory:
     def to_dict(self) -> dict:
         return {"name": self.name, "task": self.task, "tags": list(self.tags),
                 "arm": self.arm, "created_at": self.created_at, "note": self.note,
-                "fps": self.fps, "joints": self.joints,
+                "fps": self.fps, "joints": self.joints, "cameras": list(self.cameras),
+                "timestamps": [round(t, 4) for t in self.timestamps],
                 "frames": [[round(v, 3) for v in f] for f in self.frames]}
 
     def save(self, path: str) -> None:
@@ -86,7 +111,9 @@ class Trajectory:
             frames=[list(map(float, f)) for f in d["frames"]],
             note=d.get("note", ""), name=d.get("name", Path(path).stem),
             task=d.get("task", ""), tags=list(d.get("tags", [])),
-            arm=d.get("arm", ""), created_at=d.get("created_at", ""))
+            arm=d.get("arm", ""), created_at=d.get("created_at", ""),
+            cameras=list(d.get("cameras", [])),
+            timestamps=[float(t) for t in d.get("timestamps", [])])
 
 
 # ── pure helpers (unit-tested without hardware) ─────────────────────────────
@@ -103,15 +130,15 @@ def max_step(frames: list[list[float]]) -> float:
                default=0.0)
 
 
-def trim_still(frames: list[list[float]], threshold_deg: float = 0.5) -> list[list[float]]:
-    """Drop the motionless head and tail of a recording.
+def still_bounds(frames: list[list[float]], threshold_deg: float = 0.5) -> tuple[int, int]:
+    """The [start, end] slice trim_still would keep.
 
-    Every hand-taught demonstration starts with the operator reaching for the
-    arm and ends with them letting go. Those frames teach nothing and, replayed,
-    are dead time at both ends.
+    Exposed separately because a recording's timestamps and image files must be
+    trimmed to exactly the same window -- trimming the joints alone would
+    silently misalign every image with the pose it was taken at.
     """
     if not frames:
-        return []
+        return (0, 0)
 
     def moving(a, b):
         return any(abs(x - y) > threshold_deg for x, y in zip(a, b))
@@ -122,7 +149,31 @@ def trim_still(frames: list[list[float]], threshold_deg: float = 0.5) -> list[li
     end = len(frames) - 1
     while end > start and not moving(frames[end - 1], frames[end]):
         end -= 1
-    return frames[start:end + 1]
+    return (start, end + 1)
+
+
+def trim_still(frames: list[list[float]], threshold_deg: float = 0.5) -> list[list[float]]:
+    """Drop the motionless head and tail of a recording.
+
+    Every hand-taught demonstration starts with the operator reaching for the
+    arm and ends with them letting go. Those frames teach nothing and, replayed,
+    are dead time at both ends.
+    """
+    lo, hi = still_bounds(frames, threshold_deg)
+    return frames[lo:hi]
+
+
+def trim_trajectory(traj: "Trajectory", threshold_deg: float = 0.5) -> list[int]:
+    """Trim a whole recording, keeping frames, timestamps and image indices in
+    step. Returns the ORIGINAL indices kept, so image files can be renumbered
+    to match."""
+    lo, hi = still_bounds(traj.frames, threshold_deg)
+    kept = list(range(lo, hi))
+    traj.frames = traj.frames[lo:hi]
+    if traj.timestamps:
+        t0 = traj.timestamps[lo] if lo < len(traj.timestamps) else 0.0
+        traj.timestamps = [t - t0 for t in traj.timestamps[lo:hi]]
+    return kept
 
 
 def approach_path(current: list[float], target: list[float], max_step_deg: float) -> list[list[float]]:
@@ -182,6 +233,14 @@ def validate(traj: "Trajectory", max_step_deg: float = 6.0) -> dict:
                         f"-- replay would refuse this")
     if traj.fps <= 0:
         problems.append("fps must be positive")
+    if traj.has_images and traj.timestamps:
+        got = traj.achieved_fps
+        if abs(got - traj.fps) / max(traj.fps, 1e-9) > 0.15:
+            warnings.append(f"captured at {got:.1f} Hz, not the requested {traj.fps:.0f} Hz "
+                            f"-- the dataset is stamped with the achieved rate")
+    if not traj.has_images:
+        warnings.append("no camera frames -- trains a state-only policy, which cannot see "
+                        "where the object is; vision policies (ACT, SmolVLA) need images")
     if not traj.task.strip():
         warnings.append("no task description -- this becomes the training text for a "
                         "language-conditioned policy, so an empty one trains on nothing")

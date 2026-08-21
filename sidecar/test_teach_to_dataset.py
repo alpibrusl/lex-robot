@@ -83,3 +83,28 @@ def test_mismatched_joint_sets_are_refused_rather_than_merged():
 def test_nothing_usable_reports_clearly():
     res = convert([], "local/x")
     assert res["ok"] is False and res["episodes"] == 0
+
+
+# ── cameras ─────────────────────────────────────────────────────────────────
+
+def test_mixed_camera_sets_are_refused():
+    """A dataset whose episodes disagree about which cameras exist is not
+    trainable, and finding that out during a long training run is expensive."""
+    a = traj(name="a"); a.cameras = ["head", "left"]
+    b = traj(name="b"); b.cameras = ["head"]
+    res = convert([a, b], "local/x")
+    assert res["ok"] is False and "disagree about cameras" in res["detail"]
+
+
+def test_camera_sets_are_reported_as_tuples_for_comparison():
+    from teach_to_dataset import camera_sets
+    a = traj(name="a"); a.cameras = ["head", "left"]
+    b = traj(name="b"); b.cameras = ["head", "left"]
+    assert camera_sets([a, b]) == {("head", "left")}
+
+
+def test_a_recording_claiming_cameras_without_files_is_refused():
+    """Better to refuse than to build a dataset silently missing its images."""
+    t = traj(); t.cameras = ["head"]
+    res = convert([t], "local/x", library_root="/nonexistent")
+    assert res["ok"] is False and "image files are missing" in res["detail"]
