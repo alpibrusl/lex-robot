@@ -1,51 +1,75 @@
 {
   "_comment": [
-    "Where things physically are, in a shared robot frame. Origin: centre of",
-    "the cart's top tray at tray level; +x forward (the way the robot faces),",
-    "+y to the robot's LEFT (measured -- see lex-robot#163), +z up.",
+    "Where things physically are, in a shared robot frame. Origin: centre of the",
+    "cart's top tray at tray level; +x forward (the way the robot faces), +y to",
+    "the robot's LEFT (measured, see lex-robot#163), +z up.",
     "",
-    "!! EVERY NUMBER BELOW IS AN ESTIMATE FROM PHOTOGRAPHS, NOT A MEASUREMENT !!",
-    "The collision model is exactly as good as these. Wrong mounting geometry",
-    "produces confident, wrong answers -- the same failure mode as an",
-    "uncalibrated CameraModel. Measure them with a ruler before relying on it.",
+    "Each entry carries its provenance. SOURCED values come from the XLeRobot",
+    "project or IKEA; ESTIMATE values are still eyeballed from photographs and",
+    "are what limits this model's accuracy.",
     "",
-    "Sanity check once measured: sidecar/probe_range.py found the arms hitting",
-    "the tower at specific shoulder_pan angles. A correct model must predict a",
-    "collision at roughly those angles -- see test_collision.py's calibration",
-    "note. That is free validation data.",
-    "",
-    "Radii are CONSERVATIVE: a capsule that comfortably encloses each link",
-    "including its black sleeve and cabling. Too large costs workspace; too",
-    "small costs hardware."
+    "Free validation data: probe_range.py recorded the shoulder_pan angles at",
+    "which each arm actually met the tower. A correct model must predict",
+    "collisions at roughly those angles -- check that before relying on it."
   ],
-
-  "arms": {
-    "left":  { "position": [0.0, 0.13, 0.0], "yaw_deg": 0.0, "_note": "ESTIMATE" },
-    "right": { "position": [0.0, -0.13, 0.0], "yaw_deg": 0.0, "_note": "ESTIMATE" }
+  "_sources": {
+    "cart": "IKEA RASKOG utility cart, article 40582181 -- named in XLeRobot's bill of materials (xlerobot.readthedocs.io hardware/getting_started/material.html). Published size 35 x 45 x 78 cm, 3 tiers, 13 lb per shelf.",
+    "arm_mounts": "XLeRobot's own simulation constant ARM_MOUNT = left [0.25, 0.15, 0.40] / right [0.25, -0.15, 0.40] (this repo, gym_env/xlerobot_sim.py) -- +/-0.15 m laterally, consistent with arms near the ends of the 45 cm tray.",
+    "servo_count": "XLeRobot 0.4.0 uses 17 STS3215 servos: 12 arms + 3 base + 2 head. The 2 head servos are this unit's tower pan/tilt (IDs 7 and 8). NOTE this build has a 2-wheel differential base (IDs 9, 10), not the 3 the 0.4.0 spec lists.",
+    "tower": "NOT PUBLISHED. The XLeRobot docs describe the head as 2 servos but give no mast dimensions, and the assembly page for 0.4.0 is not reachable. Still an estimate."
   },
-
+  "arms": {
+    "left": {
+      "position": [
+        0.0,
+        0.15,
+        0.0
+      ],
+      "yaw_deg": 0.0,
+      "_provenance": "SOURCED (y from XLeRobot ARM_MOUNT); yaw is an ESTIMATE and probably wrong -- the arms look mirrored"
+    },
+    "right": {
+      "position": [
+        0.0,
+        -0.15,
+        0.0
+      ],
+      "yaw_deg": 0.0,
+      "_provenance": "SOURCED (y from XLeRobot ARM_MOUNT); yaw is an ESTIMATE and probably wrong"
+    }
+  },
   "tower": {
-    "_note": "ESTIMATE. Central mast carrying the head camera. Vertical.",
-    "base": [0.0, 0.0, 0.0],
-    "top": [0.0, 0.0, 0.45],
+    "_provenance": "ESTIMATE -- not published anywhere reachable. Central 3D-printed mast carrying the head camera on 2 servos.",
+    "base": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "top": [
+      0.0,
+      0.0,
+      0.45
+    ],
     "radius": 0.045
   },
-
   "cart": {
-    "_note": "ESTIMATE. Half-space: nothing may go below the tray surface.",
-    "tray_z": 0.0
+    "_provenance": "SOURCED -- IKEA RASKOG 35 x 45 x 78 cm. Modelled as a half-space: nothing may go below the top tray. tray_z = 0 defines the frame origin.",
+    "tray_z": 0.0,
+    "tray_size_m": [
+      0.35,
+      0.45
+    ],
+    "overall_height_m": 0.78
   },
-
   "link_radii": {
-    "_note": "ESTIMATE. Keyed by the link a capsule ENDS at; 'default' is the fallback.",
-    "default": 0.030,
+    "_provenance": "ESTIMATE -- conservative capsules enclosing each link plus its sleeve and cabling. Keyed by the link a capsule ENDS at; 'default' is the fallback.",
+    "default": 0.03,
     "shoulder_link": 0.045,
-    "upper_arm_link": 0.040,
+    "upper_arm_link": 0.04,
     "lower_arm_link": 0.035,
     "wrist_link": 0.035,
-    "gripper_link": 0.040,
-    "gripper_frame_link": 0.050
+    "gripper_link": 0.04,
+    "gripper_frame_link": 0.05
   },
-
   "margin_m": 0.01
 }
