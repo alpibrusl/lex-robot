@@ -1,0 +1,73 @@
+{
+  "_comment": [
+    "Geometry in the XLeRobot URDF's base_link frame: origin on the FLOOR at the",
+    "cart's centre, +x forward, +y to the robot's LEFT, +z up.",
+    "Nearly everything here is now taken from the project's own full-robot URDF",
+    "rather than estimated. Each entry says SOURCED or ESTIMATE.",
+    "Validation still worth doing: probe_range.py recorded the shoulder_pan",
+    "angles at which each arm actually met the tower; a correct model must",
+    "predict collisions at roughly those angles."
+  ],
+  "_sources": {
+    "full_robot_urdf": "Vector-Wangel/XLeRobot simulation/Maniskill/assets/xlerobot/xlerobot.urdf -- the complete robot: both arms, both wrist cameras, head pan/tilt. Authoritative; supersedes the earlier photograph estimates.",
+    "arm_mounts": "arm_base_joint / arm_base_joint_2: xyz -0.135 -/+0.133 0.760, rpy 0 0 90deg. The arm at y=-0.133 carries Right_Arm_Camera and the one at y=+0.133 carries Left_Arm_Camera -- independently confirming +y = the robot's LEFT, established on hardware from a mechanical stop plus FK (lex-robot#163).",
+    "tower": "top_base_joint puts top_base_link at z=0.73; head_pan_joint offsets x=-0.178; head_tilt_joint sits 0.43815 above it. The mast runs z=0.73 to 1.168 at x=-0.178 -- 43 mm BEHIND the arm bases, which the earlier estimate had at the same x.",
+    "cart": "IKEA RASKOG, article 40582181, from XLeRobot's bill of materials. Published 35 x 45 x 78 cm, 3 tiers; the 0.760 arm-mount height is consistent with the 0.78 m cart.",
+    "radii": "NOT published. Link radii and mast radius remain estimates; the URDF carries meshes, not primitives.",
+    "arm_yaw": "DERIVED, not sourced. The two URDFs use different arm base frames, so xlerobot.urdf's rpy does not transfer. yaw=0 was chosen because it is the only quarter-turn that makes the arms symmetric and forward-reaching. Worth confirming against a measured gripper position before trusting arm-vs-arm results."
+  },
+  "arms": {
+    "left": {
+      "position": [
+        -0.135,
+        0.133,
+        0.76
+      ],
+      "yaw_deg": 0.0,
+      "_provenance": "Position SOURCED from xlerobot.urdf's arm_base_joint_2. Yaw is 0, NOT the 90deg that URDF states: that 90deg is expressed in XLeRobot's own arm frame (Base/Rotation_Pitch/Upper_Arm), which is rotated relative to the so101_new_calib.urdf this model does FK with. Applying 90deg here sends both grippers to +y (left tip y=+0.524, right y=+0.258 -- both arms pointing the same way across the robot), which is impossible for a symmetric build. yaw=0 is the only value giving a symmetric forward-reaching pair, left (+0.256,+0.133) and right (+0.256,-0.133)."
+    },
+    "right": {
+      "position": [
+        -0.135,
+        -0.133,
+        0.76
+      ],
+      "yaw_deg": 0.0,
+      "_provenance": "Position SOURCED from xlerobot.urdf's arm_base_joint. Yaw is 0, NOT the 90deg that URDF states: that 90deg is expressed in XLeRobot's own arm frame (Base/Rotation_Pitch/Upper_Arm), which is rotated relative to the so101_new_calib.urdf this model does FK with. Applying 90deg here sends both grippers to +y (left tip y=+0.524, right y=+0.258 -- both arms pointing the same way across the robot), which is impossible for a symmetric build. yaw=0 is the only value giving a symmetric forward-reaching pair, left (+0.256,+0.133) and right (+0.256,-0.133)."
+    }
+  },
+  "tower": {
+    "_provenance": "SOURCED position and height from head_pan_joint + head_tilt_joint; radius is an ESTIMATE.",
+    "base": [
+      -0.178,
+      0.0,
+      0.73
+    ],
+    "top": [
+      -0.178,
+      0.0,
+      1.168
+    ],
+    "radius": 0.045
+  },
+  "cart": {
+    "_provenance": "SOURCED -- IKEA RASKOG 35 x 45 x 78 cm; arms bolt to the top tray at z=0.760.",
+    "tray_z": 0.76,
+    "tray_size_m": [
+      0.35,
+      0.45
+    ],
+    "overall_height_m": 0.78
+  },
+  "link_radii": {
+    "_provenance": "ESTIMATE -- conservative capsules enclosing each link plus sleeve and cabling. Keyed by the link a capsule ENDS at.",
+    "default": 0.03,
+    "shoulder_link": 0.045,
+    "upper_arm_link": 0.04,
+    "lower_arm_link": 0.035,
+    "wrist_link": 0.035,
+    "gripper_link": 0.04,
+    "gripper_frame_link": 0.05
+  },
+  "margin_m": 0.01
+}
