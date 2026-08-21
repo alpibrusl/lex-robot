@@ -117,14 +117,14 @@ def test_replay_refuses_an_empty_trajectory():
     assert r["outcome"] == "refused" and "empty" in r["detail"]
 
 
-def test_replay_refuses_a_discontinuous_trajectory_without_touching_hardware():
-    """A dropped frame or a hand slip leaves a jump. Replaying it at the
-    recorded rate would fling the arm -- refuse, and say why. Note the port is
+def test_replay_refuses_a_genuine_discontinuity_without_touching_hardware():
+    """A dropped frame leaves a jump no hand could make. Interpolating across
+    it would invent motion that never happened, so refuse. Note the port is
     /dev/null: reaching hardware at all would fail the test."""
-    t = Trajectory(20.0, ["a"], frames((0,), (1,), (40,)))
+    t = Trajectory(20.0, ["a"], frames((0,), (1,), (60,)))
     r = replay("/dev/null", "x", t, max_step_deg=6.0)
     assert r["outcome"] == "refused"
-    assert "39.0 deg" in r["detail"] and "hand slip" in r["detail"]
+    assert "59.0 deg" in r["detail"] and "dropped frame" in r["detail"]
 
 
 def test_replay_accepts_a_smooth_trajectory_up_to_the_limit(monkeypatch):
@@ -293,3 +293,48 @@ def test_validate_warns_about_a_state_only_recording():
     t = teach.Trajectory(20.0, list(teach.ARM_JOINTS),
                          [[float(i)] * 6 for i in range(20)], task="pick", arm="left")
     assert any("state-only" in w for w in teach.validate(t)["warnings"])
+
+
+# ── smoothing brisk moments rather than refusing the demonstration ──────────
+
+def test_smoothing_bounds_every_step():
+    import teach
+    out = teach.smooth_steps(frames((0,), (20,), (25,)), max_step_deg=6.0)
+    assert teach.max_step(out) <= 6.0 + 1e-9
+
+
+def test_smoothing_preserves_the_endpoints_and_the_path():
+    import teach
+    f = frames((0,), (20,))
+    out = teach.smooth_steps(f, 6.0)
+    assert out[0] == pytest.approx([0]) and out[-1] == pytest.approx([20])
+    assert all(0 <= v[0] <= 20 for v in out), "must interpolate, never overshoot"
+
+
+def test_smoothing_leaves_an_already_gentle_trajectory_alone():
+    import teach
+    f = frames((0,), (2,), (4,))
+    assert teach.smooth_steps(f, 6.0) == f
+
+
+def test_a_briefly_brisk_recording_is_usable_not_refused():
+    """REGRESSION: a real 724-frame demonstration had a median step of 0.18 deg
+    and exactly 2 frames over 6.0. Rejecting 40 seconds of teaching for 0.3% of
+    frames was the wrong trade."""
+    import teach
+    f = [[0.1 * i] for i in range(100)]
+    f[50] = [f[49][0] + 6.4]                     # one brisk moment
+    for i in range(51, 100):
+        f[i] = [f[50][0] + 0.1 * (i - 50)]
+    t = Trajectory(20.0, ["a"], f, task="pick", arm="left")
+    report = teach.validate(t)
+    assert report["ok"], "a brief fast moment must not fail validation"
+    assert any("replay interpolates" in w for w in report["warnings"])
+
+
+def test_a_real_discontinuity_is_still_a_problem():
+    import teach
+    t = Trajectory(20.0, ["a"], frames((0,), (1,), (80,)), task="pick", arm="left")
+    report = teach.validate(t)
+    assert not report["ok"]
+    assert any("dropped frame" in p for p in report["problems"])
