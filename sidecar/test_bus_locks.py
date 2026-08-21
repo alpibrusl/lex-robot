@@ -96,3 +96,12 @@ def test_skills_touching_no_bus_are_not_routed_to_a_lock():
 def test_an_unknown_skill_is_not_routed_to_the_wrong_port():
     """Conservative on purpose: guessing a port would give false safety."""
     assert X._skill_port("some_future_skill", {"arm": "left"}) is None or True
+
+
+def test_teach_start_defaults_to_keeping_the_gripper_powered():
+    """Default: five joints limp, gripper commandable -- so the operator's two
+    hands are on the arm, not squeezing fingers."""
+    import teach
+    assert "gripper" not in teach.BODY_JOINTS
+    assert "gripper" in teach.ARM_JOINTS
+    assert len(teach.BODY_JOINTS) == 5
