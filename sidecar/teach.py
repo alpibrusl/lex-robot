@@ -38,6 +38,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 ARM_JOINTS = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"]
+# The joints a hand actually guides. The gripper is excluded on purpose -- see
+# record()'s docstring.
+BODY_JOINTS = ARM_JOINTS[:5]
 
 
 @dataclass
@@ -146,14 +149,27 @@ def _robot(port: str, robot_id: str):
 
 
 def record(port: str, robot_id: str, seconds: float, fps: float = 20.0,
-           joints: list[str] | None = None, note: str = "") -> Trajectory:
-    """Hold the arm and move it. Torque is off for the whole recording."""
+           joints: list[str] | None = None, note: str = "",
+           free: list[str] | None = None) -> Trajectory:
+    """Hold the arm and move it. Only the joints in *free* go limp.
+
+    The gripper is deliberately NOT freed by default. Freeing everything means
+    squeezing the fingers shut by hand while also supporting the arm and moving
+    it through the motion -- three things at once, and the fingers are the
+    fiddliest. Leaving the gripper powered lets it be commanded (the /control
+    page's Open/Close, or grasp_arm) while your hands do the arm, and it still
+    records faithfully because recording just reads positions.
+    """
     joints = joints or ARM_JOINTS
+    free = BODY_JOINTS if free is None else free
     r = _robot(port, robot_id)
     traj = Trajectory(fps=fps, joints=joints, note=note)
     try:
-        r.bus.disable_torque()
-        print(f"recording {seconds:.0f}s at {fps:.0f} Hz -- the arm is LIMP, support it")
+        r.bus.disable_torque(free)
+        held = [j for j in joints if j not in free]
+        print(f"recording {seconds:.0f}s at {fps:.0f} Hz")
+        print(f"  LIMP (yours to hold and move): {', '.join(free)}")
+        print(f"  still powered (commandable)  : {', '.join(held) if held else '(none)'}")
         period, deadline = 1.0 / fps, time.time() + seconds
         while time.time() < deadline:
             t0 = time.time()
@@ -210,6 +226,9 @@ def main() -> None:
     rec.add_argument("--out", required=True); rec.add_argument("--note", default="")
     rec.add_argument("--keep-still", action="store_true",
                      help="keep the motionless head/tail instead of trimming it")
+    rec.add_argument("--free-gripper", action="store_true",
+                     help="also free the gripper, so it is squeezed by hand rather than "
+                          "commanded (default: gripper stays powered)")
     rep = sub.add_parser("replay", help="repeat a taught motion")
     rep.add_argument("--port", required=True); rep.add_argument("--id", required=True)
     rep.add_argument("--traj", required=True)
@@ -217,7 +236,8 @@ def main() -> None:
     rep.add_argument("--max-step-deg", type=float, default=6.0)
     a = p.parse_args()
     if a.cmd == "record":
-        traj = record(a.port, a.id, a.seconds, a.fps, note=a.note)
+        traj = record(a.port, a.id, a.seconds, a.fps, note=a.note,
+                      free=(ARM_JOINTS if a.free_gripper else BODY_JOINTS))
         raw = len(traj.frames)
         if not a.keep_still:
             traj.frames = trim_still(traj.frames)

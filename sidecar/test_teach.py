@@ -181,3 +181,63 @@ def test_resampling_up_smooths_the_steps():
     f = [[float(i * 4)] for i in range(11)]      # 4 deg per frame
     fine = resample(f, src_fps=10, dst_fps=40)
     assert max_step(fine) < max_step(f)
+
+
+def test_recording_frees_the_body_but_keeps_the_gripper_powered(monkeypatch):
+    """Freeing everything would mean squeezing the fingers shut by hand while
+    also supporting and moving the arm. The gripper stays commandable."""
+    import teach
+
+    class FakeBus:
+        def __init__(self): self.freed = None
+        def disable_torque(self, joints=None): self.freed = joints
+        def sync_read(self, *_a, **_k): return {j: 0.0 for j in teach.ARM_JOINTS}
+        def disconnect(self): pass
+
+    class FakeRobot:
+        def __init__(self): self.bus = FakeBus()
+
+    fake = FakeRobot()
+    monkeypatch.setattr(teach, "_robot", lambda *a, **k: fake)
+    monkeypatch.setattr(teach.time, "sleep", lambda *_a: None)
+    teach.record("/dev/null", "x", seconds=0.0)
+    assert fake.bus.freed == teach.BODY_JOINTS
+    assert "gripper" not in fake.bus.freed
+
+
+def test_the_gripper_can_be_freed_explicitly(monkeypatch):
+    import teach
+
+    class FakeBus:
+        def __init__(self): self.freed = None
+        def disable_torque(self, joints=None): self.freed = joints
+        def sync_read(self, *_a, **_k): return {j: 0.0 for j in teach.ARM_JOINTS}
+        def disconnect(self): pass
+
+    class FakeRobot:
+        def __init__(self): self.bus = FakeBus()
+
+    fake = FakeRobot()
+    monkeypatch.setattr(teach, "_robot", lambda *a, **k: fake)
+    monkeypatch.setattr(teach.time, "sleep", lambda *_a: None)
+    teach.record("/dev/null", "x", seconds=0.0, free=teach.ARM_JOINTS)
+    assert "gripper" in fake.bus.freed
+
+
+def test_recording_still_captures_every_joint_including_the_powered_one(monkeypatch):
+    """A powered joint is still READ -- the trajectory must contain the gripper
+    column so replay can command it."""
+    import teach
+
+    class FakeBus:
+        def disable_torque(self, joints=None): pass
+        def sync_read(self, *_a, **_k): return {j: 1.0 for j in teach.ARM_JOINTS}
+        def disconnect(self): pass
+
+    class FakeRobot:
+        def __init__(self): self.bus = FakeBus()
+
+    monkeypatch.setattr(teach, "_robot", lambda *a, **k: FakeRobot())
+    monkeypatch.setattr(teach.time, "sleep", lambda *_a: None)
+    t = teach.record("/dev/null", "x", seconds=0.0)
+    assert t.joints == teach.ARM_JOINTS
