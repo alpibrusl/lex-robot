@@ -1,0 +1,42 @@
+{
+  "_comment": [
+    "TIMING TEMPLATE for the vision self-reset loop. Unlike",
+    "waypoints_pick_place.json, the xyz here is NOT baked in: 'anchor' names",
+    "where the phase happens ('pick' = where vision found the object,",
+    "'place' = this episode's random drop target, 'home' = the literal pose",
+    "below), and 'dz' offsets it vertically in metres. The joint values in",
+    "'pose' are used only for the home pose and for the gripper value of",
+    "each phase; anchored phases get their body joints from IK.",
+    "Gripper is RANGE_0_100. Body joints are DEGREES (lerobot use_degrees",
+    "defaults to True)."
+  ],
+  "fps": 30,
+  "cycle": [
+    {"name": "home", "move_s": 1.5, "hold_s": 0.3, "anchor": "home",
+     "pose": {"shoulder_pan": 0, "shoulder_lift": 0, "elbow_flex": 0, "wrist_flex": 0, "wrist_roll": 0, "gripper": 60}},
+
+    {"name": "approach_pick", "move_s": 2.0, "hold_s": 0.3, "anchor": "pick", "dz": 0.08,
+     "pose": {"shoulder_pan": 0, "shoulder_lift": 0, "elbow_flex": 0, "wrist_flex": 0, "wrist_roll": 0, "gripper": 60}},
+
+    {"name": "descend_pick", "move_s": 1.2, "hold_s": 0.3, "anchor": "pick", "dz": 0.01,
+     "pose": {"shoulder_pan": 0, "shoulder_lift": 0, "elbow_flex": 0, "wrist_flex": 0, "wrist_roll": 0, "gripper": 60}},
+
+    {"name": "close_gripper", "move_s": 1.2, "hold_s": 0.5, "anchor": "pick", "dz": 0.01,
+     "pose": {"shoulder_pan": 0, "shoulder_lift": 0, "elbow_flex": 0, "wrist_flex": 0, "wrist_roll": 0, "gripper": 8}},
+
+    {"name": "lift", "move_s": 1.2, "hold_s": 0.2, "anchor": "pick", "dz": 0.12,
+     "pose": {"shoulder_pan": 0, "shoulder_lift": 0, "elbow_flex": 0, "wrist_flex": 0, "wrist_roll": 0, "gripper": 8}},
+
+    {"name": "traverse", "move_s": 2.0, "hold_s": 0.2, "anchor": "place", "dz": 0.12,
+     "pose": {"shoulder_pan": 0, "shoulder_lift": 0, "elbow_flex": 0, "wrist_flex": 0, "wrist_roll": 0, "gripper": 8}},
+
+    {"name": "descend_place", "move_s": 1.2, "hold_s": 0.3, "anchor": "place", "dz": 0.02,
+     "pose": {"shoulder_pan": 0, "shoulder_lift": 0, "elbow_flex": 0, "wrist_flex": 0, "wrist_roll": 0, "gripper": 8}},
+
+    {"name": "open_gripper", "move_s": 1.2, "hold_s": 0.5, "anchor": "place", "dz": 0.02,
+     "pose": {"shoulder_pan": 0, "shoulder_lift": 0, "elbow_flex": 0, "wrist_flex": 0, "wrist_roll": 0, "gripper": 60}},
+
+    {"name": "retreat", "move_s": 1.5, "hold_s": 0.2, "anchor": "place", "dz": 0.12,
+     "pose": {"shoulder_pan": 0, "shoulder_lift": 0, "elbow_flex": 0, "wrist_flex": 0, "wrist_roll": 0, "gripper": 60}}
+  ]
+}

@@ -6,9 +6,12 @@ expert plugs into the official recorder and the dataset lands in exactly the
 schema `lerobot-train` expects — no hand-rolled `LeRobotDataset`, which is
 the risk lex-robot#146 called out.
 
-Actions are joint-space and NORMALIZED, matching `SO101Follower.action_features`:
-the five body joints in RANGE_M100_100 (-100..100) and `gripper` in
-RANGE_0_100 (0..100). Keys are `<joint>.pos`.
+Actions are joint-space, keyed `<joint>.pos`, matching
+`SO101Follower.action_features`. The BODY joints' unit depends on the robot's
+`use_degrees` config, which lerobot defaults to **True**: degrees by default,
+RANGE_M100_100 (-100..100) only if you pass `--robot.use_degrees=false`. Set
+`use_degrees` on this teleop to match, so the safety clamp bounds the right
+scale. `gripper` is always RANGE_0_100 (0..100).
 
 One trajectory cycle == one episode. `connect()` prints the cycle duration;
 pass it to `lerobot-record` as `--dataset.episode_time_s`.
@@ -53,12 +56,17 @@ class ScriptedArmTeleopConfig(TeleoperatorConfig):
         seed: RNG seed, so a recording run is reproducible.
         joint_limits: hard per-joint clamp {joint: [min, max]}. Applied last,
             after interpolation and jitter.
+        use_degrees: must match the robot's own `use_degrees` (lerobot
+            defaults it to True). Only sets the outermost body-joint bound —
+            +/-180 for degrees, +/-100 for RANGE_M100_100 — so a units
+            mismatch cannot silently widen the envelope.
     """
 
     waypoints_path: str = "sidecar/waypoints_pick_place.json"
     jitter: float = 0.0
     seed: int = 0
     joint_limits: dict[str, list[float]] = field(default_factory=dict)
+    use_degrees: bool = True
 
 
 class ScriptedArmTeleop(Teleoperator):
@@ -141,13 +149,20 @@ class ScriptedArmTeleop(Teleoperator):
         elapsed = now - self._t0
 
         cycle = int(elapsed // self.cycle_s)
-        if cycle != self._cycle:          # new episode -> resample the jitter
+        if cycle != self._cycle:          # new episode -> rebuild its waypoints
             self._cycle = cycle
-            self._poses = self._jittered_poses(cycle)
+            self._poses = self._poses_for_cycle(cycle)
         phase = elapsed % self.cycle_s
 
         pose = self._interpolate(phase)
         return {f"{j}.pos": self._clamp(j, v) for j, v in pose.items()}
+
+    def _poses_for_cycle(self, cycle: int) -> list[dict[str, float]]:
+        """Waypoint targets for one episode. Subclasses override this to
+        source poses from somewhere other than the static file — see
+        vision_reset_teleop.VisionResetTeleop, which solves them from a
+        detection."""
+        return self._jittered_poses(cycle)
 
     def _jittered_poses(self, cycle: int) -> list[dict[str, float]]:
         """Per-cycle waypoint targets, with flagged waypoints displaced.
@@ -192,5 +207,8 @@ class ScriptedArmTeleop(Teleoperator):
         lo_hi = self.config.joint_limits.get(joint)
         if lo_hi:
             value = min(max(value, float(lo_hi[0])), float(lo_hi[1]))
-        hard = (0.0, 100.0) if joint == "gripper" else (-100.0, 100.0)
+        if joint == "gripper":
+            hard = (0.0, 100.0)
+        else:
+            hard = (-180.0, 180.0) if self.config.use_degrees else (-100.0, 100.0)
         return min(max(value, hard[0]), hard[1])

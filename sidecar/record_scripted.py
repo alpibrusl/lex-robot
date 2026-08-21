@@ -23,7 +23,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-import scripted_teleop  # noqa: F401  -- registers "scripted_arm"
+import scripted_teleop      # noqa: F401  -- registers "scripted_arm"
+import vision_reset_teleop  # noqa: F401  -- registers "vision_reset"
 
 from lerobot.scripts.lerobot_record import main
 
