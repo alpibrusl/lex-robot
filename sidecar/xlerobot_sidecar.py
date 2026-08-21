@@ -215,6 +215,7 @@ Touch (POST /display/touch — the display's one INPUT path):
 import json
 import math
 import mimetypes
+import contextlib
 import os
 import threading
 import time
@@ -2327,7 +2328,7 @@ class _TeachRecorder:
 
     HTTP is request/response, so recording cannot happen inside a handler --
     the browser needs to start it, watch it, and stop it. Each sample takes
-    HW_LOCK, so recording interleaves safely with the /control page's polling
+    its own arm's port lock, so recording interleaves safely with polling
     rather than corrupting the bus.
     """
 
@@ -2374,7 +2375,7 @@ class _TeachRecorder:
         def run():
             try:
                 if USE_HW:
-                    with HW_LOCK:
+                    with hold_port(hw.follower.config.port):
                         hw.follower.bus.disable_torque(_teach.BODY_JOINTS)
                 deadline = time.time() + seconds
                 period = 1.0 / fps
@@ -2386,7 +2387,7 @@ class _TeachRecorder:
                         # Joints and images under ONE lock acquisition: taking
                         # it twice would let another request move the arm
                         # between the pose and the picture of it.
-                        with HW_LOCK:
+                        with hold_port(hw.follower.config.port):
                             obs = hw.follower.bus.sync_read("Present_Position")
                             shots = {c: ROBOT._hw_cameras[c].capture()
                                      for c in self.traj.cameras}
@@ -2468,25 +2469,93 @@ ROBOT = XLeRobot()
 
 
 def _stream_sample():
-    """One /stream frame: both arms' joints + the base pose."""
-    return {"joints": {"left": ROBOT.read_joints("left"), "right": ROBOT.read_joints("right")},
-            "base": ROBOT.read_base()}
+    """One /stream frame: both arms' joints + the base pose.
+
+    Goes through handle_skill rather than calling ROBOT directly, so these reads
+    take the same per-port locks every other bus access does. Calling ROBOT
+    straight through made /stream the one path that could interleave with
+    anything else on the bus.
+    """
+    return {"joints": {a: handle_skill("read_joints", {"arm": a}) for a in ("left", "right")},
+            "base": handle_skill("read_base", {})}
 
 
-# Every hardware skill touches a serial bus that is not thread-safe, and this
-# is a ThreadingHTTPServer -- so two concurrent requests could interleave reads
-# and writes on the same port. Until now the only protection was client-side
-# (the /control page's own busy/poll guard), which cannot help a second client,
-# a curl call, or the background teach recorder. One lock around dispatch makes
-# the serialisation a property of the server rather than of a well-behaved page.
-HW_LOCK = threading.RLock()
+# Every hardware skill touches a serial bus that is not thread-safe, and this is
+# a ThreadingHTTPServer, so concurrent requests could interleave reads and writes
+# on the same port. Serialising that is the server's job, not a well-behaved
+# page's -- but HOW it serialises matters, and the first attempt got it wrong.
+#
+# A single global lock turned a LOCAL failure into a TOTAL one. When the servo
+# power dropped mid-transaction, one thread wedged inside a blocking serial read
+# while holding the lock; every later request -- both arms, the base, the teach
+# recorder -- blocked behind it forever, and the symptom (everything hangs)
+# pointed nowhere near the cause (power is off).
+#
+# So: one lock PER PORT, and never wait forever. Two arms on two ports proceed
+# independently, and a wedged port reports itself instead of silently swallowing
+# the whole sidecar.
+BUS_LOCK_TIMEOUT_S = float(os.environ.get("LEX_XLE_BUS_LOCK_TIMEOUT_S", "20"))
+_PORT_LOCKS = {}
+_PORT_LOCKS_GUARD = threading.Lock()
+
+
+def port_lock(port):
+    """The lock for one serial port, created on first use."""
+    with _PORT_LOCKS_GUARD:
+        return _PORT_LOCKS.setdefault(port or "__none__", threading.RLock())
+
+
+class BusBusy(Exception):
+    """A port's lock could not be acquired in time -- almost always another
+    operation wedged on that bus, not genuine contention."""
+
+
+@contextlib.contextmanager
+def hold_port(port, timeout=None):
+    lock = port_lock(port)
+    timeout = BUS_LOCK_TIMEOUT_S if timeout is None else timeout
+    if not lock.acquire(timeout=timeout):
+        raise BusBusy(
+            f"serial port {port} was still busy after {timeout:.0f}s -- another "
+            f"operation is wedged on that bus. Check servo power: a transaction "
+            f"interrupted mid-flight leaves the port latched, and every later "
+            f"call fails with 'Port is in use'.")
+    try:
+        yield
+    finally:
+        lock.release()
+
+
+def _skill_port(name, args):
+    """Which port a skill will touch, or None if it touches no bus.
+
+    Deliberately conservative: an unrecognised skill returns None and runs
+    unserialised rather than being routed to the wrong port's lock, which would
+    give false safety.
+    """
+    if not USE_HW:
+        return None
+    arm = args.get("arm") if isinstance(args, dict) else None
+    if name in ("teach_start", "teach_replay") and isinstance(args, dict):
+        arm = args.get("arm") or arm
+    if arm in ("left", "right"):
+        hw = ROBOT._hw_arms.get(arm)
+        return getattr(getattr(hw, "follower", None), "config", None) and hw.follower.config.port
+    if name in ("move_base", "read_base"):
+        base = getattr(ROBOT, "_hw_base", None)
+        return getattr(getattr(base, "bus", None), "port", None)
+    return None
 
 
 def handle_skill(name, args):
-    if USE_HW:
-        with HW_LOCK:
+    port = _skill_port(name, args)
+    if port is None:
+        return _handle_skill(name, args)
+    try:
+        with hold_port(port):
             return _handle_skill(name, args)
-    return _handle_skill(name, args)
+    except BusBusy as e:
+        return {"outcome": "stalled", "ok": False, "detail": str(e)}
 
 
 def _handle_skill(name, args):
