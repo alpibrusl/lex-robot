@@ -33,6 +33,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -48,14 +50,29 @@ class Trajectory:
     fps: float
     joints: list[str]
     frames: list[list[float]] = field(default_factory=list)   # calibrated degrees
-    note: str = ""
+    note: str = ""            # free-form; kept for older recordings
+    name: str = ""            # short identifier, also the filename stem
+    task: str = ""            # NATURAL LANGUAGE. This is training input, not a
+                              # comment: lerobot-record takes it as
+                              # --dataset.single_task, and language-conditioned
+                              # policies (SmolVLA, pi0) are trained against it.
+                              # Demonstrations of the SAME task must share the
+                              # SAME wording -- varied phrasing reads as a
+                              # varied task.
+    tags: list[str] = field(default_factory=list)
+    arm: str = ""             # the two arms have different calibrations and
+                              # reachable space; a left recording will not
+                              # replay sensibly on the right
+    created_at: str = ""
 
     @property
     def duration_s(self) -> float:
         return len(self.frames) / self.fps if self.fps else 0.0
 
     def to_dict(self) -> dict:
-        return {"fps": self.fps, "joints": self.joints, "note": self.note,
+        return {"name": self.name, "task": self.task, "tags": list(self.tags),
+                "arm": self.arm, "created_at": self.created_at, "note": self.note,
+                "fps": self.fps, "joints": self.joints,
                 "frames": [[round(v, 3) for v in f] for f in self.frames]}
 
     def save(self, path: str) -> None:
@@ -64,8 +81,12 @@ class Trajectory:
     @staticmethod
     def load(path: str) -> "Trajectory":
         d = json.loads(Path(path).read_text())
-        return Trajectory(float(d["fps"]), list(d["joints"]),
-                          [list(map(float, f)) for f in d["frames"]], d.get("note", ""))
+        return Trajectory(
+            fps=float(d["fps"]), joints=list(d["joints"]),
+            frames=[list(map(float, f)) for f in d["frames"]],
+            note=d.get("note", ""), name=d.get("name", Path(path).stem),
+            task=d.get("task", ""), tags=list(d.get("tags", [])),
+            arm=d.get("arm", ""), created_at=d.get("created_at", ""))
 
 
 # ── pure helpers (unit-tested without hardware) ─────────────────────────────
@@ -139,6 +160,72 @@ def resample(frames: list[list[float]], src_fps: float, dst_fps: float) -> list[
     return out
 
 
+# ── validation ──────────────────────────────────────────────────────────────
+
+def validate(traj: "Trajectory", max_step_deg: float = 6.0) -> dict:
+    """Would this replay, and is it worth training on? Problems vs warnings.
+
+    A PROBLEM means replay will refuse it. A WARNING means it will replay but
+    the recording is probably not what was intended -- an empty task string is
+    the one that bites later, because it silently becomes the conditioning text
+    a language-conditioned policy is trained against.
+    """
+    problems, warnings = [], []
+    n = len(traj.frames)
+    if n == 0:
+        problems.append("no frames recorded")
+    elif n < 5:
+        problems.append(f"only {n} frames -- nothing meaningful was taught")
+    step = max_step(traj.frames)
+    if step > max_step_deg:
+        problems.append(f"steps up to {step:.1f} deg between frames (limit {max_step_deg}) "
+                        f"-- replay would refuse this")
+    if traj.fps <= 0:
+        problems.append("fps must be positive")
+    if not traj.task.strip():
+        warnings.append("no task description -- this becomes the training text for a "
+                        "language-conditioned policy, so an empty one trains on nothing")
+    if not traj.arm:
+        warnings.append("no arm recorded -- a left-arm motion will not replay on the right")
+    if n and traj.duration_s < 1.0:
+        warnings.append(f"only {traj.duration_s:.1f}s long")
+    if n and step < 0.05:
+        warnings.append("the arm barely moved across the whole recording")
+    return {"ok": not problems, "problems": problems, "warnings": warnings,
+            "frames": n, "duration_s": round(traj.duration_s, 2),
+            "max_step_deg": round(step, 2)}
+
+
+# ── the library on disk ─────────────────────────────────────────────────────
+
+def library_dir() -> Path:
+    d = Path(os.environ.get("LEX_XLE_TEACH_DIR",
+                            Path(__file__).resolve().parent / "taught"))
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def safe_name(name: str) -> str:
+    """A filename that cannot escape the library directory."""
+    cleaned = re.sub(r"[^A-Za-z0-9_.-]", "_", (name or "").strip())
+    cleaned = cleaned.strip("._") or "untitled"
+    return cleaned[:80]
+
+
+def library_list() -> list[dict]:
+    out = []
+    for f in sorted(library_dir().glob("*.json")):
+        try:
+            t = Trajectory.load(str(f))
+        except Exception as e:
+            out.append({"name": f.stem, "error": f"unreadable: {e}"})
+            continue
+        out.append({"name": t.name or f.stem, "task": t.task, "tags": t.tags,
+                    "arm": t.arm, "created_at": t.created_at, "fps": t.fps,
+                    **validate(t)})
+    return out
+
+
 # ── hardware ────────────────────────────────────────────────────────────────
 
 def _robot(port: str, robot_id: str):
@@ -181,9 +268,38 @@ def record(port: str, robot_id: str, seconds: float, fps: float = 20.0,
     return traj
 
 
-def replay(port: str, robot_id: str, traj: Trajectory, *, speed: float = 1.0,
-           max_step_deg: float = 6.0, collision_check=None) -> dict:
-    """Repeat a taught motion. Refuses rather than lurching."""
+def replay_on_bus(bus, traj: "Trajectory", *, speed: float = 1.0,
+                  max_step_deg: float = 6.0, collision_check=None) -> dict:
+    """Replay on an ALREADY-CONNECTED bus.
+
+    The sidecar holds the arm's bus open for the whole session; opening a
+    second connection to the same serial port is exactly the bus-sharing
+    mistake #145 documented, so the in-process caller passes its bus in.
+    """
+    refusal = _replay_refusal(traj, max_step_deg)
+    if refusal:
+        return refusal
+    sent = 0
+    obs = bus.sync_read("Present_Position")
+    current = [float(obs[j]) for j in traj.joints]
+    bus.enable_torque()
+    for frame in approach_path(current, traj.frames[0], max_step_deg):
+        bus.sync_write("Goal_Position", dict(zip(traj.joints, frame)))
+        time.sleep(1.0 / (traj.fps * max(speed, 0.01)))
+    for frame in traj.frames:
+        if collision_check is not None:
+            hits = collision_check({f"{j}.pos": v for j, v in zip(traj.joints, frame)})
+            if hits:
+                return {"outcome": "denied", "frames_sent": sent,
+                        "detail": "replay stopped: " + "; ".join(str(h) for h in hits[:3])}
+        bus.sync_write("Goal_Position", dict(zip(traj.joints, frame)))
+        sent += 1
+        time.sleep(1.0 / (traj.fps * max(speed, 0.01)))
+    return {"outcome": "reached", "frames_sent": sent,
+            "detail": f"replayed {sent} frames over {sent / traj.fps / speed:.1f}s"}
+
+
+def _replay_refusal(traj: "Trajectory", max_step_deg: float):
     if not traj.frames:
         return {"outcome": "refused", "detail": "trajectory is empty"}
     worst = max_step(traj.frames)
@@ -192,6 +308,15 @@ def replay(port: str, robot_id: str, traj: Trajectory, *, speed: float = 1.0,
                 "detail": f"trajectory steps up to {worst:.1f} deg between frames "
                           f"(limit {max_step_deg}) -- a dropped frame or a hand slip; "
                           f"re-record or resample rather than replay this"}
+    return None
+
+
+def replay(port: str, robot_id: str, traj: Trajectory, *, speed: float = 1.0,
+           max_step_deg: float = 6.0, collision_check=None) -> dict:
+    """Repeat a taught motion, opening the port ourselves (CLI use)."""
+    refusal = _replay_refusal(traj, max_step_deg)
+    if refusal:
+        return refusal
     r = _robot(port, robot_id)
     sent = 0
     try:
