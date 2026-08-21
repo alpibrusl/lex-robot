@@ -241,3 +241,55 @@ def test_recording_still_captures_every_joint_including_the_powered_one(monkeypa
     monkeypatch.setattr(teach.time, "sleep", lambda *_a: None)
     t = teach.record("/dev/null", "x", seconds=0.0)
     assert t.joints == teach.ARM_JOINTS
+
+
+# ── keeping images, timestamps and poses aligned ────────────────────────────
+
+def test_trim_trajectory_returns_the_original_indices_kept():
+    """Image files are named by frame index, so trimming must report WHICH
+    original frames survived -- trimming the joints alone would misalign every
+    picture from the pose it was taken at."""
+    import teach
+    t = teach.Trajectory(20.0, ["a"], frames((0,), (0,), (5,), (10,), (10,)))
+    kept = teach.trim_trajectory(t)
+    assert kept == [1, 2, 3]
+    assert t.frames == frames((0,), (5,), (10,))
+
+
+def test_trim_trajectory_trims_timestamps_to_match_and_rebases_them():
+    import teach
+    t = teach.Trajectory(20.0, ["a"], frames((0,), (0,), (5,), (10,), (10,)))
+    t.timestamps = [0.0, 0.05, 0.10, 0.15, 0.20]
+    teach.trim_trajectory(t)
+    assert len(t.timestamps) == len(t.frames)
+    assert t.timestamps[0] == pytest.approx(0.0)
+
+
+def test_achieved_fps_is_measured_not_assumed():
+    """If capture could not keep up, a dataset stamped with the REQUESTED rate
+    would teach a policy the wrong dynamics."""
+    import teach
+    t = teach.Trajectory(20.0, ["a"], frames(*[(0,)] * 5))
+    t.timestamps = [0.0, 0.1, 0.2, 0.3, 0.4]        # actually 10 Hz
+    assert t.achieved_fps == pytest.approx(10.0)
+
+
+def test_achieved_fps_falls_back_to_requested_without_timestamps():
+    import teach
+    assert teach.Trajectory(20.0, ["a"], frames((0,))).achieved_fps == pytest.approx(20.0)
+
+
+def test_validate_warns_when_capture_lagged_the_requested_rate():
+    import teach
+    t = teach.Trajectory(20.0, list(teach.ARM_JOINTS),
+                         [[float(i)] * 6 for i in range(20)],
+                         task="pick", arm="left", cameras=["head"])
+    t.timestamps = [i * 0.1 for i in range(20)]      # 10 Hz, not 20
+    assert any("not the requested" in w for w in teach.validate(t)["warnings"])
+
+
+def test_validate_warns_about_a_state_only_recording():
+    import teach
+    t = teach.Trajectory(20.0, list(teach.ARM_JOINTS),
+                         [[float(i)] * 6 for i in range(20)], task="pick", arm="left")
+    assert any("state-only" in w for w in teach.validate(t)["warnings"])

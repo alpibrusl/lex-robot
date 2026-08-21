@@ -2238,21 +2238,29 @@ class _TeachRecorder:
     def recording(self):
         return self._thread is not None and self._thread.is_alive()
 
-    def start(self, arm, name, task, tags, fps, seconds):
+    def start(self, arm, name, task, tags, fps, seconds, cameras=None):
         import teach as _teach
         if self.recording:
             return {"ok": False, "detail": "already recording"}
         hw = ROBOT._hw_arms.get(arm) if USE_HW else None
         if USE_HW and hw is None:
             return {"ok": False, "detail": f"{arm} arm not configured"}
+        # Default to the scene camera plus THIS arm's wrist -- the pair a vision
+        # policy is normally trained on. Only slots that actually opened are
+        # used, so a partial build records what it has instead of failing.
+        if cameras is None:
+            cameras = [c for c in ("head", arm) if c in getattr(ROBOT, "_hw_cameras", {})]
+        cameras = [c for c in cameras if not USE_HW or c in getattr(ROBOT, "_hw_cameras", {})]
         self.reset_state()
         self._stop.clear()
         self.arm = arm
         self.started_at = time.time()
         self.traj = _teach.Trajectory(
             fps=fps, joints=list(_teach.ARM_JOINTS), name=name, task=task,
-            tags=list(tags), arm=arm,
+            tags=list(tags), arm=arm, cameras=list(cameras),
             created_at=time.strftime("%Y-%m-%dT%H:%M:%S"))
+        for c in cameras:
+            (self.traj.image_dir() / c).mkdir(parents=True, exist_ok=True)
 
         def run():
             try:
@@ -2261,24 +2269,46 @@ class _TeachRecorder:
                         hw.follower.bus.disable_torque(_teach.BODY_JOINTS)
                 deadline = time.time() + seconds
                 period = 1.0 / fps
+                origin = time.time()
+                idx = 0
                 while not self._stop.is_set() and time.time() < deadline:
                     t0 = time.time()
                     if USE_HW:
+                        # Joints and images under ONE lock acquisition: taking
+                        # it twice would let another request move the arm
+                        # between the pose and the picture of it.
                         with HW_LOCK:
                             obs = hw.follower.bus.sync_read("Present_Position")
+                            shots = {c: ROBOT._hw_cameras[c].capture()
+                                     for c in self.traj.cameras}
                         frame = [float(obs[j]) for j in _teach.ARM_JOINTS]
+                        for c, img in shots.items():
+                            self._write_jpeg(self.traj.image_path(c, idx), img)
                     else:
                         frame = [0.0] * len(_teach.ARM_JOINTS)
                     with self._lock:
                         self.traj.frames.append(frame)
+                        self.traj.timestamps.append(t0 - origin)
+                    idx += 1
                     time.sleep(max(0.0, period - (time.time() - t0)))
             except Exception as e:
                 self.error = str(e)
 
         self._thread = threading.Thread(target=run, daemon=True)
         self._thread.start()
-        return {"ok": True, "detail": f"recording {arm} arm at {fps:.0f} Hz",
-                "free": _teach.BODY_JOINTS}
+        return {"ok": True, "free": _teach.BODY_JOINTS, "cameras": list(cameras),
+                "detail": f"recording {arm} arm at {fps:.0f} Hz"
+                          + (f" with cameras {', '.join(cameras)}" if cameras
+                             else " -- NO CAMERAS (state-only dataset)")}
+
+    @staticmethod
+    def _write_jpeg(path, image):
+        import cv2
+        import numpy as np
+        arr = np.asarray(image)
+        if arr.ndim == 3 and arr.shape[2] == 3:
+            arr = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)   # OpenCVCamera hands back RGB
+        cv2.imwrite(str(path), arr, [cv2.IMWRITE_JPEG_QUALITY, 85])
 
     def status(self):
         with self._lock:
@@ -2299,7 +2329,22 @@ class _TeachRecorder:
             traj = self.traj
         raw = len(traj.frames)
         if not keep_still:
-            traj.frames = _teach.trim_still(traj.frames)
+            # Renumber the surviving images so frame i still means image i --
+            # trimming the joints alone would misalign every picture.
+            kept = _teach.trim_trajectory(traj)
+            for cam in traj.cameras:
+                d = traj.image_dir() / cam
+                survivors = [(old, d / f"{old:06d}.jpg") for old in kept]
+                for old, f in survivors:
+                    if f.exists():
+                        f.rename(d / f"tmp_{old:06d}.jpg")
+                for new, (old, _f) in enumerate(survivors):
+                    t = d / f"tmp_{old:06d}.jpg"
+                    if t.exists():
+                        t.rename(d / f"{new:06d}.jpg")
+                for stale in d.glob("[0-9]*.jpg"):
+                    if int(stale.stem) >= len(kept):
+                        stale.unlink()
         report = _teach.validate(traj)
         path = _teach.library_dir() / (_teach.safe_name(traj.name) + ".json")
         traj.save(str(path))
@@ -2339,7 +2384,8 @@ def _handle_skill(name, args):
     if name == "teach_start":
         return TEACH.start(args.get("arm", "left"), args.get("name", ""),
                            args.get("task", ""), args.get("tags", []),
-                           float(args.get("fps", 20)), float(args.get("seconds", 120)))
+                           float(args.get("fps", 20)), float(args.get("seconds", 120)),
+                           args.get("cameras"))
     if name == "teach_stop":
         return TEACH.stop(bool(args.get("keep_still", False)))
     if name == "teach_status":

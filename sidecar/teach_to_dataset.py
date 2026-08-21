@@ -22,11 +22,17 @@ What each demonstration becomes:
                      The final frame is dropped, having no successor.
   task               the demonstration's `task` string, verbatim
 
-NO CAMERA FRAMES. teach.py records joints only, so this produces a state-only
-dataset. That trains a state-conditioned policy; a vision policy (ACT, SmolVLA)
-needs images recorded in step with the joints, which is a change to the
-recorder, not to this converter. Stated plainly because a dataset that trains
-without error but has no images is an easy thing to discover far too late.
+  observation.images.<slot>  the camera frames captured alongside each pose,
+                     when the recording has them. A state-only dataset trains
+                     a policy that cannot SEE where the object is, so it can
+                     only replay a motion from a given arm pose -- which is
+                     not the task. Recordings without images still convert,
+                     and say so, rather than being silently accepted as
+                     equivalent.
+
+Mixed libraries are refused: a dataset whose episodes disagree about which
+cameras exist is not trainable, and finding that out during a long training run
+is expensive.
 """
 
 from __future__ import annotations
@@ -64,7 +70,13 @@ def load_library(directory: Path) -> list[teach.Trajectory]:
     return [teach.Trajectory.load(str(f)) for f in sorted(directory.glob("*.json"))]
 
 
-def convert(recordings, repo_id: str, root=None, fps=None, robot_type="so101_follower"):
+def camera_sets(recordings) -> set:
+    return {tuple(t.cameras) for t in recordings}
+
+
+def convert(recordings, repo_id: str, root=None, fps=None, robot_type="so101_follower",
+            library_root=None):
+    import cv2
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
     usable, skipped = [], []
@@ -89,24 +101,60 @@ def convert(recordings, repo_id: str, root=None, fps=None, robot_type="so101_fol
             return {"ok": False, "episodes": 0, "skipped": skipped,
                     "detail": f"{t.name} has different joints {t.joints} than {joints}"}
 
+    sets = camera_sets(usable)
+    if len(sets) > 1:
+        return {"ok": False, "episodes": 0, "skipped": skipped,
+                "detail": f"episodes disagree about cameras {sorted(sets)} -- a dataset "
+                          f"cannot mix them; filter with --tag or --arm"}
+    cameras = list(sets.pop())
+
     dim = len(joints)
     features = {
         "observation.state": {"dtype": "float32", "shape": (dim,), "names": joints},
         "action": {"dtype": "float32", "shape": (dim,), "names": joints},
     }
-    ds = LeRobotDataset.create(repo_id=repo_id, fps=int(fps or round(usable[0].fps)),
-                               features=features, root=root, robot_type=robot_type,
-                               use_videos=False)
+    shape = None
+    if cameras:
+        probe = cv2.imread(str(usable[0].image_path(cameras[0], 0, library_root)))
+        if probe is None:
+            return {"ok": False, "episodes": 0, "skipped": skipped,
+                    "detail": f"{usable[0].name} lists cameras {cameras} but its image "
+                              f"files are missing"}
+        shape = (probe.shape[0], probe.shape[1], 3)
+        for c in cameras:
+            features[f"observation.images.{c}"] = {
+                "dtype": "video", "shape": shape, "names": ["height", "width", "channels"]}
+
+    # Stamp the dataset with the rate actually ACHIEVED, not the one requested:
+    # a policy trained against a wrong dt learns wrong dynamics.
+    achieved = fps or round(sum(t.achieved_fps for t in usable) / len(usable))
+    ds = LeRobotDataset.create(repo_id=repo_id, fps=int(achieved), features=features,
+                               root=root, robot_type=robot_type, use_videos=bool(cameras))
+    missing = 0
     for t in usable:
-        for state, action in frames_to_pairs(t.frames):
+        for i, (state, action) in enumerate(frames_to_pairs(t.frames)):
             # lerobot validates dtype strictly: float32 ndarrays, not lists.
-            ds.add_frame({"observation.state": np.asarray(state, dtype=np.float32),
-                          "action": np.asarray(action, dtype=np.float32),
-                          "task": t.task})
+            frame = {"observation.state": np.asarray(state, dtype=np.float32),
+                     "action": np.asarray(action, dtype=np.float32), "task": t.task}
+            skip = False
+            for c in cameras:
+                img = cv2.imread(str(t.image_path(c, i, library_root)))
+                if img is None:
+                    missing += 1
+                    skip = True
+                    break
+                frame[f"observation.images.{c}"] = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            if not skip:
+                ds.add_frame(frame)
         ds.save_episode()
-    return {"ok": True, "episodes": len(usable), "skipped": skipped,
-            "root": str(ds.root),
-            "detail": f"wrote {len(usable)} episode(s) to {ds.root}"}
+    out = {"ok": True, "episodes": len(usable), "skipped": skipped, "cameras": cameras,
+           "fps": int(achieved), "root": str(ds.root),
+           "detail": f"wrote {len(usable)} episode(s) to {ds.root} at {int(achieved)} fps"
+                     + (f" with cameras {', '.join(cameras)}" if cameras
+                        else " -- STATE ONLY, no images: this cannot train a vision policy")}
+    if missing:
+        out["detail"] += f" ({missing} frame(s) dropped for missing images)"
+    return out
 
 
 def main() -> None:
@@ -122,7 +170,7 @@ def main() -> None:
     directory = Path(a.dir) if a.dir else teach.library_dir()
     recordings = select(load_library(directory), a.arm, a.tag, a.task)
     print(f"{len(recordings)} demonstration(s) selected from {directory}")
-    res = convert(recordings, a.repo_id, root=a.root, fps=a.fps)
+    res = convert(recordings, a.repo_id, root=a.root, fps=a.fps, library_root=directory)
     for name, why in res["skipped"]:
         print(f"  SKIPPED {name}: {why}")
     print(res["detail"])
