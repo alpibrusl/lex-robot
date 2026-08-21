@@ -216,6 +216,8 @@ import json
 import math
 import mimetypes
 import os
+import threading
+import time
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -1138,6 +1140,167 @@ async function poll() {
 }
 poll();
 setInterval(poll, 1000);
+</script></body></html>"""
+
+TEACH_PAGE_HTML = """<!doctype html>
+<html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>lex-robot teach</title>
+<style>
+  :root { --bg:#0a0a1a; --bg2:#0f0f2a; --bg3:#141430; --border:#1e2050;
+          --text:#d0d8f0; --muted:#5a6080; --cyan:#22d3ee; --yellow:#fbbf24;
+          --lime:#4ade80; --red:#f87171; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; background:var(--bg); color:var(--text);
+              font-family:'Courier New',Courier,monospace; font-size:13px; }
+  header { background:var(--bg2); border-bottom:1px solid var(--border);
+           padding:10px 16px; display:flex; align-items:center; gap:12px; }
+  header h1 { font-size:14px; color:var(--cyan); letter-spacing:.08em; margin:0; }
+  header a { color:var(--muted); margin-left:auto; }
+  .wrap { padding:14px 16px; max-width:1000px; }
+  .panel { background:var(--bg2); border:1px solid var(--border); padding:14px; margin-bottom:14px; }
+  h2 { font-size:13px; color:var(--cyan); margin:0 0 10px; }
+  label { display:block; color:var(--muted); font-size:11px; margin:8px 0 2px; }
+  input, textarea, select { width:100%; background:var(--bg3); color:var(--text);
+       border:1px solid var(--border); padding:5px; font-family:inherit; font-size:12px; }
+  textarea { resize:vertical; min-height:44px; }
+  .row { display:flex; gap:10px; } .row > * { flex:1; }
+  button { background:var(--bg3); color:var(--text); border:1px solid var(--border);
+           padding:7px 14px; cursor:pointer; font-family:inherit; }
+  button:disabled { opacity:.35; cursor:not-allowed; }
+  button.go { border-color:var(--lime); color:var(--lime); }
+  button.stop { border-color:var(--red); color:var(--red); }
+  .hint { color:var(--muted); font-size:11px; line-height:1.5; margin:6px 0; }
+  .status { margin-top:10px; font-size:12px; min-height:16px; }
+  table { width:100%; border-collapse:collapse; font-size:12px; }
+  th,td { text-align:left; padding:4px 6px; border-bottom:1px solid var(--border); vertical-align:top; }
+  th { color:var(--muted); font-weight:normal; font-size:11px; }
+  .ok { color:var(--lime); } .warn { color:var(--yellow); } .bad { color:var(--red); }
+  .tag { background:var(--bg3); border:1px solid var(--border); padding:0 5px; margin-right:3px; }
+</style></head>
+<body>
+<header><h1>TEACH BY DEMONSTRATION</h1><a href="/control">&rarr; arm control</a></header>
+<div class="wrap">
+
+<div class="panel">
+  <h2>RECORD A DEMONSTRATION</h2>
+  <div class="hint">
+    The five arm joints go LIMP when recording starts &mdash; these servos have no gravity
+    compensation, so the arm's weight is yours to hold. The gripper stays powered, so open
+    and close it from the <a href="/control" style="color:var(--cyan)">control page</a>
+    rather than squeezing the fingers by hand.
+  </div>
+  <div class="row">
+    <div><label>name (also the filename)</label><input id="name" placeholder="pick_cup_tray_left_01"></div>
+    <div><label>arm</label><select id="arm"><option value="left">left</option><option value="right">right</option></select></div>
+  </div>
+  <label>task &mdash; natural language, and this is TRAINING INPUT, not a comment</label>
+  <textarea id="task" placeholder="pick up the cup from the left of the tray and place it on the plate"></textarea>
+  <div class="hint">
+    Every demonstration of the same task must use the SAME wording: it becomes
+    <code>--dataset.single_task</code>, which language-conditioned policies are trained
+    against, so varied phrasing reads as a varied task.
+  </div>
+  <div class="row">
+    <div><label>tags (comma separated)</label><input id="tags" placeholder="pick, cup, nominal"></div>
+    <div><label>max seconds</label><input id="seconds" type="number" value="60" min="2"></div>
+    <div><label>fps</label><input id="fps" type="number" value="20" min="2" max="50"></div>
+  </div>
+  <div class="row" style="margin-top:12px">
+    <button id="start" class="go">Start recording</button>
+    <button id="stop" class="stop" disabled>Stop &amp; save</button>
+  </div>
+  <div class="status" id="recstatus"></div>
+</div>
+
+<div class="panel">
+  <h2>LIBRARY</h2>
+  <div class="status" id="libstatus"></div>
+  <table id="lib"><thead><tr>
+    <th>name</th><th>task</th><th>arm</th><th>frames</th><th>secs</th>
+    <th>max step</th><th>checks</th><th></th>
+  </tr></thead><tbody></tbody></table>
+</div>
+
+</div>
+<script>
+const $ = id => document.getElementById(id);
+async function skill(name, args) {
+  const r = await fetch('/skill/' + name, {method:'POST', headers:{'Content-Type':'application/json'},
+                                           body: JSON.stringify(args || {})});
+  return r.json();
+}
+$('start').onclick = async () => {
+  const name = $('name').value.trim();
+  if (!name) { $('recstatus').innerHTML = '<span class="bad">give it a name first</span>'; return; }
+  const res = await skill('teach_start', {
+    arm: $('arm').value, name, task: $('task').value.trim(),
+    tags: $('tags').value.split(',').map(s=>s.trim()).filter(Boolean),
+    seconds: parseFloat($('seconds').value)||60, fps: parseFloat($('fps').value)||20});
+  $('recstatus').innerHTML = res.ok
+    ? '<span class="ok">' + res.detail + '</span> &mdash; limp: ' + (res.free||[]).join(', ')
+    : '<span class="bad">' + res.detail + '</span>';
+};
+$('stop').onclick = async () => {
+  const res = await skill('teach_stop', {});
+  if (!res.ok) { $('recstatus').innerHTML = '<span class="bad">'+res.detail+'</span>'; return; }
+  const bits = ['<span class="ok">saved ' + res.saved + '</span>',
+                res.frames + ' frames', res.duration_s + 's',
+                'max step ' + res.max_step_deg + ' deg'];
+  (res.problems||[]).forEach(p => bits.push('<span class="bad">' + p + '</span>'));
+  (res.warnings||[]).forEach(w => bits.push('<span class="warn">' + w + '</span>'));
+  $('recstatus').innerHTML = bits.join(' &middot; ');
+  refresh();
+};
+async function poll() {
+  const s = await skill('teach_status', {});
+  $('start').disabled = s.recording;
+  $('stop').disabled = !s.recording;
+  if (s.recording) {
+    $('recstatus').innerHTML = '<span class="warn">RECORDING</span> ' + s.name + ' &mdash; ' +
+      s.frames + ' frames, ' + s.elapsed_s + 's &mdash; move the arm by hand';
+  } else if (s.error) {
+    $('recstatus').innerHTML = '<span class="bad">' + s.error + '</span>';
+  }
+}
+function checks(r) {
+  if (r.error) return '<span class="bad">' + r.error + '</span>';
+  const out = [];
+  if (r.ok) out.push('<span class="ok">replayable</span>');
+  (r.problems||[]).forEach(p => out.push('<span class="bad">' + p + '</span>'));
+  (r.warnings||[]).forEach(w => out.push('<span class="warn">' + w + '</span>'));
+  return out.join('<br>');
+}
+async function refresh() {
+  const res = await skill('teach_list', {});
+  const tb = $('lib').querySelector('tbody');
+  const rs = res.recordings || [];
+  tb.innerHTML = rs.map(r => `<tr>
+      <td>${r.name}</td>
+      <td>${r.task ? r.task : '<span class="warn">(none)</span>'}<br>` +
+        (r.tags||[]).map(t=>'<span class="tag">'+t+'</span>').join('') + `</td>
+      <td>${r.arm||'<span class="warn">?</span>'}</td>
+      <td>${r.frames==null?'':r.frames}</td>
+      <td>${r.duration_s==null?'':r.duration_s}</td>
+      <td>${r.max_step_deg==null?'':r.max_step_deg}</td>
+      <td>${checks(r)}</td>
+      <td><button onclick="replay('${r.name}')" ${r.ok?'':'disabled'}>Replay</button>
+          <button onclick="del('${r.name}')">Delete</button></td>
+    </tr>`).join('');
+  $('libstatus').textContent = rs.length ? rs.length + ' recording(s)' : 'nothing taught yet';
+}
+async function replay(name) {
+  $('libstatus').innerHTML = 'replaying ' + name + '...';
+  const r = await skill('teach_replay', {name});
+  $('libstatus').innerHTML = (r.outcome === 'reached' ? '<span class="ok">' : '<span class="bad">')
+    + r.outcome + ': ' + (r.detail||'') + '</span>';
+}
+async function del(name) {
+  if (!confirm('Delete ' + name + '?')) return;
+  await skill('teach_delete', {name});
+  refresh();
+}
+refresh(); poll(); setInterval(poll, 1000);
 </script></body></html>"""
 
 CONTROL_PAGE_HTML = """<!doctype html>
@@ -2159,6 +2322,103 @@ class XLeRobot:
         }
 
 
+class _TeachRecorder:
+    """Records a hand-guided demonstration in the background.
+
+    HTTP is request/response, so recording cannot happen inside a handler --
+    the browser needs to start it, watch it, and stop it. Each sample takes
+    HW_LOCK, so recording interleaves safely with the /control page's polling
+    rather than corrupting the bus.
+    """
+
+    def __init__(self):
+        self._thread = None
+        self._stop = threading.Event()
+        self._lock = threading.Lock()
+        self.reset_state()
+
+    def reset_state(self):
+        self.traj = None
+        self.error = None
+        self.started_at = None
+        self.arm = None
+
+    @property
+    def recording(self):
+        return self._thread is not None and self._thread.is_alive()
+
+    def start(self, arm, name, task, tags, fps, seconds):
+        import teach as _teach
+        if self.recording:
+            return {"ok": False, "detail": "already recording"}
+        hw = ROBOT._hw_arms.get(arm) if USE_HW else None
+        if USE_HW and hw is None:
+            return {"ok": False, "detail": f"{arm} arm not configured"}
+        self.reset_state()
+        self._stop.clear()
+        self.arm = arm
+        self.started_at = time.time()
+        self.traj = _teach.Trajectory(
+            fps=fps, joints=list(_teach.ARM_JOINTS), name=name, task=task,
+            tags=list(tags), arm=arm,
+            created_at=time.strftime("%Y-%m-%dT%H:%M:%S"))
+
+        def run():
+            try:
+                if USE_HW:
+                    with HW_LOCK:
+                        hw.follower.bus.disable_torque(_teach.BODY_JOINTS)
+                deadline = time.time() + seconds
+                period = 1.0 / fps
+                while not self._stop.is_set() and time.time() < deadline:
+                    t0 = time.time()
+                    if USE_HW:
+                        with HW_LOCK:
+                            obs = hw.follower.bus.sync_read("Present_Position")
+                        frame = [float(obs[j]) for j in _teach.ARM_JOINTS]
+                    else:
+                        frame = [0.0] * len(_teach.ARM_JOINTS)
+                    with self._lock:
+                        self.traj.frames.append(frame)
+                    time.sleep(max(0.0, period - (time.time() - t0)))
+            except Exception as e:
+                self.error = str(e)
+
+        self._thread = threading.Thread(target=run, daemon=True)
+        self._thread.start()
+        return {"ok": True, "detail": f"recording {arm} arm at {fps:.0f} Hz",
+                "free": _teach.BODY_JOINTS}
+
+    def status(self):
+        with self._lock:
+            n = len(self.traj.frames) if self.traj else 0
+        return {"recording": self.recording, "frames": n, "error": self.error,
+                "arm": self.arm,
+                "elapsed_s": round(time.time() - self.started_at, 1) if self.started_at else 0.0,
+                "name": self.traj.name if self.traj else ""}
+
+    def stop(self, keep_still=False):
+        import teach as _teach
+        if self.traj is None:
+            return {"ok": False, "detail": "nothing was recorded"}
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=5.0)
+        with self._lock:
+            traj = self.traj
+        raw = len(traj.frames)
+        if not keep_still:
+            traj.frames = _teach.trim_still(traj.frames)
+        report = _teach.validate(traj)
+        path = _teach.library_dir() / (_teach.safe_name(traj.name) + ".json")
+        traj.save(str(path))
+        self.reset_state()
+        return {"ok": True, "saved": path.name, "recorded_frames": raw,
+                "detail": f"saved {path.name}", **report}
+
+
+TEACH = _TeachRecorder()
+
 ROBOT = XLeRobot()
 
 
@@ -2168,7 +2428,57 @@ def _stream_sample():
             "base": ROBOT.read_base()}
 
 
+# Every hardware skill touches a serial bus that is not thread-safe, and this
+# is a ThreadingHTTPServer -- so two concurrent requests could interleave reads
+# and writes on the same port. Until now the only protection was client-side
+# (the /control page's own busy/poll guard), which cannot help a second client,
+# a curl call, or the background teach recorder. One lock around dispatch makes
+# the serialisation a property of the server rather than of a well-behaved page.
+HW_LOCK = threading.RLock()
+
+
 def handle_skill(name, args):
+    if USE_HW:
+        with HW_LOCK:
+            return _handle_skill(name, args)
+    return _handle_skill(name, args)
+
+
+def _handle_skill(name, args):
+    if name == "teach_start":
+        return TEACH.start(args.get("arm", "left"), args.get("name", ""),
+                           args.get("task", ""), args.get("tags", []),
+                           float(args.get("fps", 20)), float(args.get("seconds", 120)))
+    if name == "teach_stop":
+        return TEACH.stop(bool(args.get("keep_still", False)))
+    if name == "teach_status":
+        return TEACH.status()
+    if name == "teach_list":
+        import teach as _teach
+        return {"ok": True, "recordings": _teach.library_list()}
+    if name == "teach_delete":
+        import teach as _teach
+        f = _teach.library_dir() / (_teach.safe_name(args.get("name", "")) + ".json")
+        if not f.exists():
+            return {"ok": False, "detail": f"no recording named {args.get('name','')!r}"}
+        f.unlink()
+        return {"ok": True, "detail": f"deleted {f.name}"}
+    if name == "teach_replay":
+        import teach as _teach
+        f = _teach.library_dir() / (_teach.safe_name(args.get("name", "")) + ".json")
+        if not f.exists():
+            return {"outcome": "refused", "detail": f"no recording named {args.get('name','')!r}"}
+        traj = _teach.Trajectory.load(str(f))
+        arm = args.get("arm") or traj.arm or "left"
+        if not USE_HW:
+            return {"outcome": "reached",
+                    "detail": f"(simulated) would replay {len(traj.frames)} frames on the {arm} arm"}
+        hw = ROBOT._hw_arms.get(arm)
+        if hw is None:
+            return {"outcome": "stalled", "detail": f"{arm} arm not configured"}
+        return _teach.replay_on_bus(hw.follower.bus, traj,
+                                    speed=float(args.get("speed", 1.0)),
+                                    collision_check=ROBOT._collision_check_for(arm))
     if name == "reset":
         return ROBOT.reset()
     if name == "read_joints":
@@ -2283,6 +2593,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"ok": True, "hardware": USE_HW, "base": ROBOT.base})
         if path == "/display":
             return self._send_bytes(200, "text/html; charset=utf-8", DISPLAY_PAGE_HTML.encode())
+        if path == "/teach":
+            return self._send_bytes(200, "text/html; charset=utf-8", TEACH_PAGE_HTML.encode())
         if path == "/control":
             return self._send_bytes(200, "text/html; charset=utf-8", CONTROL_PAGE_HTML.encode())
         if path == "/display/state":
