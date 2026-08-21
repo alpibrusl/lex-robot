@@ -176,6 +176,36 @@ def trim_trajectory(traj: "Trajectory", threshold_deg: float = 0.5) -> list[int]
     return kept
 
 
+# A step this large is not a brisk hand -- it is a dropped frame or a serial
+# glitch, and interpolating across it would invent motion that never happened.
+# Measured for scale: a real hand-taught demonstration runs a median step of
+# ~0.2 deg with a p95 under 4, and its rare fast moments reach ~6.
+DISCONTINUITY_DEG = 30.0
+
+
+def smooth_steps(frames: list[list[float]], max_step_deg: float) -> list[list[float]]:
+    """Insert intermediate frames wherever a step exceeds *max_step_deg*.
+
+    Replaces refusing a whole demonstration because of a few brisk moments.
+    Measured on a real 724-frame recording: median step 0.18 deg, p95 3.69, and
+    exactly 2 frames over 6.0 -- rejecting all 40 seconds for 0.3% of frames is
+    the wrong trade. Interpolating turns those moments into slightly slower
+    ones and preserves the demonstration.
+
+    Applied at REPLAY time only, never to the stored trajectory: inserting
+    frames would break the one-image-per-frame alignment the dataset depends on.
+    """
+    if not frames or max_step_deg <= 0:
+        return list(frames)
+    out = [frames[0]]
+    for prev, nxt in zip(frames, frames[1:]):
+        gap = max((abs(b - a) for a, b in zip(prev, nxt)), default=0.0)
+        n = max(1, int(gap / max_step_deg + 0.999))
+        for k in range(1, n + 1):
+            out.append([a + (b - a) * (k / n) for a, b in zip(prev, nxt)])
+    return out
+
+
 def approach_path(current: list[float], target: list[float], max_step_deg: float) -> list[list[float]]:
     """Frames from *current* to *target*, none stepping more than max_step_deg.
 
@@ -228,9 +258,12 @@ def validate(traj: "Trajectory", max_step_deg: float = 6.0) -> dict:
     elif n < 5:
         problems.append(f"only {n} frames -- nothing meaningful was taught")
     step = max_step(traj.frames)
-    if step > max_step_deg:
-        problems.append(f"steps up to {step:.1f} deg between frames (limit {max_step_deg}) "
-                        f"-- replay would refuse this")
+    if step > DISCONTINUITY_DEG:
+        problems.append(f"jumps {step:.1f} deg between adjacent frames -- a dropped frame or "
+                        f"serial glitch, not a fast hand; replay refuses this")
+    elif step > max_step_deg:
+        warnings.append(f"briefly steps {step:.1f} deg between frames (over {max_step_deg}) "
+                        f"-- replay interpolates those moments, so this is usable")
     if traj.fps <= 0:
         problems.append("fps must be positive")
     if traj.has_images and traj.timestamps:
@@ -338,14 +371,15 @@ def replay_on_bus(bus, traj: "Trajectory", *, speed: float = 1.0,
     refusal = _replay_refusal(traj, max_step_deg)
     if refusal:
         return refusal
+    frames = smooth_steps(traj.frames, max_step_deg)
     sent = 0
     obs = bus.sync_read("Present_Position")
     current = [float(obs[j]) for j in traj.joints]
     bus.enable_torque()
-    for frame in approach_path(current, traj.frames[0], max_step_deg):
+    for frame in approach_path(current, frames[0], max_step_deg):
         bus.sync_write("Goal_Position", dict(zip(traj.joints, frame)))
         time.sleep(1.0 / (traj.fps * max(speed, 0.01)))
-    for frame in traj.frames:
+    for frame in frames:
         if collision_check is not None:
             hits = collision_check({f"{j}.pos": v for j, v in zip(traj.joints, frame)})
             if hits:
@@ -359,14 +393,16 @@ def replay_on_bus(bus, traj: "Trajectory", *, speed: float = 1.0,
 
 
 def _replay_refusal(traj: "Trajectory", max_step_deg: float):
+    """Refuse only a genuine discontinuity. Brisk moments get smoothed instead."""
     if not traj.frames:
         return {"outcome": "refused", "detail": "trajectory is empty"}
     worst = max_step(traj.frames)
-    if worst > max_step_deg:
+    if worst > DISCONTINUITY_DEG:
         return {"outcome": "refused",
-                "detail": f"trajectory steps up to {worst:.1f} deg between frames "
-                          f"(limit {max_step_deg}) -- a dropped frame or a hand slip; "
-                          f"re-record or resample rather than replay this"}
+                "detail": f"trajectory jumps {worst:.1f} deg between adjacent frames "
+                          f"(discontinuity threshold {DISCONTINUITY_DEG:.0f}) -- that is a "
+                          f"dropped frame or a serial glitch, not a fast hand. Interpolating "
+                          f"across it would invent motion that never happened; re-record."}
     return None
 
 
@@ -377,15 +413,16 @@ def replay(port: str, robot_id: str, traj: Trajectory, *, speed: float = 1.0,
     if refusal:
         return refusal
     r = _robot(port, robot_id)
+    frames = smooth_steps(traj.frames, max_step_deg)
     sent = 0
     try:
         obs = r.bus.sync_read("Present_Position")
         current = [float(obs[j]) for j in traj.joints]
         r.bus.enable_torque()
-        for frame in approach_path(current, traj.frames[0], max_step_deg):
+        for frame in approach_path(current, frames[0], max_step_deg):
             r.bus.sync_write("Goal_Position", dict(zip(traj.joints, frame)))
             time.sleep(1.0 / (traj.fps * max(speed, 0.01)))
-        for frame in traj.frames:
+        for frame in frames:
             if collision_check is not None:
                 hits = collision_check(dict(zip(traj.joints, frame)))
                 if hits:
