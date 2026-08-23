@@ -61,6 +61,9 @@ LLM_URL = os.environ.get("LEX_VISION_LLM_URL", "http://127.0.0.1:11434/v1").rstr
 MODEL = os.environ.get("LEX_VISION_MODEL", "qwen3.8:27b-mlx")
 API_KEY = os.environ.get("LEX_VISION_API_KEY", "")
 TIMEOUT_S = float(os.environ.get("LEX_VISION_TIMEOUT_S", "60"))
+# Generous by default — see the note in _chat. A truncated JSON reply fails
+# confusingly rather than loudly, so headroom is cheaper than the debugging.
+MAX_TOKENS = int(os.environ.get("LEX_VISION_MAX_TOKENS", "1024"))
 MOCK = os.environ.get("LEX_VISION_MOCK", "0") == "1"
 
 MOCK_ITEMS = ["(mock) a cup", "(mock) a plate", "(mock) a folded towel"]
@@ -130,10 +133,19 @@ def _chat(image_b64, prompt, model=None):
             "type": "image_url",
             "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"},
         })
+    # max_tokens is REQUIRED here, not an optimisation. Left unset, the reply
+    # is capped by whatever the provider defaults to — Ollama's default is
+    # small — and a JSON answer that gets cut mid-object does NOT arrive as an
+    # error: it arrives as text that _extract_json then fails to parse, with a
+    # message that points at column 128 rather than at truncation. Observed
+    # exactly that on /vision/scan, whose replies are longer than describe's.
+    # Reasoning models need more still: they spend hundreds of tokens before
+    # emitting any content at all.
     body = json.dumps({
         "model": model or MODEL,
         "messages": [{"role": "user", "content": content}],
         "temperature": 0,
+        "max_tokens": MAX_TOKENS,
     }).encode()
     headers = {"Content-Type": "application/json"}
     if API_KEY:
@@ -152,10 +164,25 @@ def _extract_json(text, opener, closer):
     delimiters is the standard robust middle ground.
     """
     start = text.find(opener)
-    end = text.rfind(closer)
-    if start == -1 or end == -1 or end <= start:
-        raise ValueError(f"no {opener}...{closer} JSON in model reply: {text[:200]!r}")
-    return json.loads(text[start:end + 1])
+    if start == -1:
+        raise ValueError(f"no {opener} in model reply: {text[:200]!r}")
+    # Match the delimiter by DEPTH, not by rfind. rfind picks the last closer
+    # anywhere in the text, so a reply truncated mid-object slices to an inner
+    # closer and yields invalid JSON — reported as a baffling "Expecting value
+    # at column N" instead of "the model got cut off". Depth-matching turns
+    # that into an explicit truncation error.
+    depth = 0
+    for i in range(start, len(text)):
+        if text[i] == opener:
+            depth += 1
+        elif text[i] == closer:
+            depth -= 1
+            if depth == 0:
+                return json.loads(text[start:i + 1])
+    raise ValueError(
+        f"unterminated {opener}...{closer} in model reply — it was almost "
+        f"certainly truncated (raise LEX_VISION_MAX_TOKENS, currently "
+        f"{MAX_TOKENS}): {text[:200]!r}")
 
 
 def _clamp01(v):

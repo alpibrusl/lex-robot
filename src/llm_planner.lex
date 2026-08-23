@@ -76,6 +76,8 @@ import "std.iter" as iter
 
 import "std.http" as http
 
+import "std.map" as map
+
 import "std.bytes" as bytes
 
 import "std.crypto" as crypto
@@ -183,7 +185,9 @@ fn open_client_session(peer_url :: Str, session_id :: Str) -> [net, crypto] Str 
         Err(_) => session_id,
         Ok(sig) => {
           let body := a2a_client.build_envelope("session/open", JObj([("card_json", JStr(cj)), ("sig_b64", JStr(sig))]), IdStr("session-open"))
-          match http.post(peer_url, bytes.from_str(body), "application/json") {
+          let req0 := { method: "POST", url: peer_url, headers: map.new(), body: Some(bytes.from_str(body)), timeout_ms: None }
+          let req := http.with_timeout_ms(http.with_header(req0, "Content-Type", "application/json"), 120000)
+          match http.send(req) {
             Err(_) => session_id,
             Ok(resp) => match bytes.to_str(resp.body) {
               Err(_) => session_id,
@@ -210,7 +214,9 @@ fn call_robot_skill(peer_url :: Str, skill_name :: Str, session_id :: Str, args 
   let opts := { task_id: str.join([session_id, "-", skill_name], ""), context_id: session_id, skill: skill_name }
   let params := a2a_client.build_send_params(m, opts)
   let body := a2a_client.build_envelope(proto.method_tasks_send(), params, IdStr(opts.task_id))
-  match http.post(peer_url, bytes.from_str(body), "application/json") {
+  let req0 := { method: "POST", url: peer_url, headers: map.new(), body: Some(bytes.from_str(body)), timeout_ms: None }
+  let req := http.with_timeout_ms(http.with_header(req0, "Content-Type", "application/json"), 120000)
+  match http.send(req) {
     Err(herr) => Err(str.concat("a2a http error calling ", str.concat(skill_name, str.concat(": ", a2a_client.http_err_str(herr))))),
     Ok(resp) => match bytes.to_str(resp.body) {
       Err(_) => Err(str.concat("a2a response body decode failed for ", skill_name)),
