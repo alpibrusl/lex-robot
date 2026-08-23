@@ -35,8 +35,10 @@ Env:
     LEX_VISION_PORT        default 8901
     LEX_VISION_LLM_URL     OpenAI-compatible base URL
                            (default http://127.0.0.1:11434/v1 — Ollama)
-    LEX_VISION_MODEL       vision-capable model tag (default qwen2.5vl:7b;
-                           llava, minicpm-v, or a LiteLLM route all work)
+    LEX_VISION_MODEL       vision-capable model tag (default qwen3.8:27b-mlx;
+                           llava, minicpm-v, gemma4, or a LiteLLM route all
+                           work. qwen2.5vl was the old default and is several
+                           generations behind)
     LEX_VISION_API_KEY     optional bearer token (LiteLLM virtual keys;
                            Ollama ignores it)
     LEX_VISION_TIMEOUT_S   upstream call budget (default 60)
@@ -56,7 +58,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 HOST = os.environ.get("LEX_VISION_HOST", "0.0.0.0")
 PORT = int(os.environ.get("LEX_VISION_PORT", "8901"))
 LLM_URL = os.environ.get("LEX_VISION_LLM_URL", "http://127.0.0.1:11434/v1").rstrip("/")
-MODEL = os.environ.get("LEX_VISION_MODEL", "qwen2.5vl:7b")
+MODEL = os.environ.get("LEX_VISION_MODEL", "qwen3.8:27b-mlx")
 API_KEY = os.environ.get("LEX_VISION_API_KEY", "")
 TIMEOUT_S = float(os.environ.get("LEX_VISION_TIMEOUT_S", "60"))
 MOCK = os.environ.get("LEX_VISION_MOCK", "0") == "1"

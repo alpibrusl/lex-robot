@@ -15,7 +15,7 @@ ExecStart=/usr/bin/python3 sidecar/vision_service.py
 Restart=on-failure
 RestartSec=3
 Environment=LEX_VISION_LLM_URL=http://127.0.0.1:11434/v1
-Environment=LEX_VISION_MODEL=qwen2.5vl:7b
+Environment=LEX_VISION_MODEL=qwen3.8:27b-mlx
 Environment=LEX_VISION_PORT=8901
 
 [Install]
