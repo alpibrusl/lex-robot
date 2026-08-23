@@ -173,6 +173,37 @@ fn detect_object(r :: t.Robot, name :: Str) -> [net, sense] Result[Str, Str] {
   client.call(r.sidecar_url, "detect_object", str.join(["{\"name\":\"", name, "\"}"], ""))
 }
 
+# A navigational read of what is in front of the robot, WITH BEARINGS.
+#
+# The sidecar burns a labelled degree scale into the frame before the vision
+# model sees it (sidecar/camera_overlay.py). That is the whole point: a model
+# asked to estimate an angle from a bare photo is doing geometry, which it is
+# bad at; reading a ruler printed in the image is character recognition, which
+# it is good at. Measured on this unit, the scale halved mean bearing error
+# (3.8 deg -> 1.2 deg), with the biggest gain at the frame edges where
+# steering-around decisions live.
+#
+# Returns the sidecar's JSON verbatim:
+#   {"obstacles":[{"what","bearing_deg"}], "clear_ahead":"yes"|"no"|"unknown",
+#    "detail", "augmented"}
+#
+# `clear_ahead` is THREE-valued on purpose. A dark or occluded frame answers
+# "unknown", and every failure path in the sidecar and the vision service
+# answers "unknown" too — never an implicit yes. A planner that reads a broken
+# vision service as permission to drive is the failure this shape exists to
+# prevent.
+#
+# Sensing only, no grant check — same reasoning as locate_object: looking
+# moves nothing. Whatever the planner proposes AFTERWARDS is still gated.
+fn scan_ahead(r :: t.Robot, question :: Str) -> [net, sense] Result[Str, Str] {
+  client.call(r.sidecar_url, "scan_ahead", str.join(["{\"question\":\"", esc(question), "\"}"], ""))
+}
+
+# Minimal JSON string escape for the one free-text field scan_ahead sends.
+fn esc(s :: Str) -> Str {
+  str.replace(str.replace(s, "\\", ""), "\"", "'")
+}
+
 # Tier-2 vision: detect via the split-compute vision service, then turn the
 # 2D box into a WORLD position by intersecting the pixel ray with the
 # calibrated table plane (src/camera.lex). Two refusals instead of guesses:

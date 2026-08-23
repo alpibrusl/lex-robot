@@ -158,7 +158,7 @@ fn task_result_text(tj :: jv.Json) -> Str {
 # documents for its own keypairs), so the same session_id always presents
 # the same identity to the server.
 fn planner_skill_names() -> List[Str] {
-  ["move_base", "move_arm", "grasp_arm", "locate_object", "transform_to_arm", "read_base", "speak"]
+  ["move_base", "move_arm", "grasp_arm", "locate_object", "scan_ahead", "transform_to_arm", "read_base", "speak"]
 }
 
 fn planner_card_json(pubkey_b64 :: Str) -> Str {
@@ -244,14 +244,14 @@ fn robot_tool(peer_url :: Str, session_id :: Str, capability :: cap.Capability) 
 # tool list is also a more RELIABLE one; a model picks the right tool more
 # often from seven well-differentiated choices than from twelve.
 fn xlerobot_tools(peer_url :: Str, session_id :: Str) -> List[t.Tool] {
-  list.map([srv.move_base_cap(), srv.move_arm_cap(), srv.grasp_arm_cap(), srv.locate_object_cap(), srv.transform_to_arm_cap(), srv.read_base_cap(), srv.speak_cap()], fn (c :: cap.Capability) -> t.Tool {
+  list.map([srv.move_base_cap(), srv.move_arm_cap(), srv.grasp_arm_cap(), srv.locate_object_cap(), srv.scan_ahead_cap(), srv.transform_to_arm_cap(), srv.read_base_cap(), srv.speak_cap()], fn (c :: cap.Capability) -> t.Tool {
     robot_tool(peer_url, session_id, c)
   })
 }
 
 # ── Agent construction ───────────────────────────────────────────────────
 fn planner_goal() -> Str {
-  str.join(["You control a real robot (XLeRobot: a dual-arm mobile base) through a ", "fixed set of tools. Every tool call you make is independently checked ", "by a safety grant on the SERVER before it does anything -- you have no ", "authority beyond what that grant allows, so propose the plan you think ", "is right and let the server tell you if it's refused.\n\n", "Rules:\n", "1) To fetch a named object, first call locate_object to find its real ", "position -- never guess coordinates.\n", "2) After driving the base, call transform_to_arm with the object's ", "world position (the 'world' field locate_object returned) to get a ", "fresh arm-frame target -- the base moving invalidates any earlier ", "arm-frame offset, only the world position stays valid.\n", "3) If a tool call comes back denied/killed/stalled, do not blindly ", "retry the same thing -- read the reason, adjust if you reasonably can, ", "or stop and explain the problem in your final reply.\n", "4) Use speak only for a short, useful confirmation to the human -- ", "typically once, near the end -- not for every intermediate step.\n", "5) Finish with a brief plain-text summary of what happened, whether ", "the goal was achieved, and why not if it wasn't."], "")
+  str.join(["You control a real robot (XLeRobot: a dual-arm mobile base) through a ", "fixed set of tools. Every tool call you make is independently checked ", "by a safety grant on the SERVER before it does anything -- you have no ", "authority beyond what that grant allows, so propose the plan you think ", "is right and let the server tell you if it's refused.\n\n", "Rules:\n", "1) To fetch a named object, first call locate_object to find its real ", "position -- never guess coordinates.\n", "2) After driving the base, call transform_to_arm with the object's ", "world position (the 'world' field locate_object returned) to get a ", "fresh arm-frame target -- the base moving invalidates any earlier ", "arm-frame offset, only the world position stays valid.\n", "3) Before driving anywhere you have not just looked at, call scan_ahead. It ", "reports obstacles with a BEARING IN DEGREES, read off a scale drawn into ", "the image: negative is left, 0 is straight ahead, positive is right. Turn ", "to face a gap before moving into it, and treat any obstacle within about ", "15 degrees of 0 as being in your path.\n", "4) scan_ahead's clear_ahead is three-valued. \"unknown\" means the floor ", "could not be seen - too dark, occluded, or the camera angled up. It is NOT ", "a yes. Do not drive on \"unknown\": say what is blocking the view, or get ", "a better angle first.\n", "5) If a tool call comes back denied/killed/stalled, do not blindly ", "retry the same thing -- read the reason, adjust if you reasonably can, ", "or stop and explain the problem in your final reply.\n", "6) Use speak only for a short, useful confirmation to the human -- ", "typically once, near the end -- not for every intermediate step.\n", "7) Finish with a brief plain-text summary of what happened, whether ", "the goal was achieved, and why not if it wasn't."], "")
 }
 
 # Provider/model are explicit params (not baked in) so a test can substitute

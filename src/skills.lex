@@ -553,6 +553,12 @@ fn detect_object(r :: t.Robot, name :: Str) -> [net, sense] Result[Str, Str] {
   sense.detect_object(r, name)
 }
 
+# Bearing-aware forward scan via the split-compute vision service —
+# see sense.scan_ahead. Sensing only.
+fn scan_ahead(r :: t.Robot, question :: Str) -> [net, sense] Result[Str, Str] {
+  sense.scan_ahead(r, question)
+}
+
 # Vision-based object localization — see sense.locate_object.
 fn locate_object(r :: t.Robot, name :: Str) -> [net, sense] Result[t.Located, Str] {
   sense.locate_object(r, name)

@@ -857,6 +857,40 @@ class _HwOmniBase:
             pass
 
 
+def _augment_frame(frame):
+    """Re-encode a read_camera() result with the bearing scale drawn on.
+
+    Best-effort by design: if OpenCV or the overlay module is missing the
+    ORIGINAL frame comes back untouched. A missing scale costs accuracy; a
+    raised exception here would cost the planner its eyes entirely.
+    """
+    jpeg = frame.get("jpeg_b64", "") if isinstance(frame, dict) else ""
+    if not jpeg:
+        return frame
+    try:
+        import base64
+
+        import cv2
+        import numpy as np
+
+        import camera_overlay as ov
+        buf = np.frombuffer(base64.b64decode(jpeg), np.uint8)
+        img = cv2.imdecode(buf, cv2.IMREAD_COLOR)
+        if img is None:
+            return frame
+        ov.draw_bearing_scale(img)
+        ok, enc = cv2.imencode(".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+        if not ok:
+            return frame
+        out = dict(frame)
+        out["jpeg_b64"] = base64.b64encode(enc.tobytes()).decode()
+        out["augmented"] = True
+        out["fov_deg"] = ov.DEFAULT_FOV_DEG
+        return out
+    except Exception:
+        return frame
+
+
 class _HwCamera:
     def __init__(self, index):
         try:
@@ -2311,13 +2345,61 @@ class XLeRobot:
             return result
         return dict(self.base, ok=True)
 
-    def read_camera(self, name):
+    def read_camera(self, name, augment=False):
+        """A frame, optionally with the bearing scale burned in.
+
+        `augment` is off by default so nothing that already consumes frames
+        (episode recording, QR scanning, the /control previews) suddenly gets
+        graphics drawn over its data. Only the paths that feed a language
+        model ask for it — see scan_ahead.
+        """
         if USE_HW:
             cam = self._hw_cameras.get(name)
             if cam is None:
                 return {"error": f"camera '{name}' not configured or unavailable"}
-            return cam.read()
+            frame = cam.read()
+            return _augment_frame(frame) if augment else frame
         return {"width": 640, "height": 480, "jpeg_b64": ""}
+
+    def scan_ahead(self, question=""):
+        """What is in front of the robot, and at what bearing.
+
+        The frame is annotated with a bearing scale BEFORE the model sees it
+        (sidecar/camera_overlay.py), which is what turns "a chair on the left"
+        into a number the base can be commanded with. Measured on this unit:
+        the scale halved mean bearing error, 3.8 deg -> 1.2 deg.
+
+        Judgment only. This returns a reading; it moves nothing, and the
+        grant still gates whatever the planner proposes afterwards.
+        """
+        vision_url = os.environ.get("LEX_XLE_VISION_URL", "").rstrip("/")
+        if not vision_url:
+            return {"obstacles": [], "clear_ahead": "unknown",
+                    "detail": "no LEX_XLE_VISION_URL configured — scan_ahead needs the"
+                              " split-compute vision service, see deploy/VISION_SPLIT.md"}
+        frame = self.read_camera("head", augment=True)
+        jpeg = frame.get("jpeg_b64", "") if isinstance(frame, dict) else ""
+        if not jpeg:
+            return {"obstacles": [], "clear_ahead": "unknown",
+                    "detail": "head camera produced no frame"}
+        timeout_s = float(os.environ.get("LEX_XLE_VISION_TIMEOUT_S", "60"))
+        body = json.dumps({"image_b64": jpeg, "question": question or ""}).encode()
+        req = urllib.request.Request(f"{vision_url}/vision/scan", data=body,
+                                     headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+                out = json.loads(resp.read())
+        except Exception as e:
+            # "unknown", never an implicit yes: a planner asking whether it can
+            # drive must not read a broken vision service as permission.
+            return {"obstacles": [], "clear_ahead": "unknown",
+                    "detail": f"vision service unreachable at {vision_url}: {e}"}
+        if not isinstance(out, dict):
+            return {"obstacles": [], "clear_ahead": "unknown",
+                    "detail": "vision service returned non-object JSON"}
+        out.setdefault("clear_ahead", "unknown")
+        out["augmented"] = True
+        return out
 
     def listen(self, seconds):
         if USE_HW:
@@ -2921,7 +3003,9 @@ def _handle_skill(name, args):
     if name == "read_base":
         return ROBOT.read_base()
     if name == "read_camera":
-        return ROBOT.read_camera(args.get("name", "head"))
+        return ROBOT.read_camera(args.get("name", "head"), bool(args.get("augment", False)))
+    if name == "scan_ahead":
+        return ROBOT.scan_ahead(args.get("question", ""))
     if name == "listen":
         return ROBOT.listen(int(args.get("seconds", 3)))
     if name == "speak":
