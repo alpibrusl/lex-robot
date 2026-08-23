@@ -23,7 +23,8 @@ ACCURACY WARNING
 The labels are only as true as LEX_XLE_CAMERA_FOV. Get the field of view wrong
 and every number is confidently wrong — worse than no scale at all, because
 the model will trust it and so will the planner. Measure it on the real
-camera (see measure_fov_hint) before relying on the numbers to steer.
+camera with scripts/measure_camera_fov.py, IN GOOD LIGHT, before relying on
+the numbers to steer.
 
 Pure functions over numpy arrays: no camera, no sidecar, no model. Tested in
 test_camera_overlay.py.
@@ -35,9 +36,12 @@ import os
 #
 # 90 is a generic-webcam guess and remains the fallback, but it is NOT this
 # robot's value: measured on the XLeRobot's head camera (Sonix 05a3:9230 at
-# 640x480) the answer is 79.3 deg, and deploy/pi/xlerobot.env.example sets it.
-# An 11-degree error moves the +30 mark by about 20px — enough to steer past
-# the wrong side of an obstacle — so measure rather than inherit this default.
+# 640x480) the answer is 85.2 deg, and deploy/pi/xlerobot.env.example sets it.
+# Measure with scripts/measure_camera_fov.py rather than inheriting this
+# default — and measure IN GOOD LIGHT. A first attempt in a dark room returned
+# 79.3 deg with a convincing R^2 of 0.9938 and was wrong by 6 degrees, because
+# phase correlation locked onto noise consistently rather than randomly. R^2
+# can only see whether the samples agree, not whether they are right.
 DEFAULT_FOV_DEG = float(os.environ.get("LEX_XLE_CAMERA_FOV", "90"))
 
 # Where marks are drawn, in degrees from centre. Every 15 deg matches the
@@ -142,7 +146,7 @@ def fov_from_rotation(samples, width_px):
     follows. The encoder supplies the angle, so nothing depends on a human
     estimate or a datasheet.
 
-    This is how this unit's 79.3 deg was established, using the tower's pan
+    This is how this unit's 85.2 deg was established, using the tower's pan
     servo — see deploy/pi/xlerobot.env.example for the measurement and its
     caveats. Returns (fov_deg, focal_px, r_squared); judge the fit before
     trusting the number.

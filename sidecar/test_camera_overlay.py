@@ -104,13 +104,13 @@ def test_fov_from_rotation_recovers_a_known_lens():
 
     Guards the self-measurement path that produced this unit's 79.3 deg.
     """
-    f_true = 386.2
+    f_true = 348.4
     samples = [(a, f_true * math.tan(math.radians(a)))
-               for a in (-10.283, -7.295, 3.252, 6.855, 10.283)]
+               for a in (-13.0, -10.5, -7.9, -5.3, -2.6, 2.6, 5.3, 7.9, 10.5, 13.0)]
     fov, f, r2 = ov.fov_from_rotation(samples, 640)
     assert f == pytest.approx(f_true, abs=0.1)
     assert r2 == pytest.approx(1.0, abs=1e-9)
-    assert fov == pytest.approx(79.3, abs=0.1)
+    assert fov == pytest.approx(85.2, abs=0.1)
 
 
 def test_fov_from_rotation_reports_a_poor_fit_rather_than_hiding_it():
@@ -120,7 +120,19 @@ def test_fov_from_rotation_reports_a_poor_fit_rather_than_hiding_it():
 
 
 def test_this_units_measured_fov_moves_the_marks_meaningfully():
-    """79.3 vs the generic 90 default is not a rounding difference."""
-    at_79 = ov.angle_to_x(30, 640, 79.3)
-    at_90 = ov.angle_to_x(30, 640, 90)
-    assert abs(at_79 - at_90) > 15
+    """85.2 vs the generic 90 default is not a rounding difference."""
+    at_meas = ov.angle_to_x(30, 640, 85.2)
+    at_default = ov.angle_to_x(30, 640, 90)
+    assert abs(at_meas - at_default) > 5
+
+
+def test_the_dark_room_measurement_would_have_mislabelled_the_scale():
+    """Regression on the lesson, not just the number.
+
+    The first measurement (dark room) gave 79.3 deg. Pinning how far that
+    misplaces a mark keeps the 'measure in good light' warning concrete: if
+    someone re-measures badly, this is the size of error they inherit.
+    """
+    good = ov.angle_to_x(30, 640, 85.2)
+    dark = ov.angle_to_x(30, 640, 79.3)
+    assert abs(good - dark) > 15

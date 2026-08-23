@@ -38,7 +38,7 @@ import tower  # noqa: E402
 LEFT = os.environ.get("LEX_XLE_LEFT_PORT",
                       "/dev/serial/by-id/usb-1a86_USB_Single_Serial_5B3D043715-if00")
 HEAD_INDEX = int(os.environ.get("LEX_XLE_CAMERA_HEAD_INDEX", "4"))
-OFFSETS = [-120, -80, -40, 40, 80, 120]   # ticks; 4096 ticks = 360 deg
+OFFSETS = [-150, -120, -90, -60, -30, 30, 60, 90, 120, 150]   # ticks; 4096 ticks = 360 deg
 
 
 def open_head():
