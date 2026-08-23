@@ -46,7 +46,46 @@ CAL = pathlib.Path.home() / ".cache/huggingface/lerobot/calibration/robots/so_fo
 # little air so a command cannot sit exactly on one.
 MARGIN = 10
 LOAD_ABORT = 700
+DEADBAND = 15        # ticks; below this, leave the joint where gravity has it
 GRIP_OPEN = 2900
+
+
+BODY = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex"]
+
+
+def pick_grasp_frame(rec, open_min=2300, back_off=0):
+    """The pose the HAND put the arm in — not the pose gravity left behind.
+
+    Three pickers were tried; the first two were confidently wrong:
+
+      rec[-1]            -> the SAG. A fixed-length recording keeps sampling
+                            after the operator lets go. Replaying it aimed the
+                            wrist camera at the ceiling light. Seductive
+                            because it matches the arm's settled pose exactly,
+                            which reads as confirmation.
+      last frame moving  -> ALSO the sag: falling IS motion, and the arm
+                            dropping 1300 ticks is the biggest movement in the
+                            file.
+      last frame with    -> STILL the sag on this unit: the shoulder fell
+      the gripper open      before the gripper did.
+
+    What actually separates them is REACH. The target is out on the desk, so
+    the grasp is where the arm is most extended toward it while the fingers are
+    still held open. Gravity pulls the shoulder the other way, so the extended
+    pose cannot be a resting one.
+
+    This picker is still a heuristic, so the caller MUST confirm with a camera
+    before closing rather than trusting it.
+    """
+    open_frames = [r for r in rec if r["gripper"] >= open_min]
+    if not open_frames:
+        print(f"  WARNING: gripper never opened past {open_min} — cannot identify a grasp")
+        return None
+    best = max(open_frames, key=lambda r: r["shoulder_lift"])
+    print(f"  grasp frame: t={best['t']:.1f}s, the most-extended pose with the fingers "
+          f"open (shoulder_lift {best['shoulder_lift']}, vs {rec[-1]['shoulder_lift']} "
+          f"where the arm ended up after release)")
+    return best
 
 
 def main():
@@ -54,13 +93,16 @@ def main():
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--demo", required=True, help="recorded hand-guided session (json)")
     p.add_argument("--steps", type=int, default=14, help="interpolation steps")
+    p.add_argument("--target", default="beer can")
     p.add_argument("--dry-run", action="store_true", help="pose, but never close")
     a = p.parse_args()
 
     from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
 
     rec = json.loads(pathlib.Path(a.demo).read_text())
-    goal = rec[-1]
+    goal = pick_grasp_frame(rec)
+    if goal is None:
+        sys.exit("no usable grasp frame in that recording")
     cal = json.loads(CAL.read_text()) if CAL.is_file() else {}
     grip_demo = int(goal["gripper"])
 
@@ -104,10 +146,19 @@ def main():
         if any(abs(v) > 5 for v in sag.values()):
             print(f"    arm settled since the initial read: {sag}")
         start = {j: int(settled[j]) for j in ARM}
+        now_pos = dict(start)
         for s in range(1, a.steps + 1):
             frac = s / a.steps
             for j in ARM:
                 tgt = clamp(j, start[j] + (int(goal[j]) - start[j]) * frac)
+                # DEADBAND: leave a joint alone if it is already essentially
+                # there. Gravity rests this arm within a few ticks of the
+                # demonstrated pose, and commanding those last few ticks can
+                # mean lifting against gravity for no benefit — wrist_flex rests
+                # at 2061 while the clamp insisted on 2070, and holding those 9
+                # ticks cost load 984. Not commanding it costs nothing.
+                if abs(tgt - int(now_pos.get(j, start[j]))) <= DEADBAND:
+                    continue
                 rob.bus.write("Goal_Position", j, tgt, normalize=False, num_retry=3)
             time.sleep(0.45)
             # Load must be read AFTER the joint settles, and as a median.
@@ -117,6 +168,9 @@ def main():
             # produced "the arm is at its limit, the can is out of reach" —
             # a conclusion about the hardware drawn from a measurement bug.
             time.sleep(0.35)
+            now_pos = {j: int(v) for j, v in
+                       rob.bus.sync_read("Present_Position", normalize=False,
+                                         num_retry=3).items()}
             hot = []
             for j in ARM:
                 v = sorted(rob.bus.read("Present_Load", j, normalize=False, num_retry=3) & 0x3FF
@@ -132,6 +186,40 @@ def main():
         now = rob.bus.sync_read("Present_Position", normalize=False, num_retry=3)
         err = {j: int(now[j]) - clamp(j, goal[j]) for j in ARM}
         print(f"  arrived; per-joint error from the demo pose: {err}")
+
+        # CONFIRM before closing. The frame picker is a heuristic and has been
+        # wrong twice; closing blind on its say-so is how the last attempt
+        # squeezed air while reporting a tidy per-joint error.
+        import base64
+        import urllib.request
+
+        import cv2
+        cap = cv2.VideoCapture(2, cv2.CAP_V4L2)
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        for _ in range(8):
+            cap.read()
+        ok, fr = cap.read()
+        cap.release()
+        seen = None
+        if ok:
+            cv2.imwrite("/tmp/claude-1000/-home-alfonso-workspace/"
+                        "e7d5ffed-8a14-42d7-91fa-80157fe6e8a5/scratchpad/before_close.jpg", fr)
+            b = base64.b64encode(cv2.imencode(".jpg", fr)[1].tobytes()).decode()
+            try:
+                rq = urllib.request.Request(
+                    "http://127.0.0.1:8901/vision/detect",
+                    data=json.dumps({"image_b64": b, "name": a.target}).encode(),
+                    headers={"Content-Type": "application/json"})
+                seen = json.loads(urllib.request.urlopen(rq, timeout=150).read())
+            except Exception as e:
+                print(f"    confirm: vision unreachable ({e})")
+        print(f"    confirm: wrist camera sees {a.target}? {seen}")
+        if not (seen or {}).get("found"):
+            outcome = (f"REFUSING to close: the wrist camera cannot see the {a.target} "
+                       "from this pose, so the frame picker chose wrong again")
+            return 1
 
         if a.dry_run:
             outcome = "dry run — at the demonstrated pose, gripper NOT closed"
