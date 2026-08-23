@@ -97,3 +97,30 @@ def test_arm_range_is_opt_in():
 def test_focal_length_matches_the_pinhole_definition():
     assert ov.focal_px(640, 90) == pytest.approx(320.0)
     assert ov.focal_px(640, 60) == pytest.approx(320.0 / math.tan(math.radians(30)))
+
+
+def test_fov_from_rotation_recovers_a_known_lens():
+    """Synthesise shifts from a known focal length and check we get it back.
+
+    Guards the self-measurement path that produced this unit's 79.3 deg.
+    """
+    f_true = 386.2
+    samples = [(a, f_true * math.tan(math.radians(a)))
+               for a in (-10.283, -7.295, 3.252, 6.855, 10.283)]
+    fov, f, r2 = ov.fov_from_rotation(samples, 640)
+    assert f == pytest.approx(f_true, abs=0.1)
+    assert r2 == pytest.approx(1.0, abs=1e-9)
+    assert fov == pytest.approx(79.3, abs=0.1)
+
+
+def test_fov_from_rotation_reports_a_poor_fit_rather_than_hiding_it():
+    noisy = [(-10.0, 60.0), (-5.0, 5.0), (5.0, -55.0), (10.0, -10.0)]
+    _fov, _f, r2 = ov.fov_from_rotation(noisy, 640)
+    assert r2 < 0.9, "inconsistent samples must show up as a bad R^2"
+
+
+def test_this_units_measured_fov_moves_the_marks_meaningfully():
+    """79.3 vs the generic 90 default is not a rounding difference."""
+    at_79 = ov.angle_to_x(30, 640, 79.3)
+    at_90 = ov.angle_to_x(30, 640, 90)
+    assert abs(at_79 - at_90) > 15

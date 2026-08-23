@@ -31,8 +31,13 @@ test_camera_overlay.py.
 import math
 import os
 
-# Default horizontal field of view, degrees. A guess for a generic USB webcam
-# and the single most likely thing to be wrong here — see the warning above.
+# Default horizontal field of view, degrees. Set LEX_XLE_CAMERA_FOV per unit.
+#
+# 90 is a generic-webcam guess and remains the fallback, but it is NOT this
+# robot's value: measured on the XLeRobot's head camera (Sonix 05a3:9230 at
+# 640x480) the answer is 79.3 deg, and deploy/pi/xlerobot.env.example sets it.
+# An 11-degree error moves the +30 mark by about 20px — enough to steer past
+# the wrong side of an obstacle — so measure rather than inherit this default.
 DEFAULT_FOV_DEG = float(os.environ.get("LEX_XLE_CAMERA_FOV", "90"))
 
 # Where marks are drawn, in degrees from centre. Every 15 deg matches the
@@ -128,15 +133,28 @@ def draw_bearing_scale(frame, fov_deg=None, marks_deg=DEFAULT_MARKS_DEG,
     return frame
 
 
-def measure_fov_hint():
-    """How to establish the real FOV, since the default is a guess.
+def fov_from_rotation(samples, width_px):
+    """Derive FOV from (rotation_deg, pixel_shift) pairs — no tape measure.
 
-    Returned as text rather than done automatically: it needs a tape measure,
-    and a wrong answer here poisons every bearing the planner acts on.
+    A robot whose camera sits on a servo can measure its own lens: rotate by a
+    known angle, phase-correlate the image shift, and for a pure rotation
+    dx = f * tan(theta). Fitting through the origin gives f, and the FOV
+    follows. The encoder supplies the angle, so nothing depends on a human
+    estimate or a datasheet.
+
+    This is how this unit's 79.3 deg was established, using the tower's pan
+    servo — see deploy/pi/xlerobot.env.example for the measurement and its
+    caveats. Returns (fov_deg, focal_px, r_squared); judge the fit before
+    trusting the number.
     """
-    return (
-        "Place a narrow object so it sits exactly at the left edge of the frame. "
-        "Measure d = its perpendicular distance from the lens, and o = its offset "
-        "from the camera's centre line, in the same units. Then "
-        "FOV = 2 * degrees(atan(o / d)). Set LEX_XLE_CAMERA_FOV to that."
-    )
+    xs = [math.tan(math.radians(a)) for a, _ in samples]
+    ys = [dx for _, dx in samples]
+    denom = sum(x * x for x in xs)
+    if not denom:
+        raise ValueError("all rotations were zero — nothing to fit")
+    f = sum(x * y for x, y in zip(xs, ys)) / denom
+    mean = sum(ys) / len(ys)
+    ss_res = sum((y - f * x) ** 2 for x, y in zip(xs, ys))
+    ss_tot = sum((y - mean) ** 2 for y in ys)
+    r2 = 1 - ss_res / ss_tot if ss_tot else 0.0
+    return 2 * math.degrees(math.atan(width_px / (2 * abs(f)))), abs(f), r2
