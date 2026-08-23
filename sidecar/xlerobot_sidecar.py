@@ -349,9 +349,43 @@ class _HwArm:
         self.side = side
         self.config = SO101FollowerConfig(**cfg_kwargs)
         self.follower = SO101Follower(self.config)
-        self.follower.connect(calibrate=False)
+        self._connect_without_snapping()
         self._kinematics = self._make_kinematics()
         self._ik = self._make_ik()
+
+    def _connect_without_snapping(self):
+        """`follower.connect(calibrate=False)`, but the arm cannot lunge as it
+        engages.
+
+        lerobot's connect() ends in configure(), and configure()'s
+        `with bus.torque_disabled():` re-enables torque on the way out. Nothing
+        in that path touches Goal_Position, so the servos engage against
+        whatever goal they already hold -- and a servo that has just been
+        powered up holds 0. Measured on this unit on the Pi after a fresh
+        power-up: every joint's Goal_Position read 0 while the arms rested
+        limp, the furthest 3046 ticks (~268 deg) away, and configure_motors()
+        sets Acceleration=254 immediately beforehand. Plain connect() would
+        therefore drive every joint to the bottom of its encoder at maximum
+        acceleration.
+
+        Syncing goal to present first -- while torque is still off, so the
+        write moves nothing -- makes engaging a no-op: the arm stiffens where
+        it stands. This is the same discipline tower.py's hold() already
+        applies to the tower servos, which share these buses.
+
+        Raw ticks on both sides (normalize=False): this is a hardware-frame
+        round trip and must not depend on the calibration being loaded.
+        """
+        bus = self.follower.bus
+        bus.connect()
+        bus.sync_write(
+            "Goal_Position",
+            bus.sync_read("Present_Position", normalize=False),
+            normalize=False,
+        )
+        for cam in self.follower.cameras.values():
+            cam.connect()
+        self.follower.configure()
 
     def _make_kinematics(self):
         """Best-effort: build lerobot's placo-based RobotKinematics for this
