@@ -318,6 +318,60 @@ def library_list() -> list[dict]:
     return out
 
 
+# ── the home pose ───────────────────────────────────────────────────────────
+#
+# Every demonstration should start from the SAME pose. Otherwise the policy has
+# to account for variation that is not part of the task -- and worse, without a
+# way to position the arm outside a recording, the only way to pose it was to
+# start recording and move it there, so the repositioning became the opening of
+# every demonstration.
+
+def home_path(arm: str) -> "Path":
+    return library_dir() / f"home_{safe_name(arm)}.json"
+
+
+def save_home(arm: str, joints: list[str], positions: list[float]) -> dict:
+    d = {"arm": arm, "joints": list(joints),
+         "positions": [round(float(v), 3) for v in positions],
+         "saved_at": time.strftime("%Y-%m-%dT%H:%M:%S")}
+    home_path(arm).write_text(json.dumps(d, indent=1) + "\n")
+    return d
+
+
+def load_home(arm: str) -> dict | None:
+    f = home_path(arm)
+    if not f.exists():
+        return None
+    try:
+        return json.loads(f.read_text())
+    except Exception:
+        return None
+
+
+def go_to(bus, joints: list[str], target: list[float], *, max_step_deg: float = 6.0,
+          period_s: float = 0.05, collision_check=None) -> dict:
+    """Drive an already-connected bus to a pose, creeping rather than snapping.
+
+    Same discipline as replay: bounded steps from wherever the arm actually is,
+    and every intermediate pose can be vetoed before it is commanded.
+    """
+    obs = bus.sync_read("Present_Position")
+    current = [float(obs[j]) for j in joints]
+    bus.enable_torque()
+    sent = 0
+    for frame in approach_path(current, target, max_step_deg):
+        if collision_check is not None:
+            hits = collision_check({f"{j}.pos": v for j, v in zip(joints, frame)})
+            if hits:
+                return {"outcome": "denied", "frames_sent": sent,
+                        "detail": "stopped: " + "; ".join(str(h) for h in hits[:3])}
+        bus.sync_write("Goal_Position", dict(zip(joints, frame)))
+        sent += 1
+        time.sleep(period_s)
+    return {"outcome": "reached", "frames_sent": sent,
+            "detail": f"moved to the saved home pose in {sent} step(s)"}
+
+
 # ── hardware ────────────────────────────────────────────────────────────────
 
 def _robot(port: str, robot_id: str):

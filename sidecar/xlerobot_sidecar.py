@@ -1215,6 +1215,23 @@ TEACH_PAGE_HTML = """<!doctype html>
 <div class="wrap">
 
 <div class="panel">
+  <h2>POSITION THE ARM</h2>
+  <div class="hint">
+    Do this BEFORE recording. Otherwise the only way to unlock the arm is to start a
+    recording, and repositioning becomes the opening of every demonstration.
+    Every demonstration should begin from the SAME pose &mdash; variation the task does
+    not contain is variation the policy has to learn anyway.
+  </div>
+  <div class="row" style="margin-top:8px">
+    <button id="free">Free arm</button>
+    <button id="hold">Lock where it is</button>
+    <button id="sethome">Set this as home</button>
+    <button id="gohome" class="go">Go to home</button>
+  </div>
+  <div class="status" id="posstatus"></div>
+</div>
+
+<div class="panel">
   <h2>RECORD A DEMONSTRATION</h2>
   <div class="hint">
     The five arm joints go LIMP when recording starts &mdash; these servos have no gravity
@@ -1272,6 +1289,27 @@ async function skill(name, args) {
                                            body: JSON.stringify(args || {})});
   return r.json();
 }
+function say(el, res, okKey) {
+  const good = okKey === 'outcome' ? res.outcome === 'reached' : res.ok;
+  $(el).innerHTML = (good ? '<span class="ok">' : '<span class="bad">')
+    + (res.detail || res.outcome || '') + '</span>';
+}
+$('free').onclick = async () => say('posstatus',
+  await skill('teach_free', {arm: $('arm').value, include_gripper: $('freegrip').checked}), 'ok');
+$('hold').onclick = async () => say('posstatus', await skill('teach_hold', {arm: $('arm').value}), 'ok');
+$('sethome').onclick = async () => say('posstatus', await skill('teach_home_set', {arm: $('arm').value}), 'ok');
+$('gohome').onclick = async () => {
+  $('posstatus').textContent = 'moving to home...';
+  say('posstatus', await skill('teach_home_go', {arm: $('arm').value}), 'outcome');
+};
+async function showHome() {
+  const r = await skill('teach_home_get', {arm: $('arm').value});
+  $('gohome').disabled = !r.ok;
+  if (!r.ok) $('posstatus').innerHTML = '<span class="warn">no home pose saved for this arm '
+    + '&mdash; Free it, position it, then Set this as home</span>';
+}
+$('arm').addEventListener('change', showHome);
+
 $('start').onclick = async () => {
   const name = $('name').value.trim();
   if (!name) { $('recstatus').innerHTML = '<span class="bad">give it a name first</span>'; return; }
@@ -1382,7 +1420,7 @@ async function del(name) {
   await skill('teach_delete', {name});
   refresh();
 }
-ensureCamBoxes(); refreshCams(); refresh(); poll();
+ensureCamBoxes(); refreshCams(); refresh(); poll(); showHome();
 setInterval(poll, 1000);
 // Slower than the status poll: each frame is a bus-locked read, and the
 // recorder needs that bus. A preview is for checking framing, not for
@@ -2655,6 +2693,58 @@ def _handle_skill(name, args):
                            args.get("task", ""), args.get("tags", []),
                            float(args.get("fps", 20)), float(args.get("seconds", 120)),
                            args.get("cameras"), bool(args.get("free_gripper", False)))
+    if name in ("teach_free", "teach_hold"):
+        import teach as _teach
+        arm = args.get("arm", "left")
+        if not USE_HW:
+            return {"ok": True, "detail": f"(simulated) {arm} arm would be "
+                                          f"{'freed' if name == 'teach_free' else 'held'}"}
+        hw = ROBOT._hw_arms.get(arm)
+        if hw is None:
+            return {"ok": False, "detail": f"{arm} arm not configured"}
+        # Positioning the arm must NOT require starting a recording -- doing so
+        # made every demonstration open with the operator repositioning.
+        free = _teach.ARM_JOINTS if args.get("include_gripper") else _teach.BODY_JOINTS
+        if name == "teach_free":
+            hw.follower.bus.disable_torque(free)
+            return {"ok": True, "free": list(free),
+                    "detail": f"{arm} arm free -- move it by hand, then Lock or Set home"}
+        # Hold WHERE IT IS: sync the goal to the present position first, or
+        # enabling torque snaps the arm back to a stale target.
+        obs = hw.follower.bus.sync_read("Present_Position")
+        hw.follower.bus.sync_write("Goal_Position", obs)
+        hw.follower.bus.enable_torque()
+        return {"ok": True, "detail": f"{arm} arm holding where it is"}
+    if name == "teach_home_set":
+        import teach as _teach
+        arm = args.get("arm", "left")
+        if not USE_HW:
+            return {"ok": True, "detail": "(simulated) home not saved without hardware"}
+        hw = ROBOT._hw_arms.get(arm)
+        if hw is None:
+            return {"ok": False, "detail": f"{arm} arm not configured"}
+        obs = hw.follower.bus.sync_read("Present_Position")
+        d = _teach.save_home(arm, _teach.ARM_JOINTS, [float(obs[j]) for j in _teach.ARM_JOINTS])
+        return {"ok": True, "home": d, "detail": f"saved this pose as {arm} home"}
+    if name == "teach_home_get":
+        import teach as _teach
+        h = _teach.load_home(args.get("arm", "left"))
+        return {"ok": h is not None, "home": h,
+                "detail": "no home saved for this arm" if h is None else "home pose"}
+    if name == "teach_home_go":
+        import teach as _teach
+        arm = args.get("arm", "left")
+        h = _teach.load_home(arm)
+        if h is None:
+            return {"outcome": "refused", "detail": f"no home saved for the {arm} arm -- "
+                                                    f"free it, position it, then Set home"}
+        if not USE_HW:
+            return {"outcome": "reached", "detail": "(simulated) would move to home"}
+        hw = ROBOT._hw_arms.get(arm)
+        if hw is None:
+            return {"outcome": "stalled", "detail": f"{arm} arm not configured"}
+        return _teach.go_to(hw.follower.bus, h["joints"], h["positions"],
+                            collision_check=ROBOT._collision_check_for(arm))
     if name == "teach_stop":
         return TEACH.stop(bool(args.get("keep_still", False)))
     if name == "teach_status":
