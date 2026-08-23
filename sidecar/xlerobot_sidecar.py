@@ -449,6 +449,44 @@ class _HwArm:
         return {"names": [f"{self.side}_{j}" for j in ARM_JOINTS], "positions": positions,
                 "velocities": [0.0] * len(ARM_JOINTS)}
 
+    def read_health(self):
+        """Rail voltage and worst joint temperature for this arm.
+
+        The servos' Present_Voltage IS the battery telemetry on this build --
+        there is no separate fuel gauge, and the pack feeds the servo rail
+        directly. Every servo reports it and they agree closely, so the median
+        rejects a single bad read without needing all of them to answer.
+
+        Held under the port lock like any other bus traffic. On a marginal bus
+        some joints simply will not answer; that is reported as `joints`
+        (how many did) rather than being averaged away, because a falling
+        count is itself the interesting signal.
+
+        Read per-motor rather than via sync_read: a group sync read of these
+        one-byte status registers fails outright on this stack (ConnectionError
+        from the comm layer) even while position reads are fine, and a
+        per-motor loop also lets one silent joint be counted instead of
+        failing the whole strip.
+        """
+        volts, temps = {}, {}
+        with hold_port(self.config.port):
+            for motor in ARM_JOINTS:
+                for reg, sink in (("Present_Voltage", volts), ("Present_Temperature", temps)):
+                    try:
+                        sink[motor] = self.follower.bus.read(
+                            reg, motor, normalize=False, num_retry=2)
+                    except Exception:
+                        pass  # one quiet joint must not take the whole reading down
+        out = {"joints": len(volts), "of": len(ARM_JOINTS)}
+        if volts:
+            ordered = sorted(volts.values())
+            out["volts"] = round(ordered[len(ordered) // 2] / 10.0, 1)
+        if temps:
+            hottest = max(temps, key=lambda k: temps[k])
+            out["temp_c"] = int(temps[hottest])
+            out["hottest"] = hottest
+        return out
+
     def read_pose(self):
         try:
             obs = self.follower.get_observation()
@@ -1131,8 +1169,24 @@ DISPLAY_PAGE_HTML = """<!doctype html>
                         touch-action:manipulation;-webkit-tap-highlight-color:transparent}
   #stage .prompt button:disabled{opacity:0.35}
   #stage .prompt button.chosen{background:#2e7d32;border-color:#66bb6a;opacity:1}
+  /* Always-on status strip. Sits over the bottom edge so it costs the content
+     no room, and stays quiet: dim grey until something is actually wrong. */
+  #status{position:fixed;left:0;right:0;bottom:0;display:flex;gap:2.4vw;
+          align-items:center;padding:1.1vh 2.4vw;
+          font:2.0vh/1 -apple-system,Helvetica,Arial,sans-serif;
+          color:#7c8496;background:rgba(0,0,0,0.55);
+          border-top:1px solid #1e2230;letter-spacing:.02em}
+  #status .dot{width:1.5vh;height:1.5vh;border-radius:50%;background:#4ade80;
+               flex:none;box-shadow:0 0 1.4vh rgba(74,222,128,.7)}
+  #status.bad .dot{background:#f87171;box-shadow:0 0 1.4vh rgba(248,113,113,.8)}
+  #status.bad{color:#f0a0a0}
+  #status .sp{margin-left:auto}
+  #status b{color:#c3cad8;font-weight:600}
+  #status .warn{color:#fbbf24}
 </style></head>
 <body><div id="stage"></div>
+<div id="status"><span class="dot"></span><span id="statustext">starting…</span
+   ><span id="statusup" class="sp"></span></div>
 <script>
 let lastVersion = -1;
 function render(s) {
@@ -1198,6 +1252,53 @@ async function poll() {
 }
 poll();
 setInterval(poll, 1000);
+
+// Status strip. Polled on its own, slower clock: the server caches this and
+// it reads the servo bus, so it must not ride the 1s content poll.
+function fmtUptime(s) {
+  if (s < 60) return s + 's';
+  if (s < 3600) return Math.floor(s / 60) + 'm';
+  return Math.floor(s / 3600) + 'h' + String(Math.floor((s % 3600) / 60)).padStart(2, '0');
+}
+async function pollStatus() {
+  const el = document.getElementById('status');
+  const txt = document.getElementById('statustext');
+  try {
+    const s = await (await fetch('/display/status', {cache: 'no-store'})).json();
+    const bits = [];
+    bits.push(s.mode === 'hardware' ? '<b>live</b>' : '<b>stub</b>');
+    (s.arms || []).forEach(a => {
+      const good = a.ok;
+      const detail = a.error ? a.error : (a.joints + '/' + a.of);
+      bits.push((good ? '' : '<span class="warn">') + a.side + ' ' + detail +
+                (good ? '' : '</span>'));
+    });
+    if ((s.cameras || []).length) bits.push(s.cameras.length + ' cam');
+    // Rail voltage, NOT a charge estimate -- this pack regulates its output.
+    if (s.rail_v != null) bits.push('<b>' + s.rail_v.toFixed(1) + 'V</b> rail');
+    if (s.battery && s.battery.available) bits.push('<b>' + s.battery.percent + '%</b> batt');
+    else bits.push('batt n/a');
+    if (s.servo_temp_c != null) {
+      const hot = s.servo_temp_c >= 60;
+      bits.push((hot ? '<span class="warn">' : '') + 'servo ' + s.servo_temp_c + '°C' +
+                (hot ? '</span>' : ''));
+    }
+    if (s.pi_temp_c != null) {
+      const hot = s.pi_temp_c >= 75;
+      bits.push((hot ? '<span class="warn">' : '') + 'pi ' + s.pi_temp_c.toFixed(0) + '°C' +
+                (hot ? '</span>' : ''));
+    }
+    txt.innerHTML = bits.join(' · ');
+    document.getElementById('statusup').textContent = fmtUptime(s.uptime_s || 0);
+    el.classList.toggle('bad', !s.ok);
+  } catch (e) {
+    txt.textContent = 'sidecar unreachable';
+    document.getElementById('statusup').textContent = '';
+    el.classList.add('bad');
+  }
+}
+pollStatus();
+setInterval(pollStatus, 5000);
 </script></body></html>"""
 
 TEACH_PAGE_HTML = """<!doctype html>
@@ -2864,6 +2965,118 @@ def _handle_skill(name, args):
     return {"error": f"unknown skill: {name}"}
 
 
+# ── display status strip ─────────────────────────────────────────────────────
+STATUS_TTL_S = float(os.environ.get("LEX_XLE_STATUS_TTL_S", "5"))
+_STATUS_CACHE = {"at": 0.0, "value": None}
+_STATUS_LOCK = threading.Lock()
+_STARTED_AT = time.time()
+
+
+def _pi_temp_c():
+    """Host SoC temperature. Free, and the first thing to look at when a Pi
+    starts dropping USB frames -- thermal throttling and bus trouble arrive
+    together."""
+    try:
+        with open("/sys/class/thermal/thermal_zone0/temp") as f:
+            return round(int(f.read().strip()) / 1000.0, 1)
+    except Exception:
+        return None
+
+
+def _battery_status():
+    """Whether this robot can actually report a state of charge.
+
+    On this build it cannot, and the display says so rather than implying a
+    number. Two independent reasons, either one sufficient:
+
+    1. Nothing on the host exposes a battery. /sys/class/power_supply is empty
+       and the pack presents no USB HID Power Device interface, so the OS has
+       no charge figure to report.
+    2. The pack (an Anker power station) REGULATES its DC output. Servo rail
+       voltage therefore sits flat near its nominal value regardless of state
+       of charge and falls off a cliff at cutoff -- so deriving a percentage
+       from it would read "full" until the robot died mid-task. Measured on
+       this unit: 12.1-12.2 V, unchanged across an hour and across all 16
+       servos.
+
+    Rail voltage is still worth showing, just as a rail-health signal (is the
+    supply present, is it sagging under load) rather than as a fuel gauge.
+
+    If a supply that DOES report charge is fitted later -- a UPS HID pack, or
+    an INA226 shunt on I2C -- this is the one place to teach the display about
+    it.
+    """
+    try:
+        supplies = [p for p in os.listdir("/sys/class/power_supply")
+                    if not p.startswith("_")]
+    except Exception:
+        supplies = []
+    for name in supplies:
+        try:
+            with open(f"/sys/class/power_supply/{name}/capacity") as f:
+                return {"available": True, "percent": int(f.read().strip()), "source": name}
+        except Exception:
+            continue
+    return {"available": False,
+            "reason": "no OS battery device; pack regulates its output, so rail "
+                      "voltage is not a state-of-charge signal"}
+
+
+def _build_status():
+    arms, notes = [], []
+    rail, temps = [], []
+    if USE_HW:
+        for side, arm in sorted(getattr(ROBOT, "_hw_arms", {}).items()):
+            entry = {"side": side}
+            try:
+                h = arm.read_health()
+                entry.update(h)
+                entry["ok"] = h.get("joints") == h.get("of")
+                if "volts" in h:
+                    rail.append(h["volts"])
+                if "temp_c" in h:
+                    temps.append(h["temp_c"])
+                if not entry["ok"]:
+                    notes.append(f"{side} arm: only {h.get('joints')}/{h.get('of')} joints answered")
+            except BusBusy as e:
+                entry.update({"ok": False, "error": "bus busy"})
+                notes.append(f"{side} arm: {e}")
+            except Exception as e:
+                entry.update({"ok": False, "error": type(e).__name__})
+                notes.append(f"{side} arm: {type(e).__name__}")
+            arms.append(entry)
+        for side in ("left", "right"):
+            if side not in getattr(ROBOT, "_hw_arms", {}):
+                notes.append(f"{side} arm not configured")
+    cams = sorted(getattr(ROBOT, "_hw_cameras", {})) if USE_HW else []
+    return {
+        "ok": all(a.get("ok") for a in arms) if arms else not USE_HW,
+        "mode": "hardware" if USE_HW else "stub",
+        "uptime_s": int(time.time() - _STARTED_AT),
+        "arms": arms,
+        "cameras": cams,
+        "rail_v": round(sum(rail) / len(rail), 1) if rail else None,
+        "servo_temp_c": max(temps) if temps else None,
+        "pi_temp_c": _pi_temp_c(),
+        "battery": _battery_status(),
+        "notes": notes,
+    }
+
+
+def status_snapshot():
+    """Cached so the kiosk page polling every second cannot flood the servo
+    bus -- the strip is ambient information, not telemetry."""
+    now = time.time()
+    with _STATUS_LOCK:
+        cached = _STATUS_CACHE["value"]
+        if cached is not None and (now - _STATUS_CACHE["at"]) < STATUS_TTL_S:
+            return cached
+    fresh = _build_status()
+    with _STATUS_LOCK:
+        _STATUS_CACHE["at"], _STATUS_CACHE["value"] = time.time(), fresh
+    return fresh
+
+
 class Handler(BaseHTTPRequestHandler):
     def _send(self, code, payload):
         # Compact (no space after ':') to match sim_sidecar.py and satisfy
@@ -2929,6 +3142,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_bytes(200, "text/html; charset=utf-8", CONTROL_PAGE_HTML.encode())
         if path == "/display/state":
             return self._send(200, ROBOT.display.to_json())
+        if path == "/display/status":
+            return self._send(200, status_snapshot())
         if path == "/display/content":
             return self._serve_display_content()
         return self._send(404, {"error": "not found"})
