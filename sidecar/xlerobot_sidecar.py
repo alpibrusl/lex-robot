@@ -225,8 +225,11 @@ import os
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+import governance
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("LEX_ROBOT_SIDECAR_PORT", "8900"))
@@ -1211,7 +1214,7 @@ TEACH_PAGE_HTML = """<!doctype html>
   .cam .unavail { color:var(--muted); font-size:11px; text-align:center; padding:8px; }
 </style></head>
 <body>
-<header><h1>TEACH BY DEMONSTRATION</h1><a href="/control">&rarr; arm control</a></header>
+<header><h1>TEACH BY DEMONSTRATION</h1><a href="/control">&rarr; arm control</a><a href="/governance" style="margin-left:12px">&rarr; governance</a></header>
 <div class="wrap">
 
 <div class="panel">
@@ -1492,6 +1495,7 @@ CONTROL_PAGE_HTML = """<!doctype html>
 <body>
 <header>
   <h1>XLEROBOT ARM CONTROL</h1>
+  <a href="/governance" style="color:var(--muted);text-decoration:none">&rarr; governance</a>
   <div id="gate"><input type="checkbox" id="enable"><label for="enable">Enable control</label></div>
 </header>
 <div id="notice">"Enable control" only gates this page's buttons -- it is not a
@@ -1890,6 +1894,218 @@ setInterval(poll, 500);
 </body></html>"""
 
 
+GOVERNANCE_PAGE_HTML = """<!doctype html>
+<html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>lex-robot governance</title>
+<style>
+  :root { --bg:#0a0a1a; --bg2:#0f0f2a; --bg3:#141430; --border:#1e2050;
+          --text:#d0d8f0; --muted:#5a6080; --cyan:#22d3ee; --yellow:#fbbf24;
+          --lime:#4ade80; --red:#f87171; --violet:#a78bfa; }
+  /* Verdict colours are STATUS colours, not a series palette: lime allowed,
+     amber clamped, violet denied, red failed, muted unknown. Denied is
+     deliberately not red -- a refusal is the envelope working, while red
+     means something broke. Every verdict also carries its word and a glyph,
+     so none of this is conveyed by colour alone. */
+  * { box-sizing:border-box; }
+  html,body { margin:0; background:var(--bg); color:var(--text);
+              font-family:'Courier New',Courier,monospace; font-size:13px; }
+  header { background:var(--bg2); border-bottom:1px solid var(--border);
+           padding:10px 16px; display:flex; align-items:center; gap:16px; flex-wrap:wrap; }
+  header h1 { font-size:14px; color:var(--cyan); letter-spacing:.08em; margin:0; }
+  header a { color:var(--muted); text-decoration:none; }
+  header a:hover { color:var(--cyan); }
+  header .spacer { margin-left:auto; }
+  #notice { background:var(--bg3); border-bottom:1px solid var(--border);
+            color:var(--muted); padding:8px 16px; font-size:11px; line-height:1.5; }
+  .wrap { padding:14px 16px; max-width:1180px; }
+  .panel { background:var(--bg2); border:1px solid var(--border); padding:14px; margin-bottom:14px; }
+  h2 { font-size:13px; color:var(--cyan); margin:0 0 10px; letter-spacing:.06em; }
+  table { width:100%; border-collapse:collapse; font-size:12px; }
+  th { text-align:left; padding:4px 6px; color:var(--muted); font-weight:normal;
+       border-bottom:1px solid var(--border); font-size:11px; letter-spacing:.05em; }
+  td { text-align:left; padding:4px 6px; border-bottom:1px solid var(--border);
+       vertical-align:top; }
+  td.num { color:var(--muted); width:44px; }
+  .tiles { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:12px; }
+  .tile { border:1px solid var(--border); background:var(--bg3); padding:8px 12px; min-width:104px; }
+  .tile .n { font-size:20px; line-height:1.1; }
+  .tile .k { font-size:11px; color:var(--muted); letter-spacing:.06em; }
+  .allowed { color:var(--lime); } .clamped { color:var(--yellow); }
+  .denied  { color:var(--violet); } .failed { color:var(--red); }
+  .unknown { color:var(--muted); }
+  .muted { color:var(--muted); }
+  .yes { color:var(--lime); } .no { color:var(--yellow); }
+  code { color:var(--text); background:var(--bg3); padding:0 3px; }
+  .hash { font-size:11px; color:var(--muted); word-break:break-all; }
+  label.inline { color:var(--muted); font-size:11px; }
+  .empty { color:var(--muted); font-size:12px; padding:6px; }
+  .warn { color:var(--yellow); font-size:11px; margin-top:8px; }
+</style></head>
+<body>
+<header>
+  <h1>GOVERNANCE</h1>
+  <span id="chainstate" class="muted">chain --</span>
+  <span class="spacer"></span>
+  <a href="/control">&rarr; arm control</a>
+  <a href="/teach">&rarr; teach</a>
+  <a href="/governance/trail">&rarr; trail (json)</a>
+</header>
+<div id="notice">This page <b>observes</b>. It is not an enforcement point: the
+  grant is checked in the sidecar's own skill path (a target outside the granted
+  workspace is refused there, grip force is clamped there), and this view reads
+  the result afterwards. Nothing you can do here changes what the robot is
+  allowed to do -- and a software grant is not a safety system either, see
+  DESIGN.md &sect;8.</div>
+
+<div class="wrap">
+  <div class="panel">
+    <h2>GRANT &mdash; <span id="grantsrc" class="muted">loading&hellip;</span></h2>
+    <table id="granttable">
+      <thead><tr><th>bound</th><th>value</th><th>enforced here</th><th>how</th></tr></thead>
+      <tbody id="grantbody"></tbody>
+    </table>
+    <div id="grantwarn" class="warn"></div>
+  </div>
+
+  <div class="panel">
+    <h2>DECISIONS</h2>
+    <div class="tiles" id="tiles"></div>
+    <div style="margin-bottom:8px">
+      <label class="inline"><input type="checkbox" id="onlygov"> denials and clamps only</label>
+      <span class="muted" id="ledgermeta" style="margin-left:14px"></span>
+    </div>
+    <table>
+      <thead><tr><th>#</th><th>time</th><th>capability</th><th>verdict</th>
+                 <th>arguments</th><th>reason</th></tr></thead>
+      <tbody id="decisions"></tbody>
+    </table>
+    <div id="noneyet" class="empty">no authority-exercising calls yet &mdash; drive the arm
+      from <a href="/control" style="color:var(--cyan)">/control</a> and they appear here.</div>
+  </div>
+
+  <div class="panel">
+    <h2>TRAIL</h2>
+    <table>
+      <tbody>
+        <tr><th>events</th><td id="tr-total">--</td></tr>
+        <tr><th>retained in memory</th><td id="tr-retained">--</td></tr>
+        <tr><th>chain verified</th><td id="tr-verified">--</td></tr>
+        <tr><th>head</th><td class="hash" id="tr-head">--</td></tr>
+        <tr><th>checkpoint</th><td class="hash" id="tr-checkpoint">--</td></tr>
+        <tr><th>appended to</th><td id="tr-path">--</td></tr>
+      </tbody>
+    </table>
+    <div id="tr-warn" class="warn"></div>
+    <div class="empty">Event ids are lex-trail's own
+      <code>sha256(kind \\x00 parent \\x00 payload \\x00 ts_ms)</code>, so this chain
+      replays under <code>lex-trail</code> and reconciles against a lex-os audit
+      log with <code>scripts/reconcile_audit.py</code>.</div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const VERDICTS = ['allowed','denied','clamped','failed','unknown'];
+const GLYPH = {allowed:'\u2713', denied:'\u2298', clamped:'\u2913', failed:'\u2717', unknown:'?'};
+let grantDrawn = false;
+
+function esc(s) {
+  return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+}
+function fmtBound(v) {
+  if (Array.isArray(v)) {
+    return v.map(b => (b && typeof b === 'object' && 'min' in b)
+                      ? `[${b.min}, ${b.max}]` : JSON.stringify(b)).join(' ');
+  }
+  return JSON.stringify(v);
+}
+function fmtTime(ts) {
+  const d = new Date(ts * 1000);
+  return d.toTimeString().slice(0, 8) + '.' + String(d.getMilliseconds()).padStart(3, '0');
+}
+
+function drawGrant(g) {
+  $('grantsrc').textContent = g.ok ? (g.source || 'loaded') : (g.detail || 'no grant configured');
+  $('grantsrc').className = g.ok ? 'muted' : 'no';
+  const rows = g.bounds || [];
+  $('grantbody').innerHTML = rows.map(r => `<tr>
+      <td>${esc(r.bound)}</td>
+      <td class="muted">${esc(fmtBound(r.value))}</td>
+      <td class="${r.enforced ? 'yes' : 'no'}">${r.enforced ? '\u2713 yes' : '\u2014 no'}</td>
+      <td class="muted">${esc(r.how)}</td></tr>`).join('');
+  if (!rows.length) {
+    $('grantbody').innerHTML = '<tr><td colspan="4" class="empty">no grant loaded &mdash; '
+      + 'nothing here is bounded by one. Set LEX_XLE_GRANT_PATH.</td></tr>';
+  }
+  const declared = rows.filter(r => !r.enforced).length;
+  $('grantwarn').textContent = declared
+    ? `${declared} declared bound(s) are NOT checked by this sidecar. They are listed `
+      + 'so the gap is visible rather than assumed closed.' : '';
+  grantDrawn = true;
+}
+
+function drawTiles(counters) {
+  $('tiles').innerHTML = VERDICTS.map(v =>
+    `<div class="tile"><div class="n ${v}">${GLYPH[v]} ${counters[v] || 0}</div>`
+    + `<div class="k">${v.toUpperCase()}</div></div>`).join('');
+}
+
+function drawDecisions(decisions) {
+  const only = $('onlygov').checked;
+  const rows = decisions.filter(d => !only || d.verdict === 'denied' || d.verdict === 'clamped');
+  $('noneyet').style.display = rows.length ? 'none' : 'block';
+  $('decisions').innerHTML = rows.slice().reverse().map(d => `<tr>
+      <td class="num">${d.seq}</td>
+      <td class="muted">${fmtTime(d.ts)}</td>
+      <td>${esc(d.capability)}</td>
+      <td class="${d.verdict}">${GLYPH[d.verdict] || ''} ${d.verdict}</td>
+      <td class="muted">${esc(JSON.stringify(d.args))}</td>
+      <td class="muted">${esc(d.reason || '')}</td></tr>`).join('');
+}
+
+function drawTrail(c) {
+  $('tr-total').textContent = c.total_events;
+  $('tr-retained').textContent = `${c.retained} (window ${c.window})`;
+  const v = c.verified;
+  $('tr-verified').innerHTML = v.ok
+    ? `<span class="yes">\u2713 ok (${v.checked} events)</span>`
+    : `<span class="failed">\u2717 ${esc(v.detail)}</span>`;
+  $('tr-head').textContent = c.head || '--';
+  $('tr-checkpoint').textContent = c.checkpoint
+    ? c.checkpoint + '  (events before this were evicted from memory)' : '-- (nothing evicted)';
+  $('tr-path').innerHTML = c.path ? esc(c.path)
+    : '<span class="muted">nowhere &mdash; set LEX_XLE_TRAIL_PATH to keep the full chain on disk</span>';
+  $('tr-warn').textContent = c.write_error ? `trail write failed: ${c.write_error}` : '';
+  $('chainstate').innerHTML = v.ok
+    ? `<span class="yes">chain \u2713 ${c.total_events} events</span>`
+    : `<span class="failed">chain \u2717 ${esc(v.detail)}</span>`;
+}
+
+async function poll() {
+  try {
+    const r = await fetch('/governance/state?limit=100');
+    const s = await r.json();
+    if (!grantDrawn) drawGrant(s.grant);   // loaded once at startup; it cannot change under us
+    drawTiles(s.counters);
+    drawDecisions(s.decisions);
+    drawTrail(s.chain);
+    $('ledgermeta').textContent =
+      `${s.recorded} recorded, ${s.retained} retained`
+      + (s.include_reads ? ', including reads' : ', reads not recorded')
+      + `, up ${s.uptime_s}s`;
+  } catch (e) {
+    $('chainstate').innerHTML = '<span class="failed">sidecar unreachable</span>';
+  }
+}
+
+$('onlygov').onchange = poll;
+poll();
+setInterval(poll, 1000);
+</script>
+</body></html>"""
+
+
 class XLeRobot:
     """Thin wrapper around either the real hardware (arms/base/camera/mic) or
     a kinematic stub — same shape either way so handle_skill() never branches
@@ -1925,11 +2141,17 @@ class XLeRobot:
     def _load_grant(self):
         default_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "manifests", "xlerobot.capsule.json")
         path = os.environ.get("LEX_XLE_GRANT_PATH", default_path)
+        # Kept for GET /governance: a page that shows which bounds are in force
+        # has to be able to say which file they came from, or the reader can't
+        # check it against the capsule that was actually installed.
+        self._grant_path = path
+        self._grant_error = None
         try:
             with open(path) as f:
                 capsule = json.load(f)
             return capsule.get("actuation")
         except Exception as e:
+            self._grant_error = str(e)
             print(f"[xlerobot] no grant loaded from '{path}': {e}")
             return None
 
@@ -2596,6 +2818,11 @@ TEACH = _TeachRecorder()
 
 ROBOT = XLeRobot()
 
+# Every skill call's verdict, and the hash-chained record of the sequence, for
+# GET /governance. Read-only: it reads what the grant checks above already
+# decided and never decides anything itself (see sidecar/governance.py).
+LEDGER = governance.ledger_from_env()
+
 
 def _stream_sample():
     """One /stream frame: both arms' joints + the base pose.
@@ -2607,6 +2834,25 @@ def _stream_sample():
     """
     return {"joints": {a: handle_skill("read_joints", {"arm": a}) for a in ("left", "right")},
             "base": handle_skill("read_base", {})}
+
+
+def _governance_state(raw_path):
+    """One JSON payload for GET /governance: the grant as loaded, which of its
+    bounds this sidecar actually checks, and the ledger + chain."""
+    try:
+        limit = int(urllib.parse.parse_qs(urllib.parse.urlparse(raw_path).query)
+                    .get("limit", ["50"])[0])
+    except ValueError:
+        limit = 50
+    grant = ROBOT._grant
+    state = LEDGER.snapshot(limit=max(0, min(limit, 500)))
+    state["grant"] = {
+        "ok": bool(grant),
+        "source": getattr(ROBOT, "_grant_path", None),
+        "detail": getattr(ROBOT, "_grant_error", None) or ("" if grant else "no grant configured"),
+        "bounds": governance.grant_enforcement(grant),
+    }
+    return state
 
 
 # Every hardware skill touches a serial bus that is not thread-safe, and this is
@@ -2677,6 +2923,16 @@ def _skill_port(name, args):
 
 
 def handle_skill(name, args):
+    result = _dispatch_skill(name, args)
+    # After the fact, always, including the stalled paths -- a call that wedged
+    # on the bus is part of what the robot was asked to do, and a ledger that
+    # only showed the successes would be a highlight reel, not an audit.
+    LEDGER.record(name, args, result, grant=ROBOT._grant,
+                  firmware={"max_grip_n": HARD_GRIP_N, "max_speed_mps": HARD_SPEED_MPS})
+    return result
+
+
+def _dispatch_skill(name, args):
     port = _skill_port(name, args)
     if port is None:
         return _handle_skill(name, args)
@@ -2893,6 +3149,15 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_bytes(200, "text/html; charset=utf-8", TEACH_PAGE_HTML.encode())
         if path == "/control":
             return self._send_bytes(200, "text/html; charset=utf-8", CONTROL_PAGE_HTML.encode())
+        if path == "/governance":
+            return self._send_bytes(200, "text/html; charset=utf-8", GOVERNANCE_PAGE_HTML.encode())
+        if path == "/governance/state":
+            return self._send(200, _governance_state(self.path))
+        if path == "/governance/trail":
+            # The retained window as a lex-trail chain. Whatever LEX_XLE_TRAIL_PATH
+            # holds is the complete record; this is what is still in memory.
+            return self._send_bytes(200, "application/json; charset=utf-8",
+                                    LEDGER.chain.to_json().encode())
         if path == "/display/state":
             return self._send(200, ROBOT.display.to_json())
         if path == "/display/content":

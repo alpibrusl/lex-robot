@@ -8,6 +8,12 @@ only caller; it adds effect typing, grant enforcement, and the audit trail.
 - Transport: HTTP on `127.0.0.1:8900` (default). Localhost only ⇒ no auth.
 - Request: `POST /skill/<name>` with a JSON body.
 - Response: JSON. Actuating skills return `{ "outcome": "...", "detail": "..." }`.
+- Browser pages, same origin, no build step: `GET /control` (arm jog),
+  `GET /teach` (teach by demonstration), `GET /display` (kiosk),
+  `GET /governance` (what the grant did — read-only, see below).
+- Governance JSON: `GET /governance/state` (grant bounds + which of them this
+  sidecar actually checks, verdict counters, recent decisions, chain state)
+  and `GET /governance/trail` (the retained lex-trail chain).
 - Streaming: `GET /stream` upgrades to a WebSocket pushing joint + base
   state as JSON text frames at `LEX_STREAM_HZ` (default 10; served by the
   xlerobot sidecar via `sidecar_lib.maybe_stream`). Consumed in Lex via
@@ -295,3 +301,50 @@ A FastAPI app: one route per skill, each wrapping a LeRobot call, returning the
 JSON above. `run_policy` kicks off LeRobot's policy loop on a background worker
 and returns at once; `policy_status` reports progress until the worker finishes.
 Keep it dumb — all judgment and policy live on the Lex side.
+
+## Governance view (`GET /governance`)
+
+Every skill call that exercises authority — actuation, teaching, anything shown
+on the display, and any capability this sidecar doesn't recognise — is recorded
+with the verdict the sidecar already reached for it:
+
+| verdict | means |
+|---|---|
+| `allowed` | ran, nothing reduced it |
+| `denied` | the grant refused it outright (`move_arm` outside `workspace_m`) |
+| `clamped` | a ceiling reduced it (grip force against the grant, base speed against the firmware floor) |
+| `failed` | stalled, timed out, or errored — a robot problem, not a grant decision |
+| `unknown` | the reply didn't say; never guessed at |
+
+Read-only polling (`read_joints`, `read_arm_pose`, …) is **not** recorded — the
+`/control` page alone would bury every real decision under thousands of reads.
+Set `LEX_XLE_LEDGER_READS=1` to include them.
+
+The page is an observer, not an enforcement point: the grant is checked in the
+skill path (`_grant_workspace_violation`, `_grant_max_grip_force`) and this view
+reads the result afterwards. It also lists every bound the loaded grant
+*declares* against whether this sidecar actually checks it — today
+`bases.*.floor_area_m`, `bases.*.max_speed_mps`, `arms.*.max_velocity_mps` and
+`arms.*.max_force_n` are declared and **not** checked here, and the page says so
+rather than letting them read as enforced.
+
+Each decision emits a `cap.invoked` / `cap.completed` pair into a hash chain
+using lex-trail's own event-id formula, so `GET /governance/trail` replays under
+`lex-trail` and reconciles against a lex-os audit log with
+`scripts/reconcile_audit.py`.
+
+| env | meaning |
+|---|---|
+| `LEX_XLE_LEDGER_MAX` | decisions kept for the page (default 200) |
+| `LEX_XLE_LEDGER_READS` | `1` to record sense-class calls too |
+| `LEX_XLE_TRAIL_WINDOW` | chain events kept in memory (default 2000) |
+| `LEX_XLE_TRAIL_PATH` | append every event to this JSONL file — the full chain survives eviction there |
+
+## leLab adapter (`sidecar/lelab_adapter.py`)
+
+Serves [leLab](https://github.com/huggingface/leLab)'s HTTP routes on `:8000`,
+translating each one that touches the robot into a `POST /skill/*` here — so
+leLab's frontend drives a *governed* arm instead of reaching around the grant to
+LeRobot's `Robot` classes. Routes the skill API can't honestly express are
+refused with a 501 naming the reason. `GET /lex/routes` prints both halves. See
+`docs/LELAB.md`.
