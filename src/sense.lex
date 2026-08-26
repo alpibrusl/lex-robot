@@ -84,6 +84,26 @@ fn read_joints(r :: t.Robot) -> [net, sense] Result[Str, Str] {
   client.call(r.sidecar_url, "read_joints", "{}")
 }
 
+# Same reading, for ONE named arm. read_joints above sends no arm and takes
+# whichever the sidecar defaults to, which is right for a single-arm build and
+# silently wrong for a dual-arm one -- a caller that wants both arms has to be
+# able to say which it is asking about.
+fn read_joints_arm(r :: t.Robot, arm :: Str) -> [net, sense] Result[Str, Str] {
+  client.call(r.sidecar_url, "read_joints", str.join(["{\"arm\":\"", arm, "\"}"], ""))
+}
+
+# Progress of the hand-guided recording started by skills.teach_start.
+# Sensing-only, no grant check -- matching read_joints/read_camera: watching a
+# recording move counts no authority. Starting one does, and that is gated.
+fn teach_status(r :: t.Robot) -> [net, sense] Result[Str, Str] {
+  client.call(r.sidecar_url, "teach_status", "{}")
+}
+
+# The saved demonstration library.
+fn teach_list(r :: t.Robot) -> [net, sense] Result[Str, Str] {
+  client.call(r.sidecar_url, "teach_list", "{}")
+}
+
 fn read_camera(r :: t.Robot, name :: Str) -> [net, sense] Result[Str, Str] {
   client.call(r.sidecar_url, "read_camera", str.join(["{\"name\":\"", name, "\"}"], ""))
 }

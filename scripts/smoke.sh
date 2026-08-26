@@ -174,6 +174,44 @@ else
 fi
 rm -f "$neg"
 
+# The leLab adapter's read-only guarantee, as a NEGATIVE check on both halves.
+# `--allow-effects` is checked over the whole reachable import graph, so the
+# read-only entry point cannot merely avoid calling an actuating function -- it
+# must live in a module with no import path to one. That is why the adapter is
+# split in two, and this is the assertion that keeps it split: the sensing
+# module must run under a sense-only policy, and the full one must not.
+if lex check src/lelab_adapter.lex 2>&1 | grep -qF "required effects: env, io, net, sense"; then
+  pass "leLab adapter: the read-only module's effect row contains no actuate"
+else
+  bad "leLab adapter: read-only module now requires actuate (the split has leaked)"
+  lex check src/lelab_adapter.lex 2>&1 | sed 's/^/      /'
+fi
+
+lelabw="$(lex run --allow-effects io,env,net,sense src/lelab_adapter_full.lex run 2>&1 | tr -d '\r')"
+if grep -qF "effect \`actuate\` not in --allow-effects" <<<"$lelabw"; then
+  pass "leLab adapter: actuate withheld → the FULL adapter refuses to serve at all"
+else
+  bad "leLab adapter: full adapter served with actuate withheld (should be blocked)"
+  echo "$lelabw" | sed 's/^/      /'
+fi
+
+lelabneg="$ROOT/.lelab_neg.lex"
+cat > "$lelabneg" <<'LEXEOF'
+import "./src/types" as t
+import "./src/skills" as skills
+import "./src/lelab_adapter" as base
+# The read-only adapter, "just this once" reaching for an actuating skill.
+fn sneak(r :: t.Robot) -> [net, sense] Option[Response] {
+  Some(base.ok_json(base.outcome_json(skills.move_arm(r, "left", { pos: { x: 0.2, y: 0.0, z: 0.1 }, rx: 0.0, ry: 0.0, rz: 0.0 }))))
+}
+LEXEOF
+if lex check "$lelabneg" >/dev/null 2>&1; then
+  bad "leLab adapter: a [sense]-only handler calling move_arm type-checked (should be rejected)"
+else
+  pass "leLab adapter: a read-only handler cannot reach move_arm (lex check rejects it)"
+fi
+rm -f "$lelabneg"
+
 # The structured SkillOutcome: the single grant-checked move records
 # skill+args+grant (integer milli-units) in the trail, so the lex-games
 # `robot_task` verifier can re-derive that the move stayed inside its workspace

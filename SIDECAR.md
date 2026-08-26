@@ -340,11 +340,14 @@ using lex-trail's own event-id formula, so `GET /governance/trail` replays under
 | `LEX_XLE_TRAIL_WINDOW` | chain events kept in memory (default 2000) |
 | `LEX_XLE_TRAIL_PATH` | append every event to this JSONL file — the full chain survives eviction there |
 
-## leLab adapter (`sidecar/lelab_adapter.py`)
+## leLab adapter (`src/lelab_adapter.lex`)
 
 Serves [leLab](https://github.com/huggingface/leLab)'s HTTP routes on `:8000`,
-translating each one that touches the robot into a `POST /skill/*` here — so
+translating each one that touches the robot into a `skills.lex` call — so
 leLab's frontend drives a *governed* arm instead of reaching around the grant to
-LeRobot's `Robot` classes. Routes the skill API can't honestly express are
-refused with a 501 naming the reason. `GET /lex/routes` prints both halves. See
-`docs/LELAB.md`.
+LeRobot's `Robot` classes, and an out-of-envelope request is refused before it
+reaches this sidecar at all. Split in two so the read-only entry point has no
+import path to an actuating skill: `lelab_adapter.lex` (`[env, io, net, sense]`)
+and `lelab_adapter_full.lex` (`+ actuate`). Routes the skill API can't honestly
+express are refused with a 501 naming the reason. `GET /lex/routes` prints both
+halves. See `docs/LELAB.md`, and `docs/LEX_VS_PYTHON.md` for why it is Lex.
