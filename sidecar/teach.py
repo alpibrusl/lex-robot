@@ -397,6 +397,10 @@ def record(port: str, robot_id: str, seconds: float, fps: float = 20.0,
     fiddliest. Leaving the gripper powered lets it be commanded (the /control
     page's Open/Close, or grasp_arm) while your hands do the arm, and it still
     records faithfully because recording just reads positions.
+
+    That promise holds all the way out: the bus is closed with
+    `disable_torque=False`, because lerobot's default would disable torque on
+    every motor and drop whatever the gripper was holding.
     """
     joints = joints or ARM_JOINTS
     free = BODY_JOINTS if free is None else free
@@ -415,7 +419,13 @@ def record(port: str, robot_id: str, seconds: float, fps: float = 20.0,
             traj.frames.append([float(obs[j]) for j in joints])
             time.sleep(max(0.0, period - (time.time() - t0)))
     finally:
-        r.bus.disconnect()
+        # NOT a bare disconnect(): lerobot's default disables torque on EVERY
+        # motor, including the ones this function just told the operator are
+        # "still powered (commandable)". The gripper is deliberately held (see
+        # the docstring), so a bare close would drop whatever it is holding the
+        # moment recording ends. Leave every joint exactly as it is; the freed
+        # ones stay limp because they were already freed.
+        r.bus.disconnect(disable_torque=False)
     return traj
 
 
