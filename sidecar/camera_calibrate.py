@@ -51,7 +51,11 @@ It also REFUSES to calibrate while the tower is limp, unless you pass
 Calibrating against a mount that can drift is the kind of work you only find
 out was wasted much later.
 
-Reading the tower is read-only: two register reads, no writes, no torque.
+Reading the tower is read-only: two register reads, no writes, no torque. The
+close passes `disable_torque=False`, because lerobot's default `disconnect()`
+writes `Torque_Enable=0` to every motor on the bus — which against a tower
+being *held* for calibration would let it sag, silently undoing the very thing
+`--hold` was for.
 """
 
 from __future__ import annotations
@@ -186,7 +190,9 @@ def read_tower(port: str):
                 bus.read("Torque_Enable", f"m{motor_id}", normalize=False))
         return out
     finally:
-        bus.disconnect()
+        # NOT a bare disconnect(): lerobot's default writes Torque_Enable=0,
+        # which would drop the tower we just asked the operator to hold.
+        bus.disconnect(disable_torque=False)
 
 
 def _open_camera(index: int, width: int, height: int):

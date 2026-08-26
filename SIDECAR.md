@@ -317,6 +317,16 @@ apart, and only drops exit `1`.
 It pings and reads only. It never writes a register and never enables torque,
 so it is safe to run at any time with no hand on the e-stop.
 
+That last property needs care, because lerobot does not default to it:
+`MotorsBus.disconnect()` calls `disable_torque()` on the way out, which
+**writes `Torque_Enable=0` to every motor on the bus**. Run against an arm that
+is holding a pose, a bare `disconnect()` would drop torque on all six joints
+and the arm would fall — the same hazard `teach_free` is grant-gated for. Every
+close in `bus_preflight.py` and `camera_calibrate.py` therefore passes
+`disable_torque=False`, and a regression test pins it. Anything else in this
+repo that opens a `FeetechMotorsBus` to *read* is worth checking for the same
+thing.
+
 Why it exists: on 2026-08-23 the right bus dropped 55% of reads on id 9 and
 lerobot's handshake (`_assert_motors_exist` — one ping per id, `num_retry=0`)
 found `{}`, `{4,5,6}`, `{}` of six motors across three fresh processes, so

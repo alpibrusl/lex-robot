@@ -32,6 +32,14 @@ converts the silent failure mode into a loud one, BEFORE any torque is enabled.
 It pings and it reads. It never writes a register and it never enables torque,
 so running it is safe at any time, on any tier, with no hand on the e-stop.
 
+That property needs one piece of care, because lerobot does not default to it:
+`MotorsBus.disconnect()` calls `disable_torque()` on the way out, which WRITES
+`Torque_Enable=0` to every motor in the bus. Run against an arm that is holding
+a pose, that would drop torque on all six joints and the arm would fall — the
+same hazard `teach_free` is grant-gated for. So every close here passes
+`disable_torque=False`, which only shuts the port. `test_closing_the_bus_does_
+not_disable_torque` pins it.
+
 It does NOT retry. That is the whole point and it is worth stating plainly,
 because adding `num_retry` here would be the obvious "fix" and it is exactly
 wrong: retries would hide the signal the gate exists to detect, and they would
@@ -363,7 +371,9 @@ def preflight(names, reads: int = DEFAULT_READS, *, opener=None,
             results.append(scan_bus(bus, name, port, ids, reads, tower_ref))
         finally:
             try:
-                bus.disconnect()
+                # NOT a bare disconnect(): lerobot's default writes
+                # Torque_Enable=0 to every motor, which would drop a held arm.
+                bus.disconnect(disable_torque=False)
             except Exception:
                 pass
     return results

@@ -52,8 +52,12 @@ class FakeBus:
                 raise ConnectionError("no response")
         return self.positions.get(motor_id, 2048)
 
-    def disconnect(self):
+    def disconnect(self, disable_torque=True):
         self.disconnected = True
+        self.disconnect_disable_torque = disable_torque
+        if disable_torque:
+            # lerobot's DEFAULT, and a write to every motor on the bus.
+            self.forbidden_calls.append("disconnect(disable_torque=True)")
 
     def __getattr__(self, item):
         if item in FORBIDDEN:
@@ -71,6 +75,36 @@ def scan_right(bus, reads=10):
 
 
 # --- the property that makes this safe to run unattended ----------------------
+
+def test_closing_the_bus_does_not_disable_torque():
+    """Regression: `MotorsBus.disconnect()` disables torque BY DEFAULT.
+
+    That is a write to every motor, and against an arm holding a pose it would
+    drop torque on all six joints and let the arm fall — the same hazard
+    `teach_free` is grant-gated for. Found on real hardware, where a bare
+    `disconnect()` raised trying to write `Torque_Enable` to a motor id that
+    was not on the bus. The read-only claim is only true with
+    `disable_torque=False`, so it is pinned here rather than trusted.
+
+    `scan_bus` alone cannot catch this — it never closes the bus — which is
+    exactly why the original safety test missed it.
+    """
+    bus = FakeBus(present=ALL_RIGHT)
+    preflight(["right"], reads=2, opener=lambda p, i: bus)
+    assert bus.disconnected
+    assert bus.disconnect_disable_torque is False
+    assert bus.forbidden_calls == []
+
+
+def test_the_bus_is_closed_without_writing_even_when_scanning_raises(monkeypatch):
+    bus = FakeBus(present=ALL_RIGHT)
+    monkeypatch.setattr(bus_preflight, "scan_bus",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    with pytest.raises(RuntimeError):
+        preflight(["right"], reads=1, opener=lambda p, i: bus)
+    assert bus.disconnect_disable_torque is False
+    assert bus.forbidden_calls == []
+
 
 def test_the_gate_never_writes_and_never_enables_torque():
     bus = FakeBus(present=ALL_RIGHT)
