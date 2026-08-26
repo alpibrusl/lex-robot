@@ -174,6 +174,85 @@ else
 fi
 rm -f "$neg"
 
+# The leLab adapter's read-only guarantee, as a NEGATIVE check on both halves.
+# `--allow-effects` is checked over the whole reachable import graph, so the
+# read-only entry point cannot merely avoid calling an actuating function -- it
+# must live in a module with no import path to one. That is why the adapter is
+# split in two, and this is the assertion that keeps it split: the sensing
+# module must run under a sense-only policy, and the full one must not.
+if lex check src/lelab_adapter.lex 2>&1 | grep -qF "required effects: env, io, net, sense"; then
+  pass "leLab adapter: the read-only module's effect row contains no actuate"
+else
+  bad "leLab adapter: read-only module now requires actuate (the split has leaked)"
+  lex check src/lelab_adapter.lex 2>&1 | sed 's/^/      /'
+fi
+
+lelabw="$(lex run --allow-effects io,env,net,sense src/lelab_adapter_full.lex run 2>&1 | tr -d '\r')"
+if grep -qF "effect \`actuate\` not in --allow-effects" <<<"$lelabw"; then
+  pass "leLab adapter: actuate withheld → the FULL adapter refuses to serve at all"
+else
+  bad "leLab adapter: full adapter served with actuate withheld (should be blocked)"
+  echo "$lelabw" | sed 's/^/      /'
+fi
+
+lelabneg="$ROOT/.lelab_neg.lex"
+cat > "$lelabneg" <<'LEXEOF'
+import "./src/types" as t
+import "./src/skills" as skills
+import "./src/lelab_adapter" as base
+# The read-only adapter, "just this once" reaching for an actuating skill.
+fn sneak(r :: t.Robot) -> [net, sense] Option[Response] {
+  Some(base.ok_json(base.outcome_json(skills.move_arm(r, "left", { pos: { x: 0.2, y: 0.0, z: 0.1 }, rx: 0.0, ry: 0.0, rz: 0.0 }))))
+}
+LEXEOF
+if lex check "$lelabneg" >/dev/null 2>&1; then
+  bad "leLab adapter: a [sense]-only handler calling move_arm type-checked (should be rejected)"
+else
+  pass "leLab adapter: a read-only handler cannot reach move_arm (lex check rejects it)"
+fi
+rm -f "$lelabneg"
+
+# The actuating skills that used to have no Lex expression at all -- and so no
+# grant naming them. Each is now wrapped and gated; this asserts the gate is a
+# refusal, not a warning, and that it refuses BEFORE the request exists. There
+# is deliberately no sidecar on 127.0.0.1:1: anything that actually sent would
+# come back `stalled`, so four `denied` lines are the never-sent proof.
+gate="$ROOT/.gate_actuating.lex"
+cat > "$gate" <<'LEXEOF'
+import "std.io" as io
+import "./src/types" as t
+import "./src/skills" as skills
+import "./src/wire" as wire
+
+fn narrow() -> t.Grant {
+  {
+    skills: ["read_joints"],
+    ws_min: { x: 0.0, y: 0.0, z: 0.0 },
+    ws_max: { x: 1.0, y: 1.0, z: 1.0 },
+    max_velocity: 0.1, max_force: 1.0, max_grip_force: 1.0,
+    budget_actions: 10, budget_wall_ms: 1000,
+  }
+}
+
+fn main() -> [net, sense, actuate, io] Unit {
+  let r :: t.Robot := { sidecar_url: "http://127.0.0.1:1", grant: narrow() }
+  let __0 := io.print(wire.outcome_str(skills.teach_replay(r, "demo", 1.0)))
+  let __1 := io.print(wire.outcome_str(skills.teach_home_go(r, "left")))
+  let __2 := io.print(wire.outcome_str(skills.release_arm(r, "left")))
+  let __3 := io.print(wire.outcome_str(skills.reset(r)))
+}
+LEXEOF
+gateout="$(lex run --allow-effects net,sense,actuate,io "$gate" main 2>&1 | tr -d '\r')"
+for sk in teach_replay teach_home_go release_arm reset; do
+  if grep -qF "denied: skill $sk not in grant" <<<"$gateout"; then
+    pass "grant gate: $sk refused before any request exists (never sent)"
+  else
+    bad "grant gate: $sk was not refused by the grant"
+    echo "$gateout" | sed 's/^/      /'
+  fi
+done
+rm -f "$gate"
+
 # The structured SkillOutcome: the single grant-checked move records
 # skill+args+grant (integer milli-units) in the trail, so the lex-games
 # `robot_task` verifier can re-derive that the move stayed inside its workspace

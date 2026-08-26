@@ -69,15 +69,47 @@ fn json_escape_str(s :: Str) -> Str {
 }
 
 # Minimal outcome parse: the sidecar returns {"outcome":"reached|stalled|timeout", "detail":"..."}.
-fn parse_outcome(resp :: Str) -> t.Outcome {
+# The sidecar's own refusals are Denied, not Stalled. It runs the same bounds
+# this layer does, for callers that never came through Lex (see
+# docs/LEX_VS_PYTHON.md, "Deliberate duplication"), so a `denied` on the wire
+# means an envelope said no -- categorically different from the arm failing to
+# get there, and the distinction is the whole point of having two walls.
+fn parse_outcome(resp :: Str) -> t.Outcome
+  examples {
+    parse_outcome("{\"outcome\": \"reached\"}") => Reached,
+    parse_outcome("{\"outcome\": \"timeout\"}") => Timeout,
+    parse_outcome("{\"outcome\": \"denied\", \"detail\": \"outside granted workspace\"}") => Denied("{\"outcome\": \"denied\", \"detail\": \"outside granted workspace\"}"),
+    parse_outcome("{\"outcome\": \"stalled\"}") => Stalled("{\"outcome\": \"stalled\"}")
+  }
+{
   if str.contains(resp, "\"reached\"") {
     Reached
   } else {
     if str.contains(resp, "\"timeout\"") {
       Timeout
     } else {
-      Stalled(resp)
+      if str.contains(resp, "\"denied\"") {
+        Denied(resp)
+      } else {
+        Stalled(resp)
+      }
     }
+  }
+}
+
+# The teach_* family answers {"ok": bool, "detail": "..."} rather than the
+# {"outcome": "..."} every other actuating skill uses, so parse_outcome would
+# read every success as Stalled. Same two-state contract, different wire shape.
+fn parse_ok_outcome(resp :: Str) -> t.Outcome
+  examples {
+    parse_ok_outcome("{\"ok\": true, \"detail\": \"recording\"}") => Reached,
+    parse_ok_outcome("{\"ok\": false, \"detail\": \"already recording\"}") => Stalled("{\"ok\": false, \"detail\": \"already recording\"}")
+  }
+{
+  if str.contains(resp, "\"ok\": true") or str.contains(resp, "\"ok\":true") {
+    Reached
+  } else {
+    Stalled(resp)
   }
 }
 
@@ -154,6 +186,137 @@ fn disconnect_charger(r :: t.Robot) -> [net, sense, actuate] t.Outcome {
 # [actuate] surface; delegates keep the public names for actuating programs.
 fn read_joints(r :: t.Robot) -> [net, sense] Result[Str, Str] {
   sense.read_joints(r)
+}
+
+fn read_joints_arm(r :: t.Robot, arm :: Str) -> [net, sense] Result[Str, Str] {
+  sense.read_joints_arm(r, arm)
+}
+
+fn teach_status(r :: t.Robot) -> [net, sense] Result[Str, Str] {
+  sense.teach_status(r)
+}
+
+fn teach_list(r :: t.Robot) -> [net, sense] Result[Str, Str] {
+  sense.teach_list(r)
+}
+
+# ── Teaching by demonstration ─────────────────────────────────────────────────
+# The sidecar has exposed teach_* since the /teach page landed, but no Lex skill
+# named them -- so no grant covered them, and `teach_free` DROPS SERVO TORQUE on
+# five joints (the arm falls under gravity unless a hand is holding it). That is
+# an actuating capability by any reading, and it was reachable from any caller
+# with no envelope at all. These wrappers put it back inside the grant.
+#
+# Recording is gated too, and for the same reason record_episode and listen are:
+# a demonstration is minutes of joint telemetry plus camera frames of whatever
+# room the robot is in. "May this program record?" is a question worth being
+# able to refuse.
+fn teach_free(r :: t.Robot, arm :: Str, include_gripper :: Bool) -> [net, sense, actuate] t.Outcome {
+  if grant.skill_allowed(r.grant, "teach_free") {
+    let body := str.join(["{\"arm\":\"", json_escape_str(arm), "\",\"include_gripper\":", if include_gripper {
+      "true"
+    } else {
+      "false"
+    }, "}"], "")
+    match client.call(r.sidecar_url, "teach_free", body) {
+      Err(e) => Stalled(e),
+      Ok(resp) => parse_ok_outcome(resp),
+    }
+  } else {
+    Denied("skill teach_free not in grant")
+  }
+}
+
+fn teach_hold(r :: t.Robot, arm :: Str) -> [net, sense, actuate] t.Outcome {
+  if grant.skill_allowed(r.grant, "teach_hold") {
+    match client.call(r.sidecar_url, "teach_hold", str.join(["{\"arm\":\"", json_escape_str(arm), "\"}"], "")) {
+      Err(e) => Stalled(e),
+      Ok(resp) => parse_ok_outcome(resp),
+    }
+  } else {
+    Denied("skill teach_hold not in grant")
+  }
+}
+
+fn teach_start(r :: t.Robot, arm :: Str, name :: Str, task :: Str, fps :: Float, seconds :: Float) -> [net, sense, actuate] t.Outcome {
+  if grant.skill_allowed(r.grant, "teach_start") {
+    let body := str.join(["{\"arm\":\"", json_escape_str(arm), "\",\"name\":\"", json_escape_str(name), "\",\"task\":\"", json_escape_str(task), "\",\"fps\":", f(fps), ",\"seconds\":", f(seconds), "}"], "")
+    match client.call(r.sidecar_url, "teach_start", body) {
+      Err(e) => Stalled(e),
+      Ok(resp) => parse_ok_outcome(resp),
+    }
+  } else {
+    Denied("skill teach_start not in grant")
+  }
+}
+
+# Replay a taught demonstration on the arm. The heaviest actuating skill on
+# the surface -- seconds of joint-space motion from a file -- and until now it
+# had no Lex expression at all, so no grant named it. The sidecar bounds HOW
+# the arm moves (a discontinuity pre-flight, 6-degree step smoothing, a
+# per-frame collision veto) and, since this change, WHERE it ends up (every
+# frame's end-effector position must land inside the granted workspace box).
+# This wrapper is the third bound: whether the program may ask at all.
+fn teach_replay(r :: t.Robot, name :: Str, speed :: Float) -> [net, sense, actuate] t.Outcome {
+  if grant.skill_allowed(r.grant, "teach_replay") {
+    let body := str.join(["{\"name\":\"", json_escape_str(name), "\",\"speed\":", f(speed), "}"], "")
+    match client.call(r.sidecar_url, "teach_replay", body) {
+      Err(e) => Stalled(e),
+      Ok(resp) => parse_outcome(resp),
+    }
+  } else {
+    Denied("skill teach_replay not in grant")
+  }
+}
+
+# Drive the arm to its stored home pose. Short, but it is still the arm moving
+# on its own from a stored file, so it is gated like any other command.
+fn teach_home_go(r :: t.Robot, arm :: Str) -> [net, sense, actuate] t.Outcome {
+  if grant.skill_allowed(r.grant, "teach_home_go") {
+    match client.call(r.sidecar_url, "teach_home_go", str.join(["{\"arm\":\"", json_escape_str(arm), "\"}"], "")) {
+      Err(e) => Stalled(e),
+      Ok(resp) => parse_outcome(resp),
+    }
+  } else {
+    Denied("skill teach_home_go not in grant")
+  }
+}
+
+# Open the gripper. grasp_arm has been grant-gated since the beginning and its
+# opposite never was -- an asymmetry with no justification: releasing is the
+# safe direction only when nothing is being held over something breakable.
+fn release_arm(r :: t.Robot, arm :: Str) -> [net, sense, actuate] t.Outcome {
+  if grant.skill_allowed(r.grant, "release_arm") {
+    match client.call(r.sidecar_url, "release_arm", str.join(["{\"arm\":\"", json_escape_str(arm), "\"}"], "")) {
+      Err(e) => Stalled(e),
+      Ok(resp) => parse_outcome(resp),
+    }
+  } else {
+    Denied("skill release_arm not in grant")
+  }
+}
+
+# Return the robot to its start state. Moves both arms and the base.
+fn reset(r :: t.Robot) -> [net, sense, actuate] t.Outcome {
+  if grant.skill_allowed(r.grant, "reset") {
+    match client.call(r.sidecar_url, "reset", "{}") {
+      Err(e) => Stalled(e),
+      Ok(resp) => parse_outcome(resp),
+    }
+  } else {
+    Denied("skill reset not in grant")
+  }
+}
+
+fn teach_stop(r :: t.Robot) -> [net, sense, actuate] t.Outcome {
+  if grant.skill_allowed(r.grant, "teach_stop") {
+    match client.call(r.sidecar_url, "teach_stop", "{}") {
+      Err(e) => Stalled(e),
+      Ok(resp) => parse_ok_outcome(resp),
+    }
+  } else {
+    Denied("skill teach_stop not in grant")
+  }
 }
 
 fn read_camera(r :: t.Robot, name :: Str) -> [net, sense] Result[Str, Str] {

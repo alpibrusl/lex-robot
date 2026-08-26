@@ -94,6 +94,9 @@ src/
   charge.lex     OCPP client for the depot Verify gate (real lex-charge / CSMS)
   a2a_*.lex      A2A protocol: bootstrap blob, Ed25519 cards, handshake, consent, sessions, server
   human_goal.lex human-in-the-loop goal (ask a person at run time, don't hardcode it)
+  lelab_adapter.lex / lelab_adapter_full.lex
+                 huggingface/leLab's HTTP routes over the governed skill API;
+                 split so the read-only entry point has no import path to [actuate]
   mcp_server.lex MCP stdio front door — exposes the bounded skills as agent tools
   a2a_robot_server.lex  standard Google A2A front door for the same skills (via lex-agent)
   bazaar*.lex    bazaar shopper + LLM seller logic
@@ -117,7 +120,6 @@ sidecar/
   xlerobot_*.py     XLeRobot 0.4.0 (dual SO-101 + diff-wheel base): stub → MuJoCo room → hardware seam
   xlerobot_rl_train.py  PPO training against gym_env/xlerobot_env.py's LexXLeRobotFetch-v0
   governance.py     read-only ledger + lex-trail chain behind GET /governance
-  lelab_adapter.py  huggingface/leLab's HTTP routes, served over the skill API
 manifests/       lex-os grant for the task (pick_place.capsule.json)
 box/             lex-os agent programs + the three-layer enforcement guide
 ```
@@ -490,18 +492,31 @@ authority is the one thing this layer must not add. See `SIDECAR.md`.
 
 ![the governance view](media/governance.png)
 
-**leLab's UI over the same gate** (`sidecar/lelab_adapter.py`):
+**leLab's UI over the same gate** (`src/lelab_adapter.lex`):
 [huggingface/leLab](https://github.com/huggingface/leLab) is LeRobot's web UI —
 calibrate, teleoperate, record, train, infer. Its backend drives LeRobot's
 `Robot` classes directly, so running it beside lex-robot on the same arms means
-two authority paths to the same servos, one ungoverned. The adapter is the other
-arrangement: it serves leLab's routes on leLab's port and executes nothing
-itself, translating every robot-touching request into a `POST /skill/*` so it
-inherits the grant gate, the firmware floors, the bus locks and the ledger. The
-routes the skill API cannot honestly express — leader→follower teleoperation,
-calibration, port detection — are refused with a 501 naming the reason rather
-than reaching around the grant, and training/upload/auth are refused as not this
-layer. `GET /lex/routes` prints both halves. Write-up: `docs/LELAB.md`.
+two authority paths to the same servos, one ungoverned. The adapter is the
+other arrangement: it serves leLab's routes on leLab's port and executes
+nothing itself, translating every robot-touching request into a `skills.lex`
+call so it inherits the grant gate, the firmware floors, the bus locks and the
+ledger. An out-of-workspace jog is refused by `grant.lex` and **never sent**.
+
+The read-only mode is the part a Python adapter cannot have. `--allow-effects`
+is checked over the whole reachable import graph, so the sensing entry point
+lives in a module with no import path to an actuating skill:
+
+```sh
+lex run --allow-effects io,env,net,sense src/lelab_adapter.lex run_readonly
+#   → serves leLab's UI against a robot it CANNOT move
+lex run --allow-effects io,env,net,sense src/lelab_adapter_full.lex run
+#   → refused before the port is bound: effect `actuate` not in --allow-effects
+```
+
+Routes the skill API cannot honestly express get a 501 naming the reason —
+leader→follower teleoperation, calibration, port detection — rather than a
+second path to the servos; training/upload/auth are refused as not this layer.
+`GET /lex/routes` prints both halves. Write-up: `docs/LELAB.md`.
 
 **Touchscreen consent — the display's input path as a granted capability**
 (`make xlerobot-touch`): the kiosk display (`GET /display`, the page a

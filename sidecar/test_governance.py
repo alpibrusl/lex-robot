@@ -125,6 +125,34 @@ def test_grant_enforcement_reports_which_bounds_this_sidecar_checks():
     assert rows["arms.left.max_force_n"]["enforced"] is False
 
 
+def test_the_workspace_row_names_every_place_the_box_is_checked():
+    # The row is what a reader trusts when deciding whether replay is bounded.
+    # It listed move_arm alone while teach_replay drove the same arm through
+    # poses nothing checked; naming only one enforcement point understated the
+    # gap while it existed and would understate the cover now.
+    row = {r["bound"]: r for r in gov.grant_enforcement(GRANT)}["arms.left.workspace_m"]
+    assert "move_arm" in row["how"]
+    assert "teach_replay" in row["how"] and "teach_home_go" in row["how"]
+    assert "_grant_trajectory_violation" in row["where"]
+
+
+def test_the_skill_allowlist_is_reported_as_enforced_in_lex_not_here():
+    # The list is the *agent's* capsule grant. This port also answers the
+    # operator's own pages, which invoke skills no capsule names -- so claiming
+    # the sidecar enforces it would be false, and widening it to fit them would
+    # make it meaningless. Declared, with the reason.
+    grant = dict(GRANT, skills=["read_joints", "move_arm"])
+    row = {r["bound"]: r for r in gov.grant_enforcement(grant)}["skills"]
+    assert row["enforced"] is False
+    assert row["value"] == ["read_joints", "move_arm"]
+    assert "grant.skill_allowed" in row["how"]
+    assert row["where"] is None
+
+
+def test_no_skills_key_means_no_skills_row():
+    assert "skills" not in {r["bound"] for r in gov.grant_enforcement(GRANT)}
+
+
 def test_two_bases_are_ambiguous_so_neither_is_claimed_as_enforced():
     # The sidecar refuses to guess which envelope binds its one base; the
     # ledger must not claim an envelope the code declines to apply.
@@ -298,3 +326,20 @@ def test_an_invoked_completed_pair_is_never_split_by_another_thread():
         t.join()
     kinds = [e["kind"] for e in led.chain.events]
     assert kinds == ["cap.invoked", "cap.completed"] * (len(kinds) // 2)
+
+
+def test_a_refused_skill_is_not_reported_as_allowed():
+    # `refused` is the sidecar declining for a reason that isn't the grant --
+    # no such recording, no saved home, a trajectory too discontinuous to
+    # replay. The arm did not move, so `allowed` would claim an action that
+    # never happened; `denied` would claim an envelope that never spoke.
+    out = gov.classify("teach_replay", {"name": "nope"},
+                       {"outcome": "refused", "detail": "no recording named 'nope'"})
+    assert out["verdict"] == "failed"
+    assert "no recording" in out["reason"]
+
+
+def test_a_grant_refusal_is_still_denied_not_merely_failed():
+    out = gov.classify("move_arm", {"arm": "left"},
+                       {"outcome": "denied", "detail": "outside granted workspace"})
+    assert out["verdict"] == "denied"
