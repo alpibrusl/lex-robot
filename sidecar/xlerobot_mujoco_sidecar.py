@@ -50,7 +50,9 @@ def bad_arm(args):
 
 def handle_skill(name, args):
     if name == "reset":
-        return SIM.reset()
+        # Same wire contract as the Tier-1 stub: the new observation, plus the
+        # `outcome` every actuating skill answers on (src/types.lex).
+        return dict(SIM.reset(), outcome="reached")
     if name == "read_base":
         return SIM.observe()["base"]
     if name == "read_joints":

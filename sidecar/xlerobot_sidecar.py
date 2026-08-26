@@ -2212,6 +2212,60 @@ class XLeRobot:
                         f"[{b['min']:.2f},{b['max']:.2f}]")
         return None
 
+    def _grant_trajectory_violation(self, arm, joints, frames):
+        """None if a taught pose sequence is safe to drive under the grant.
+        Otherwise a detail string -- the caller turns it into `denied` and no
+        torque is ever enabled. Used by teach_replay (a whole recording) and
+        teach_home_go (a single saved pose, i.e. a one-frame trajectory).
+
+        Replay is joint-space, so the grant's Cartesian workspace box can only
+        be applied through forward kinematics: each frame's end-effector
+        position must land inside the same envelope move_arm enforces. Without
+        this, a recording could be taught anywhere the hand could reach and
+        replayed straight out of the granted box -- the collision model and the
+        6-degree step smoothing bound HOW the arm moves, but nothing bounded
+        WHERE it ended up.
+
+        Checked up front, never mid-replay. A replay stopped halfway leaves the
+        arm in an arbitrary pose it was only ever meant to pass through, so the
+        honest options are all of it or none of it -- the same never-sent
+        semantics move_arm has.
+
+        Refuse, don't downgrade: when a box IS declared but FK is unavailable
+        (no URDF/placo configured), the check cannot run, and replaying anyway
+        would be claiming an envelope nothing verified.
+        """
+        if not self._grant:
+            return None
+        arm_grant = self._grant.get("arms", {}).get(arm)
+        bounds = arm_grant.get("workspace_m") if arm_grant else None
+        if not bounds or len(bounds) != 3:
+            return None
+        hw = self._hw_arms.get(arm)
+        if hw is None:
+            return None
+        missing = [j for j in ARM_JOINTS if j not in joints]
+        if missing:
+            # A recording that doesn't cover every joint the kinematics model
+            # takes can't be run through FK, and padding the gap with zeros
+            # would be checking a pose the arm never held.
+            return ("cannot verify this trajectory against the granted workspace: it was "
+                    f"recorded without {', '.join(missing)}, which the kinematics model "
+                    "needs. Replaying anyway would claim an envelope nothing checked.")
+        for idx, frame in enumerate(frames):
+            ee = hw._forward_kinematics_ee({f"{j}.pos": v for j, v in zip(joints, frame)})
+            if ee is None:
+                return ("cannot verify this trajectory against the granted workspace: no "
+                        "forward kinematics available (LEX_XLE_URDF_PATH unset, or this "
+                        "lerobot install's kinematics module does not match). Replaying "
+                        "anyway would claim an envelope nothing checked.")
+            for val, axis, b in zip(ee, "xyz", bounds):
+                if not (b["min"] <= val <= b["max"]):
+                    return (f"frame {idx} of {len(frames)} puts the end effector at "
+                            f"{axis}={val:.3f}, outside granted workspace "
+                            f"[{b['min']:.2f},{b['max']:.2f}] for the {arm} arm")
+        return None
+
     def _grant_max_base_speed(self):
         cfg = self._base_grant()
         return cfg.get("max_speed_mps") if cfg else None
@@ -2401,7 +2455,12 @@ class XLeRobot:
         for a in self.arms.values():
             a["positions"] = [0.0] * 6
             a["holding"] = False
-        return {"base": dict(self.base), "arms": {k: list(v["positions"]) for k, v in self.arms.items()}}
+        # `outcome` is the wire contract every other actuating skill answers on
+        # (src/types.lex's Outcome). reset used to return the new state alone,
+        # which a Lex caller could only read as Stalled -- a successful reset
+        # reported as a failure.
+        return {"outcome": "reached", "base": dict(self.base),
+                "arms": {k: list(v["positions"]) for k, v in self.arms.items()}}
 
     # ---- sensing -------------------------------------------------------------
     def read_joints(self, arm):
@@ -3052,10 +3111,15 @@ def _handle_skill(name, args):
             return {"outcome": "refused", "detail": f"no home saved for the {arm} arm -- "
                                                     f"free it, position it, then Set home"}
         if not USE_HW:
-            return {"outcome": "reached", "detail": "(simulated) would move to home"}
+            return {"outcome": "reached",
+                    "detail": "(simulated) would move to home -- no hardware, so no "
+                              "workspace check ran"}
         hw = ROBOT._hw_arms.get(arm)
         if hw is None:
             return {"outcome": "stalled", "detail": f"{arm} arm not configured"}
+        denial = ROBOT._grant_trajectory_violation(arm, h["joints"], [h["positions"]])
+        if denial is not None:
+            return {"outcome": "denied", "detail": denial}
         return _teach.go_to(hw.follower.bus, h["joints"], h["positions"],
                             collision_check=ROBOT._collision_check_for(arm))
     if name == "teach_stop":
@@ -3080,11 +3144,19 @@ def _handle_skill(name, args):
         traj = _teach.Trajectory.load(str(f))
         arm = args.get("arm") or traj.arm or "left"
         if not USE_HW:
+            # Honest about what "reached" means here: the workspace check below
+            # runs through the arm's kinematics model, and Tier 1 has no arm.
+            # Nothing moves either, so there is nothing to bound -- but the
+            # governance page must not read this as "checked and allowed".
             return {"outcome": "reached",
-                    "detail": f"(simulated) would replay {len(traj.frames)} frames on the {arm} arm"}
+                    "detail": f"(simulated) would replay {len(traj.frames)} frames on the "
+                              f"{arm} arm -- no hardware, so no workspace check ran"}
         hw = ROBOT._hw_arms.get(arm)
         if hw is None:
             return {"outcome": "stalled", "detail": f"{arm} arm not configured"}
+        denial = ROBOT._grant_trajectory_violation(arm, traj.joints, traj.frames)
+        if denial is not None:
+            return {"outcome": "denied", "detail": denial}
         return _teach.replay_on_bus(hw.follower.bus, traj,
                                     speed=float(args.get("speed", 1.0)),
                                     collision_check=ROBOT._collision_check_for(arm))

@@ -10,7 +10,15 @@ import math
 
 import pytest
 
-from xlerobot_sidecar import DisplayState, XLeRobot, _HwDiffBase, bearing_and_turn, clamp, diff_drive_wheel_speeds
+from xlerobot_sidecar import (
+    ARM_JOINTS,
+    DisplayState,
+    XLeRobot,
+    _HwDiffBase,
+    bearing_and_turn,
+    clamp,
+    diff_drive_wheel_speeds,
+)
 
 
 def test_clamp_bounds():
@@ -354,3 +362,118 @@ def test_hw_diff_base_rejects_neither_port_nor_shared_bus():
 def test_hw_diff_base_rejects_both_port_and_shared_bus():
     with pytest.raises(ValueError, match="exactly one of port or shared_bus"):
         _HwDiffBase(1, 2, 0.05, 0.30, port="/dev/ttyACM0", shared_bus=object())
+
+
+# ---- grant enforcement (taught trajectories) -------------------------------
+#
+# Replay and go-to-home drive the arm through *joint-space* poses, so the
+# grant's Cartesian workspace box only applies through forward kinematics.
+# These tests inject a fake arm whose FK is a plain function, so the envelope
+# logic is testable with no URDF, no lerobot install and no hardware.
+
+class _FakeFkArm:
+    """An arm whose FK is whatever the test says it is.
+
+    `ee` maps a joint tuple to an (x, y, z) end-effector position; anything
+    not in the map comes back None, which is how the real _HwArm reports "no
+    kinematics available for this pose".
+    """
+
+    def __init__(self, ee=None):
+        self.ee = ee or {}
+
+    def _forward_kinematics_ee(self, joints):
+        key = tuple(round(joints[f"{j}.pos"], 6) for j in ARM_JOINTS)
+        return self.ee.get(key)
+
+
+def _fk_arm(*poses):
+    """A fake arm mapping each frame (a 6-tuple of joint angles) to an ee."""
+    return _FakeFkArm({tuple(float(v) for v in frame): ee for frame, ee in poses})
+
+
+def _traj_robot(*poses):
+    robot = XLeRobot()
+    robot._grant = _TEST_GRANT
+    robot._hw_arms = {"left": _fk_arm(*poses)}
+    return robot
+
+
+_INSIDE = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+_OUTSIDE = (1.0, 1.0, 1.0, 1.0, 1.0, 1.0)
+
+
+def test_trajectory_inside_the_granted_workspace_is_allowed():
+    robot = _traj_robot((_INSIDE, (0.5, 0.5, 0.5)))
+    assert robot._grant_trajectory_violation("left", ARM_JOINTS, [list(_INSIDE)]) is None
+
+
+def test_trajectory_leaving_the_granted_workspace_is_refused():
+    # The recording could be taught anywhere a hand can reach; nothing bounded
+    # where it *ended up* until this check existed.
+    robot = _traj_robot((_INSIDE, (0.5, 0.5, 0.5)), (_OUTSIDE, (5.0, 0.5, 0.5)))
+    detail = robot._grant_trajectory_violation(
+        "left", ARM_JOINTS, [list(_INSIDE), list(_OUTSIDE)])
+    assert detail is not None
+    assert "frame 1 of 2" in detail
+    assert "x=5.000" in detail
+    assert "[0.00,1.00]" in detail
+
+
+def test_trajectory_is_checked_whole_before_any_frame_moves():
+    # A replay stopped halfway leaves the arm in a pose it was only ever meant
+    # to pass through, so the last frame's violation must refuse the first.
+    robot = _traj_robot((_INSIDE, (0.5, 0.5, 0.5)), (_OUTSIDE, (0.5, 0.5, 9.0)))
+    detail = robot._grant_trajectory_violation(
+        "left", ARM_JOINTS, [list(_INSIDE)] * 4 + [list(_OUTSIDE)])
+    assert "frame 4 of 5" in detail and "z=9.000" in detail
+
+
+def test_trajectory_refused_when_kinematics_are_unavailable():
+    # Refuse, don't downgrade: a box IS declared, the check cannot run, and
+    # replaying anyway would claim an envelope nothing verified.
+    robot = _traj_robot()   # empty FK map -> every lookup returns None
+    detail = robot._grant_trajectory_violation("left", ARM_JOINTS, [list(_INSIDE)])
+    assert "no forward kinematics available" in detail
+
+
+def test_trajectory_refused_when_the_recording_misses_a_modelled_joint():
+    # Padding the gap with zeros would be checking a pose the arm never held.
+    robot = _traj_robot((_INSIDE, (0.5, 0.5, 0.5)))
+    detail = robot._grant_trajectory_violation("left", ARM_JOINTS[:5], [[0.0] * 5])
+    assert "recorded without gripper" in detail
+
+
+def test_trajectory_unrestricted_when_no_grant_configured():
+    robot = _traj_robot()
+    robot._grant = None
+    assert robot._grant_trajectory_violation("left", ARM_JOINTS, [list(_OUTSIDE)]) is None
+
+
+def test_trajectory_unrestricted_when_the_grant_does_not_cover_this_arm():
+    # _TEST_GRANT bounds the left arm only; the right one has no box, and
+    # inventing one would be a bound nobody granted.
+    robot = _traj_robot()
+    robot._hw_arms["right"] = _fk_arm()
+    assert robot._grant_trajectory_violation("right", ARM_JOINTS, [list(_OUTSIDE)]) is None
+
+
+def test_trajectory_check_is_inert_without_a_configured_arm():
+    # No hardware to drive means nothing to bound; the caller's own
+    # "arm not configured" answer is the honest one, not a grant denial.
+    robot = XLeRobot()
+    robot._grant = _TEST_GRANT
+    robot._hw_arms = {}
+    assert robot._grant_trajectory_violation("left", ARM_JOINTS, [list(_OUTSIDE)]) is None
+
+
+def test_reset_answers_on_the_same_wire_contract_as_every_other_skill():
+    # reset used to return the new state alone, with no `outcome` key -- which
+    # src/skills.lex's parse_outcome could only read as Stalled, reporting a
+    # successful reset as a failure.
+    robot = XLeRobot()
+    robot.move_arm("left", 0.3, 0.1, 0.2)
+    result = robot.reset()
+    assert result["outcome"] == "reached"
+    assert result["base"] == {"x": 0.0, "y": 0.0, "heading": 0.0}
+    assert result["arms"]["left"] == [0.0] * 6

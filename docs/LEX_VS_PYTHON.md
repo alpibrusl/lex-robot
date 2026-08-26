@@ -107,14 +107,90 @@ run at `lex check` time and cannot drift from the code they document.
 Neither was the point of the exercise; both were only visible because writing
 the Lex version forced the question "which governed skill expresses this?".
 
-1. **`teach_free` had no governed expression at all.** The sidecar has exposed
-   `teach_*` since the `/teach` page landed, but no Lex skill named them — so
-   no grant covered them. `teach_free` **drops servo torque on five joints**;
-   the arm falls unless a hand is already on it. That is an actuating
-   capability, and it was reachable from any caller with no envelope. Now
-   wrapped and grant-gated in `skills.lex` — and deliberately *not* granted to
-   the leLab adapter, whose UI has no button meaning "I am holding the arm".
+1. **A whole family of actuating skills had no governed expression at all.**
+   The sidecar has exposed `teach_*` since the `/teach` page landed, but no Lex
+   skill named them — so no grant covered them. `teach_free` **drops servo
+   torque on five joints**; the arm falls unless a hand is already on it. Nor
+   did `teach_replay`, `teach_home_go`, `release_arm` or `reset`. Each is an
+   actuating capability that was reachable from any caller with no capability
+   envelope. All are now wrapped and grant-gated in `skills.lex` — and
+   `teach_free` is deliberately *not* granted to the leLab adapter, whose UI
+   has no button meaning "I am holding the arm". See "Two kinds of bound"
+   below for what closing that gap turned out to require.
 
 2. **`sense.read_joints` took no arm.** It sent `{}` and read whichever arm the
    sidecar defaulted to — right for a single-arm build, silently wrong for a
    dual-arm one. `read_joints_arm` now exists; the adapter reads both.
+
+## Two kinds of bound
+
+Wrapping those five in `skills.lex` gates *whether the program may ask*. For
+`teach_replay` and `teach_home_go` that was not the whole hole, and finding out
+why is worth writing down.
+
+Replay was never unbounded in *how* it moves: `teach.replay_on_bus` already had
+a discontinuity pre-flight, 6°-per-step smoothing, and a per-frame collision
+veto that stops it. What nothing bounded was **where it ended up**. A
+demonstration can be taught anywhere a hand can physically reach, and the
+grant's workspace box is Cartesian while a recording is joint-space, so the box
+simply did not apply to it. `_grant_trajectory_violation` closes that: it runs
+every frame through forward kinematics and refuses the whole recording if any
+end-effector position leaves the granted box. `teach_home_go` goes through the
+same check as a one-frame trajectory.
+
+Three properties of that check are deliberate:
+
+- **Checked whole, before any torque.** A replay stopped at frame 40 leaves the
+  arm in a pose it was only ever meant to pass *through*. All of it or none of
+  it — the same never-sent semantics `move_arm` has.
+- **Refuse, don't downgrade.** If a box is declared but FK is unavailable (no
+  URDF configured, or the recording predates a joint the model needs), the
+  check cannot run and the replay is refused. Running it anyway would be
+  claiming an envelope nothing verified.
+- **No box declared means no refusal.** An arm the grant doesn't cover is
+  unbounded and honestly so; inventing a box would be a bound nobody granted.
+
+The generalisation: *a capability whose Lex wrapper exists is not thereby
+bounded.* The wrapper answers "may this program ask?"; the sidecar still has to
+answer "is what was asked inside the envelope?", and for anything whose
+parameters aren't the bound's own coordinates, that second answer takes real
+work. The governance page's honest column is what makes the difference visible
+instead of assumed.
+
+### Two wire-contract bugs the wrappers exposed
+
+Writing a typed wrapper forces the question "what does this actually return?",
+and twice the answer was wrong:
+
+- **`reset` answered on no contract at all.** It returned the new state
+  (`{"base": ..., "arms": ...}`) with no `outcome` key, so `parse_outcome` could
+  only read a *successful* reset as `Stalled`. Both the Tier-1 stub and the
+  MuJoCo sidecar now answer `outcome: "reached"` like every other actuating
+  skill.
+- **`parse_outcome` had no `Denied` branch.** A refusal from the sidecar's own
+  grant checks — the second wall, the one that catches callers who never went
+  through Lex — arrived in Lex as `Stalled`, i.e. as the arm having failed to
+  get there rather than an envelope having said no. That mattered immediately:
+  the new trajectory check answers `denied`, and it would have been reported as
+  a hardware problem. Both now map to `Denied`, with `examples {}` pinning all
+  four cases at `lex check` time.
+
+The ledger had the mirror-image bug: `teach_replay` on a missing recording
+answers `outcome: "refused"`, which `classify()` didn't know, so it fell through
+to **`allowed`** — the governance page reporting an action that never happened.
+`refused` is now `failed`: the arm didn't move, but no envelope spoke, so it is
+neither `allowed` nor `denied`.
+
+### One bound that is declared and deliberately not enforced here
+
+`actuation.skills` — the capsule's skill allowlist — is loaded by the sidecar
+and checked by nothing in it. That is on purpose, and `grant_enforcement()`
+says so rather than implying otherwise.
+
+The list is the **agent's** grant, and `grant.skill_allowed` refuses anything
+outside it before a Lex program sends the call. But this port answers a second
+principal: the operator's own `/control`, `/teach` and `/display` pages, which
+legitimately invoke skills no agent capsule names. Enforcing the agent's
+allowlist port-wide would break them, and widening it until they fit would make
+it mean nothing. Two principals, one of which is enforced in Lex — stated, not
+papered over.

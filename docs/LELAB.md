@@ -61,8 +61,15 @@ nothing here does. That column immediately earned itself: it surfaced that
 `manifests/xlerobot.capsule.json` while `move_base` checked neither — so a
 direct caller could drive the base straight out of the granted room. Both are
 enforced now (refuse the position, clamp the speed, exactly as the arms do).
-`arms.*.max_velocity_mps` and `arms.*.max_force_n` are still declared-only, and
-the page says so rather than quietly implying a bound that isn't there.
+It earned itself twice: the `workspace_m` row named `move_arm` as its only
+enforcement point while `teach_replay` drove the same arm through joint-space
+poses nothing checked against that box — now checked frame by frame through
+forward kinematics, refused whole rather than stopped halfway (see
+`docs/LEX_VS_PYTHON.md`, "Two kinds of bound"). `arms.*.max_velocity_mps`,
+`arms.*.max_force_n` and the capsule's `skills` allowlist are still
+declared-only here, and the page says so — the last with its reason, since it
+is enforced in Lex against the agent and this port also answers the operator's
+own pages.
 
 **Every authority-exercising call, with the verdict the sidecar already reached**
 — `allowed` / `denied` / `clamped` / `failed` / `unknown`. Read-only polling is
@@ -153,8 +160,10 @@ without it, and a read-only handler that reaches for `move_arm` fails
 | `POST /start-recording` | `skills.teach_start` |
 | `POST /stop-recording`, `POST /recording-exit-early` | `skills.teach_stop` |
 
-The adapter's own grant is deliberately narrow, and one omission is worth
-naming: **`teach_free` is not granted.** Freeing an arm drops servo torque and
+The adapter's own grant is deliberately narrow — and the fact that it *can* be
+narrow is new: `teach_replay`, `teach_home_go`, `release_arm` and `reset` had
+no Lex wrapper at all until this change, so no grant could name them either
+way. One omission is still worth naming: **`teach_free` is not granted.** Freeing an arm drops servo torque and
 it falls unless a hand is already on it, and leLab's UI has no button that
 means "I am holding the arm right now". Recording is granted; making the arm
 limp from a browser is not.

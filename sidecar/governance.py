@@ -200,7 +200,12 @@ def classify(name: str, args: dict, result: dict, grant: Optional[dict] = None,
         # into an envelope the way a scalar can) — so it is refused instead.
         return {"verdict": "denied", "reason": detail or "refused by grant", "clamps": applied}
 
-    if "error" in result or result.get("ok") is False or outcome in ("stalled", "timeout"):
+    if "error" in result or result.get("ok") is False or outcome in ("stalled", "timeout", "refused"):
+        # `refused` is the sidecar declining to act for a reason that is not the
+        # grant: no such recording, no saved home, a trajectory too discontinuous
+        # to replay safely. It is not `denied` -- no envelope said no -- but the
+        # arm did not move, and reporting it as `allowed` would be the ledger
+        # claiming an action that never happened.
         return {"verdict": "failed", "reason": detail or str(outcome or "error"), "clamps": applied}
 
     if not result:
@@ -226,11 +231,26 @@ def grant_enforcement(grant: Optional[dict]) -> list:
     rows = []
     if not grant:
         return rows
+    if grant.get("skills"):
+        # Declared, and deliberately NOT enforced here. This list is the
+        # *agent's* capsule grant; `grant.skill_allowed` refuses anything
+        # outside it before a Lex program sends the call. The sidecar answers a
+        # second principal too -- the operator's own /control, /teach and
+        # /display pages, which legitimately invoke skills no agent capsule
+        # names. Turning the agent's allowlist into a port-wide one would break
+        # those, and quietly widening it to fit them would make it meaningless.
+        rows.append({"bound": "skills", "value": list(grant["skills"]),
+                     "enforced": False,
+                     "how": "enforced in Lex (grant.skill_allowed), not here — this port "
+                            "also serves the operator pages, which are a different principal",
+                     "where": None})
     for side, cfg in (grant.get("arms") or {}).items():
         if cfg.get("workspace_m"):
             rows.append({"bound": f"arms.{side}.workspace_m", "value": cfg["workspace_m"],
-                         "enforced": True, "how": "move_arm refuses (outcome=denied)",
-                         "where": "_grant_workspace_violation"})
+                         "enforced": True,
+                         "how": "move_arm refuses a target outside the box; teach_replay and "
+                                "teach_home_go refuse a pose whose end effector leaves it",
+                         "where": "_grant_workspace_violation, _grant_trajectory_violation"})
         if cfg.get("max_velocity_mps") is not None:
             rows.append({"bound": f"arms.{side}.max_velocity_mps", "value": cfg["max_velocity_mps"],
                          "enforced": False, "how": "declared only — no arm-velocity check here",

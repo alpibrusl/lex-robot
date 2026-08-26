@@ -212,6 +212,47 @@ else
 fi
 rm -f "$lelabneg"
 
+# The actuating skills that used to have no Lex expression at all -- and so no
+# grant naming them. Each is now wrapped and gated; this asserts the gate is a
+# refusal, not a warning, and that it refuses BEFORE the request exists. There
+# is deliberately no sidecar on 127.0.0.1:1: anything that actually sent would
+# come back `stalled`, so four `denied` lines are the never-sent proof.
+gate="$ROOT/.gate_actuating.lex"
+cat > "$gate" <<'LEXEOF'
+import "std.io" as io
+import "./src/types" as t
+import "./src/skills" as skills
+import "./src/wire" as wire
+
+fn narrow() -> t.Grant {
+  {
+    skills: ["read_joints"],
+    ws_min: { x: 0.0, y: 0.0, z: 0.0 },
+    ws_max: { x: 1.0, y: 1.0, z: 1.0 },
+    max_velocity: 0.1, max_force: 1.0, max_grip_force: 1.0,
+    budget_actions: 10, budget_wall_ms: 1000,
+  }
+}
+
+fn main() -> [net, sense, actuate, io] Unit {
+  let r :: t.Robot := { sidecar_url: "http://127.0.0.1:1", grant: narrow() }
+  let __0 := io.print(wire.outcome_str(skills.teach_replay(r, "demo", 1.0)))
+  let __1 := io.print(wire.outcome_str(skills.teach_home_go(r, "left")))
+  let __2 := io.print(wire.outcome_str(skills.release_arm(r, "left")))
+  let __3 := io.print(wire.outcome_str(skills.reset(r)))
+}
+LEXEOF
+gateout="$(lex run --allow-effects net,sense,actuate,io "$gate" main 2>&1 | tr -d '\r')"
+for sk in teach_replay teach_home_go release_arm reset; do
+  if grep -qF "denied: skill $sk not in grant" <<<"$gateout"; then
+    pass "grant gate: $sk refused before any request exists (never sent)"
+  else
+    bad "grant gate: $sk was not refused by the grant"
+    echo "$gateout" | sed 's/^/      /'
+  fi
+done
+rm -f "$gate"
+
 # The structured SkillOutcome: the single grant-checked move records
 # skill+args+grant (integer milli-units) in the trail, so the lex-games
 # `robot_task` verifier can re-derive that the move stayed inside its workspace
