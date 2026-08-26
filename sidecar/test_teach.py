@@ -153,7 +153,8 @@ def test_replay_vetoed_by_the_collision_check_stops_partway(monkeypatch):
         def sync_read(self, *_a, **_k): return {"a": 0.0}
         def sync_write(self, *_a, **_k): self.written += 1
         def enable_torque(self): pass
-        def disconnect(self): pass
+        def disconnect(self, disable_torque=True):
+            self.closed_disable_torque = disable_torque
 
     class FakeRobot:
         def __init__(self): self.bus = FakeBus()
@@ -192,7 +193,8 @@ def test_recording_frees_the_body_but_keeps_the_gripper_powered(monkeypatch):
         def __init__(self): self.freed = None
         def disable_torque(self, joints=None): self.freed = joints
         def sync_read(self, *_a, **_k): return {j: 0.0 for j in teach.ARM_JOINTS}
-        def disconnect(self): pass
+        def disconnect(self, disable_torque=True):
+            self.closed_disable_torque = disable_torque
 
     class FakeRobot:
         def __init__(self): self.bus = FakeBus()
@@ -212,7 +214,8 @@ def test_the_gripper_can_be_freed_explicitly(monkeypatch):
         def __init__(self): self.freed = None
         def disable_torque(self, joints=None): self.freed = joints
         def sync_read(self, *_a, **_k): return {j: 0.0 for j in teach.ARM_JOINTS}
-        def disconnect(self): pass
+        def disconnect(self, disable_torque=True):
+            self.closed_disable_torque = disable_torque
 
     class FakeRobot:
         def __init__(self): self.bus = FakeBus()
@@ -232,7 +235,8 @@ def test_recording_still_captures_every_joint_including_the_powered_one(monkeypa
     class FakeBus:
         def disable_torque(self, joints=None): pass
         def sync_read(self, *_a, **_k): return {j: 1.0 for j in teach.ARM_JOINTS}
-        def disconnect(self): pass
+        def disconnect(self, disable_torque=True):
+            self.closed_disable_torque = disable_torque
 
     class FakeRobot:
         def __init__(self): self.bus = FakeBus()
@@ -407,3 +411,70 @@ def test_go_to_is_vetoed_by_the_collision_check(monkeypatch):
                     collision_check=lambda f: ["a vs tower: -5 mm"] if f["a.pos"] > 20 else [])
     assert r["outcome"] == "denied"
     assert bus.pos["a"] <= 24.0, "must stop before the offending pose, not finish the move"
+
+
+def test_recording_closes_without_dropping_the_powered_gripper(monkeypatch):
+    """Regression: `MotorsBus.disconnect()` disables torque BY DEFAULT.
+
+    `record` deliberately leaves the gripper powered so it stays commandable
+    while both your hands are on the arm — and then a bare close disabled
+    torque on every motor, dropping whatever the gripper was holding at the
+    instant recording ended. The joints in `free` are already limp, so the
+    correct close is one that changes nothing at all.
+    """
+    import teach
+
+    class FakeBus:
+        def __init__(self):
+            self.freed = None
+            self.closed_disable_torque = None
+
+        def disable_torque(self, joints=None):
+            self.freed = joints
+
+        def sync_read(self, *_a, **_k):
+            return {j: 0.0 for j in teach.ARM_JOINTS}
+
+        def disconnect(self, disable_torque=True):
+            self.closed_disable_torque = disable_torque
+
+    class FakeRobot:
+        def __init__(self):
+            self.bus = FakeBus()
+
+    fake = FakeRobot()
+    monkeypatch.setattr(teach, "_robot", lambda *a, **k: fake)
+    monkeypatch.setattr(teach.time, "sleep", lambda *_a: None)
+    teach.record("/dev/null", "x", seconds=0.0)
+
+    assert "gripper" not in fake.bus.freed          # still powered, as promised
+    assert fake.bus.closed_disable_torque is False  # and still powered on exit
+
+
+def test_the_recording_close_holds_even_when_reading_raises(monkeypatch):
+    """The `finally` must not become the thing that drops the arm."""
+    import teach
+
+    class FakeBus:
+        def __init__(self):
+            self.closed_disable_torque = None
+
+        def disable_torque(self, joints=None):
+            pass
+
+        def sync_read(self, *_a, **_k):
+            raise ConnectionError("bus dropped a response")
+
+        def disconnect(self, disable_torque=True):
+            self.closed_disable_torque = disable_torque
+
+    class FakeRobot:
+        def __init__(self):
+            self.bus = FakeBus()
+
+    fake = FakeRobot()
+    monkeypatch.setattr(teach, "_robot", lambda *a, **k: fake)
+    monkeypatch.setattr(teach.time, "sleep", lambda *_a: None)
+    with pytest.raises(ConnectionError):
+        teach.record("/dev/null", "x", seconds=1.0)
+    assert fake.bus.closed_disable_torque is False

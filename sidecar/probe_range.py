@@ -22,7 +22,9 @@ second is a property of the robot's surroundings.
 
 Probing runs at reduced torque so meeting an obstruction is a gentle give
 rather than a grind, and the joint's torque limit, position and torque state
-are all restored on the way out, including on error.
+are all restored on the way out, including on error -- and that restore
+survives the close, which takes care: `MotorsBus.disconnect()` disables torque
+by default, so a bare close would undo it one line later.
 
     python sidecar/probe_range.py --port /dev/cu.usbmodem5B3D0437151
     python sidecar/probe_range.py --port /dev/cu.usbmodem5B610332201 --joint shoulder_lift
@@ -182,6 +184,17 @@ class RangeProbe:
         return out
 
 
+def _open_bus(port: str, joint: str, motor_id: int):
+    """Open the one joint we are probing. Separate so tests can inject a bus."""
+    from lerobot.motors import Motor, MotorNormMode
+    from lerobot.motors.feetech import FeetechMotorsBus
+
+    bus = FeetechMotorsBus(
+        port=port, motors={joint: Motor(motor_id, MODEL, MotorNormMode.DEGREES)})
+    bus.connect(handshake=False)
+    return bus
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--port", required=True)
@@ -191,12 +204,7 @@ def main() -> None:
     p.add_argument("--cap", type=int, default=3000, help="max ticks to explore per direction")
     a = p.parse_args()
 
-    from lerobot.motors import Motor, MotorNormMode
-    from lerobot.motors.feetech import FeetechMotorsBus
-
-    bus = FeetechMotorsBus(port=a.port,
-                           motors={a.joint: Motor(a.id, MODEL, MotorNormMode.DEGREES)})
-    bus.connect(handshake=False)
+    bus = _open_bus(a.port, a.joint, a.id)
     try:
         res = RangeProbe(bus, a.joint, probe_torque=a.torque, travel_cap=a.cap).run()
         lo, hi = res["limits"]
@@ -217,7 +225,11 @@ def main() -> None:
                   f"= {span} ticks / {ticks_to_deg(span):.1f} deg")
         print(f"  restored to {res['restored_to']}, {res['temperature_c']}C")
     finally:
-        bus.disconnect()
+        # NOT a bare disconnect(): lerobot's default disables torque, which
+        # would silently undo the Torque_Enable restore RangeProbe.run() just
+        # performed in its own finally -- and this file's docstring promises
+        # that restore. Closing the port is all that is wanted here.
+        bus.disconnect(disable_torque=False)
 
 
 if __name__ == "__main__":

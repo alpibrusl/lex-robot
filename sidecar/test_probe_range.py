@@ -172,3 +172,40 @@ def test_state_restored_even_when_probing_raises():
         p.run()
     assert bus.regs["Torque_Limit"] == 777
     assert bus.regs["Torque_Enable"] == 0
+
+
+def test_probing_closes_without_undoing_its_own_torque_restore(monkeypatch):
+    """Regression: `MotorsBus.disconnect()` disables torque BY DEFAULT.
+
+    `RangeProbe.run()` saves `Torque_Enable`, probes, and restores it in its own
+    `finally` — and this module's docstring promises that restore. A bare
+    `disconnect()` then wrote `Torque_Enable=0` one line later, silently undoing
+    it for any joint that was powered beforehand. The close must only close.
+    """
+    import probe_range
+
+    closed = {}
+
+    class ClosingBus(FakeBus):
+        def __init__(self):
+            super().__init__()
+            self.regs["Torque_Enable"] = 1        # powered BEFORE probing
+
+        def disconnect(self, disable_torque=True):
+            closed["disable_torque"] = disable_torque
+            closed["torque_at_close"] = self.regs["Torque_Enable"]
+
+    bus = ClosingBus()
+    monkeypatch.setattr(probe_range, "_open_bus", lambda *a, **k: bus)
+    monkeypatch.setattr(probe_range.time, "sleep", lambda *_a: None)
+    import sys
+    monkeypatch.setattr(
+        sys, "argv",
+        ["probe_range.py", "--port", "/dev/null", "--joint", "shoulder_pan"])
+
+    probe_range.main()
+
+    assert closed["disable_torque"] is False
+    # and the restore RangeProbe performed is still standing at close
+    assert closed["torque_at_close"] == 1
+    assert bus.regs["Torque_Enable"] == 1
