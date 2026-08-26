@@ -181,6 +181,11 @@ def trim_trajectory(traj: "Trajectory", threshold_deg: float = 0.5) -> list[int]
 # Measured for scale: a real hand-taught demonstration runs a median step of
 # ~0.2 deg with a p95 under 4, and its rare fast moments reach ~6.
 DISCONTINUITY_DEG = 30.0
+# Largest joint step a replay will command in one frame. smooth_steps() splits
+# anything bigger. Named because the grant's velocity check has to smooth with
+# the SAME value replay will use -- checking one path and driving another would
+# make the check meaningless.
+MAX_STEP_DEG = 6.0
 
 
 def smooth_steps(frames: list[list[float]], max_step_deg: float) -> list[list[float]]:
@@ -243,7 +248,7 @@ def resample(frames: list[list[float]], src_fps: float, dst_fps: float) -> list[
 
 # ── validation ──────────────────────────────────────────────────────────────
 
-def validate(traj: "Trajectory", max_step_deg: float = 6.0) -> dict:
+def validate(traj: "Trajectory", max_step_deg: float = MAX_STEP_DEG) -> dict:
     """Would this replay, and is it worth training on? Problems vs warnings.
 
     A PROBLEM means replay will refuse it. A WARNING means it will replay but
@@ -348,7 +353,7 @@ def load_home(arm: str) -> dict | None:
         return None
 
 
-def go_to(bus, joints: list[str], target: list[float], *, max_step_deg: float = 6.0,
+def go_to(bus, joints: list[str], target: list[float], *, max_step_deg: float = MAX_STEP_DEG,
           period_s: float = 0.05, collision_check=None) -> dict:
     """Drive an already-connected bus to a pose, creeping rather than snapping.
 
@@ -415,7 +420,7 @@ def record(port: str, robot_id: str, seconds: float, fps: float = 20.0,
 
 
 def replay_on_bus(bus, traj: "Trajectory", *, speed: float = 1.0,
-                  max_step_deg: float = 6.0, collision_check=None) -> dict:
+                  max_step_deg: float = MAX_STEP_DEG, collision_check=None) -> dict:
     """Replay on an ALREADY-CONNECTED bus.
 
     The sidecar holds the arm's bus open for the whole session; opening a
@@ -461,7 +466,7 @@ def _replay_refusal(traj: "Trajectory", max_step_deg: float):
 
 
 def replay(port: str, robot_id: str, traj: Trajectory, *, speed: float = 1.0,
-           max_step_deg: float = 6.0, collision_check=None) -> dict:
+           max_step_deg: float = MAX_STEP_DEG, collision_check=None) -> dict:
     """Repeat a taught motion, opening the port ourselves (CLI use)."""
     refusal = _replay_refusal(traj, max_step_deg)
     if refusal:

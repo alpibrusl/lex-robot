@@ -2212,7 +2212,36 @@ class XLeRobot:
                         f"[{b['min']:.2f},{b['max']:.2f}]")
         return None
 
-    def _grant_trajectory_violation(self, arm, joints, frames):
+    def _trajectory_ee_path(self, arm, joints, frames):
+        """(ee_positions, None), (None, None) or (None, reason).
+
+        Both grant checks on a taught motion -- WHERE it goes and HOW FAST it
+        gets there -- need the same Cartesian path, so it is computed once.
+
+        Three answers, not two. `(None, None)` means there is nothing here to
+        bound (no such arm configured); `(None, reason)` means a bound applies
+        but cannot be evaluated, which the caller must turn into a refusal
+        rather than a pass.
+        """
+        hw = self._hw_arms.get(arm)
+        if hw is None:
+            return None, None
+        missing = [j for j in ARM_JOINTS if j not in joints]
+        if missing:
+            # Padding the gap with zeros would be checking a pose the arm
+            # never held.
+            return None, ("it was recorded without " + ", ".join(missing)
+                          + ", which the kinematics model needs")
+        path = []
+        for frame in frames:
+            ee = hw._forward_kinematics_ee({f"{j}.pos": v for j, v in zip(joints, frame)})
+            if ee is None:
+                return None, ("no forward kinematics available (LEX_XLE_URDF_PATH unset, "
+                              "or this lerobot install's kinematics module does not match)")
+            path.append(ee)
+        return path, None
+
+    def _grant_trajectory_violation(self, arm, joints, frames, ee_path=None):
         """None if a taught pose sequence is safe to drive under the grant.
         Otherwise a detail string -- the caller turns it into `denied` and no
         torque is ever enabled. Used by teach_replay (a whole recording) and
@@ -2231,40 +2260,88 @@ class XLeRobot:
         honest options are all of it or none of it -- the same never-sent
         semantics move_arm has.
 
-        Refuse, don't downgrade: when a box IS declared but FK is unavailable
-        (no URDF/placo configured), the check cannot run, and replaying anyway
-        would be claiming an envelope nothing verified.
+        Refuse, don't downgrade: when a box IS declared but the path cannot be
+        computed, the check cannot run, and replaying anyway would be claiming
+        an envelope nothing verified.
         """
         if not self._grant:
             return None
-        arm_grant = self._grant.get("arms", {}).get(arm)
-        bounds = arm_grant.get("workspace_m") if arm_grant else None
-        if not bounds or len(bounds) != 3:
+        arm_grant = self._grant.get("arms", {}).get(arm) or {}
+        bounds = arm_grant.get("workspace_m")
+        has_box = bool(bounds) and len(bounds) == 3
+        # The gate covers BOTH Cartesian bounds, not just the box. A grant that
+        # declares only a speed ceiling still needs the path, and letting the
+        # replay through because the box happened to be absent would be the
+        # silent downgrade this check exists to prevent -- so the refusal below
+        # is what an uncomputable path earns either way.
+        if not has_box and arm_grant.get("max_velocity_mps") is None:
             return None
-        hw = self._hw_arms.get(arm)
-        if hw is None:
+        path, reason = ee_path if ee_path is not None else \
+            self._trajectory_ee_path(arm, joints, frames)
+        if reason is not None:
+            return ("cannot verify this trajectory against the granted envelope: "
+                    + reason + ". Replaying anyway would claim an envelope nothing checked.")
+        if path is None:
             return None
-        missing = [j for j in ARM_JOINTS if j not in joints]
-        if missing:
-            # A recording that doesn't cover every joint the kinematics model
-            # takes can't be run through FK, and padding the gap with zeros
-            # would be checking a pose the arm never held.
-            return ("cannot verify this trajectory against the granted workspace: it was "
-                    f"recorded without {', '.join(missing)}, which the kinematics model "
-                    "needs. Replaying anyway would claim an envelope nothing checked.")
-        for idx, frame in enumerate(frames):
-            ee = hw._forward_kinematics_ee({f"{j}.pos": v for j, v in zip(joints, frame)})
-            if ee is None:
-                return ("cannot verify this trajectory against the granted workspace: no "
-                        "forward kinematics available (LEX_XLE_URDF_PATH unset, or this "
-                        "lerobot install's kinematics module does not match). Replaying "
-                        "anyway would claim an envelope nothing checked.")
+        if not has_box:
+            return None
+        for idx, ee in enumerate(path):
             for val, axis, b in zip(ee, "xyz", bounds):
                 if not (b["min"] <= val <= b["max"]):
-                    return (f"frame {idx} of {len(frames)} puts the end effector at "
+                    return (f"frame {idx} of {len(path)} puts the end effector at "
                             f"{axis}={val:.3f}, outside granted workspace "
                             f"[{b['min']:.2f},{b['max']:.2f}] for the {arm} arm")
         return None
+
+    def _grant_max_arm_speed(self, arm):
+        if not self._grant:
+            return None
+        g = self._grant.get("arms", {}).get(arm)
+        return g.get("max_velocity_mps") if g else None
+
+    def _grant_clamp_replay_speed(self, arm, joints, frames, fps, speed, ee_path=None):
+        """(speed to actually use, clamp record or None).
+
+        `speed` is a caller-chosen multiplier and the gap between frames is
+        `1 / (fps * speed)`, so speed=10 drives the taught path ten times
+        faster. Nothing bounded that: the workspace check above constrains
+        where the arm goes, and the collision model constrains what it hits,
+        but a demonstration recorded at a safe pace could be replayed at any
+        pace at all.
+
+        Clamped, not refused -- the same split move_base and grasp_arm use.
+        A position cannot be squeezed into an envelope without inventing a
+        destination, but a speed can: slowing the replay preserves the taught
+        path exactly, frame for frame. Refusing instead would reject a
+        perfectly good recording over a number the caller picked.
+
+        The ceiling is the end effector's linear speed, so it is the PEAK
+        per-step speed that has to fit: a path is only inside the envelope if
+        its fastest moment is.
+
+        NOT covered, and worth knowing: replay_on_bus first drives an
+        `approach_path` from wherever the arm currently is to the recording's
+        first frame, at the same frame rate. That path depends on live joint
+        positions this check has no access to, so neither this ceiling nor the
+        workspace box applies to it. It is bounded in joint space (no step
+        exceeds max_step_deg) and vetoed by the collision model, but its
+        Cartesian speed and destination are unchecked.
+        """
+        ceiling = self._grant_max_arm_speed(arm)
+        if ceiling is None or ceiling <= 0 or fps <= 0 or speed <= 0:
+            return speed, None
+        path, _reason = ee_path if ee_path is not None else \
+            self._trajectory_ee_path(arm, joints, frames)
+        if path is None or len(path) < 2:
+            return speed, None
+        step = max(math.dist(a, b) for a, b in zip(path, path[1:]))
+        peak = step * fps * speed
+        if peak <= ceiling:
+            return speed, None
+        return speed * ceiling / peak, {
+            "bound": f"arms.{arm}.max_velocity_mps", "source": "grant",
+            "requested": round(peak, 4), "ceiling": ceiling,
+        }
 
     def _grant_max_base_speed(self):
         cfg = self._base_grant()
@@ -3150,16 +3227,40 @@ def _handle_skill(name, args):
             # governance page must not read this as "checked and allowed".
             return {"outcome": "reached",
                     "detail": f"(simulated) would replay {len(traj.frames)} frames on the "
-                              f"{arm} arm -- no hardware, so no workspace check ran"}
+                              f"{arm} arm -- no hardware, so neither the workspace nor the "
+                              f"speed check ran"}
         hw = ROBOT._hw_arms.get(arm)
         if hw is None:
             return {"outcome": "stalled", "detail": f"{arm} arm not configured"}
-        denial = ROBOT._grant_trajectory_violation(arm, traj.joints, traj.frames)
+        # Check the frames that will actually be SENT, not the stored ones:
+        # smooth_steps interpolates between them at replay time, and a straight
+        # line in joint space can bulge outside the box in Cartesian space.
+        # Same max_step_deg on both sides, so replay re-derives an identical
+        # path -- checking one path and driving another proves nothing.
+        step_deg = _teach.MAX_STEP_DEG
+        sending = _teach.smooth_steps(traj.frames, step_deg)
+        # One forward-kinematics pass, both bounds. A long recording smooths to
+        # thousands of frames, and running FK over them twice would put real
+        # latency in front of an arm that hasn't moved yet.
+        ee_path = ROBOT._trajectory_ee_path(arm, traj.joints, sending)
+        denial = ROBOT._grant_trajectory_violation(arm, traj.joints, sending, ee_path=ee_path)
         if denial is not None:
             return {"outcome": "denied", "detail": denial}
-        return _teach.replay_on_bus(hw.follower.bus, traj,
-                                    speed=float(args.get("speed", 1.0)),
-                                    collision_check=ROBOT._collision_check_for(arm))
+        speed, clamp = ROBOT._grant_clamp_replay_speed(
+            arm, traj.joints, sending, traj.fps, float(args.get("speed", 1.0)),
+            ee_path=ee_path)
+        result = _teach.replay_on_bus(hw.follower.bus, traj, speed=speed,
+                                      max_step_deg=step_deg,
+                                      collision_check=ROBOT._collision_check_for(arm))
+        if clamp is not None and isinstance(result, dict):
+            # The ledger reads the verdict the sidecar reached rather than
+            # re-deriving one, and this ceiling depends on the recording's
+            # own kinematics, which governance.py cannot compute. So it is
+            # reported here, in the reply, where classify() can read it.
+            result = dict(result, clamps=[clamp],
+                          detail=(result.get("detail", "") + f" (speed clamped to "
+                                  f"{clamp['ceiling']:g} m/s by {clamp['bound']})").strip())
+        return result
     if name == "reset":
         return ROBOT.reset()
     if name == "read_joints":

@@ -5,10 +5,12 @@ that shows the *envelope*: which capability was invoked, what the grant did
 about it (allowed / refused outright / clamped to a ceiling), and a
 hash-chained record of the sequence that `lex-trail` can replay.
 
-**This module observes. It never decides.** The grant is enforced in exactly
-one place per bound — `XLeRobot._grant_workspace_violation` refuses an
-out-of-box target, `XLeRobot._grant_max_grip_force` clamps grip force — and
-this ledger reads the *result* of those decisions after the fact. Adding an
+**This module observes. It never decides.** Every bound is enforced in the
+sidecar — `XLeRobot._grant_workspace_violation` refuses an out-of-box target,
+`_grant_trajectory_violation` refuses a replay that would leave the box,
+`_grant_max_grip_force` clamps grip force, `_grant_clamp_replay_speed` clamps
+a replay's rate — and this ledger reads the *result* of those decisions after
+the fact. Adding an
 enforcement branch here would be the thing lex-os's CLAUDE.md forbids: a
 second, independent source of authority. `classify()` therefore never returns
 a verdict the sidecar didn't already reach; when it can't tell what happened,
@@ -18,10 +20,13 @@ Two consequences of that posture worth stating plainly, because a governance
 page that overclaims is worse than none:
 
 - A bound the sidecar declares but does not check is reported as *declared*,
-  not as enforced. `arms.*.max_velocity_mps` and `arms.*.max_force_n` are in
-  the capsule and nothing here checks them; `grant_enforcement()` says so.
-  (`bases.*.floor_area_m` and `max_speed_mps` used to be in that list too --
-  `move_base` now enforces both, which is what the honest column was for.)
+  not as enforced. `arms.*.max_force_n` is in the capsule and nothing here
+  checks it; `grant_enforcement()` says so. A bound enforced at only SOME of
+  its call sites says which: `arms.*.max_velocity_mps` clamps teach_replay's
+  rate but does not bound move_arm, which commands positions rather than
+  velocities. (`bases.*.floor_area_m` and `max_speed_mps` used to be
+  unenforced too -- `move_base` now checks both, which is what the honest
+  column was for.)
 - A clamp is only reported where the sidecar really clamps. Grip force clamps
   against the grant; base speed clamps against the grant and, beneath it, the
   `LEX_XLE_HARD_SPEED_MPS` firmware floor -- attributed to whichever ceiling
@@ -192,7 +197,14 @@ def classify(name: str, args: dict, result: dict, grant: Optional[dict] = None,
 
     outcome = result.get("outcome")
     detail = str(result.get("detail") or result.get("error") or "")
-    applied = clamps(name, args, grant, firmware)
+    # A clamp the sidecar reports itself wins over anything derivable here.
+    # Replay's speed ceiling depends on the recording's own kinematics -- this
+    # module has no robot and cannot compute it -- so the sidecar puts the
+    # clamp in its reply. Reading it is the same posture as everything else
+    # here: report the decision that was made, never re-derive one.
+    reported = result.get("clamps")
+    applied = ([c for c in reported if isinstance(c, dict)] if isinstance(reported, list)
+               else clamps(name, args, grant, firmware))
 
     if outcome == "denied":
         # The one verdict that means the grant refused: move_arm's workspace
@@ -252,9 +264,19 @@ def grant_enforcement(grant: Optional[dict]) -> list:
                                 "teach_home_go refuse a pose whose end effector leaves it",
                          "where": "_grant_workspace_violation, _grant_trajectory_violation"})
         if cfg.get("max_velocity_mps") is not None:
+            # Partly enforced, and the row says which part. teach_replay has a
+            # real speed to bound (frames at a caller-chosen rate) and is
+            # clamped to this ceiling. move_arm has no velocity at all: it is a
+            # closed-loop IK servo that commands positions and lets the servos
+            # travel at their own rate, so there is no number here to bound
+            # without building a motion controller. Claiming the whole row
+            # enforced would cover for that.
             rows.append({"bound": f"arms.{side}.max_velocity_mps", "value": cfg["max_velocity_mps"],
-                         "enforced": False, "how": "declared only — no arm-velocity check here",
-                         "where": None})
+                         "enforced": True,
+                         "how": "teach_replay clamps the replay rate (never amplifies); "
+                                "move_arm is NOT bounded by it — it commands positions, "
+                                "not velocities",
+                         "where": "_grant_clamp_replay_speed"})
         if cfg.get("max_force_n") is not None:
             rows.append({"bound": f"arms.{side}.max_force_n", "value": cfg["max_force_n"],
                          "enforced": False,

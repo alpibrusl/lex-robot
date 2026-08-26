@@ -255,7 +255,11 @@ fn teach_start(r :: t.Robot, arm :: Str, name :: Str, task :: Str, fps :: Float,
 # had no Lex expression at all, so no grant named it. The sidecar bounds HOW
 # the arm moves (a discontinuity pre-flight, 6-degree step smoothing, a
 # per-frame collision veto) and, since this change, WHERE it ends up (every
-# frame's end-effector position must land inside the granted workspace box).
+# frame's end-effector position must land inside the granted workspace box)
+# and HOW FAST (`speed` is clamped so the peak end-effector speed fits
+# max_velocity_mps). Both of those need the recording's own kinematics, which
+# this layer cannot see -- a Lex caller holds a Grant, not a URDF -- so they
+# belong to the sidecar and this wrapper does not attempt them.
 # This wrapper is the third bound: whether the program may ask at all.
 fn teach_replay(r :: t.Robot, name :: Str, speed :: Float) -> [net, sense, actuate] t.Outcome {
   if grant.skill_allowed(r.grant, "teach_replay") {
