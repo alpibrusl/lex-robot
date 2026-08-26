@@ -287,6 +287,132 @@ The pure kinematics helpers (`diff_drive_wheel_speeds`, `bearing_and_turn`,
 hardware or `lerobot` install: `pip install pytest && cd sidecar && python3
 -m pytest test_xlerobot_hw.py`.
 
+## Bus health gate (`sidecar/bus_preflight.py`)
+
+Run before any unattended session:
+
+```sh
+make bus-check                       # or: python3 sidecar/bus_preflight.py
+make bus-check PY=.venv/bin/python   # when lerobot lives in a venv
+```
+
+**The exit code is the contract**, and it separates three states rather than
+two — shell callers should `set -e` and let it stop them:
+
+| exit | meaning |
+|---|---|
+| `0` | every configured bus answered cleanly — safe to start |
+| `1` | a bus is **dropping responses** — the fault this exists for |
+| `2` | a bus could not be **opened** — inconclusive, not a verdict |
+
+That third state earned itself within an hour of the gate being written. The
+serial port is exclusive, so an unplugged robot — or the sidecar, or a second
+`bus_preflight`, already holding the port — all produce "could not open". The
+first soak run reported those as failures, which is a false positive on the
+one bus that has never dropped anything. None of them is a marginal bus, and
+reporting them as one trains everybody to ignore the gate, which is the
+practical way a safety check dies. A soak counts drops and unavailability
+apart, and only drops exit `1`.
+
+It pings and reads only. It never writes a register and never enables torque,
+so it is safe to run at any time with no hand on the e-stop.
+
+That last property needs care, because lerobot does not default to it:
+`MotorsBus.disconnect()` calls `disable_torque()` on the way out, which
+**writes `Torque_Enable=0` to every motor on the bus**. Run against an arm that
+is holding a pose, a bare `disconnect()` would drop torque on all six joints
+and the arm would fall — the same hazard `teach_free` is grant-gated for. Every
+close in `bus_preflight.py` and `camera_calibrate.py` therefore passes
+`disable_torque=False`, and a regression test pins it. Anything else in this
+repo that opens a `FeetechMotorsBus` to *read* is worth checking for the same
+thing.
+
+Why it exists: on 2026-08-23 the right bus dropped 55% of reads on id 9 and
+lerobot's handshake (`_assert_motors_exist` — one ping per id, `num_retry=0`)
+found `{}`, `{4,5,6}`, `{}` of six motors across three fresh processes, so
+`SO101Follower` refused the arm. Three days later, after a power cycle, the
+same measurement was clean: 16,000 reads under full camera load, zero failures,
+40/40 handshakes complete. A fault that disappears when power drops is not
+fixed — it is intermittent, and:
+
+> a bus that drops a reply also drops a **commanded position**, and a dropped
+> command raises nothing at all.
+
+Read failures are loud; write failures are silent. An overnight data-collection
+run (#153) is exactly where that does damage and exactly where nobody is
+watching, so this gate turns the silent failure into a loud one before any
+torque is enabled. It doubles as the periodic re-runnable check #151 asks for.
+
+**Do not add retries here.** They would hide the signal the gate exists to
+detect, and they would not save the commanded positions that fail silently
+later. `--max-fail-pct` defaults to `0.0` because the measured good state is
+0.0% over 16,000 reads and the measured bad state is 55% — there is no observed
+middle, so any failure is signal rather than noise.
+
+**Soak mode**, for an intermittent fault a single run would miss — which is
+what this one is:
+
+```sh
+python sidecar/bus_preflight.py --repeat 0 --interval 30     # until stopped
+python sidecar/bus_preflight.py --repeat 20 --interval 60    # 20 rounds
+```
+
+**Tower check.** The head camera rides the pan/tilt tower (servos 7, 8) and the
+tower ships with `Torque_Enable=0`, so a knock or a sag silently invalidates
+the `CameraModel` calibrated against it — the third silent failure mode on this
+robot, after dropped reads and a wrong calibration. When the calibration
+records the pose it was taken at, the gate checks it:
+
+```sh
+python sidecar/bus_preflight.py --tower-calib sidecar/camera_calib.json
+```
+
+A calibration with no `tower` block exits `2` and says so, rather than passing:
+an unchecked tower must not read as a checked one.
+
+## Camera calibration (`sidecar/camera_calibrate.py`)
+
+`sidecar/camera_calib_example.json` is an **example** — an idealised overhead
+camera. Running the vision self-reset against it yields confidently wrong world
+positions, because `project_to_plane` refuses geometric impossibilities but
+cannot refuse merely wrong numbers (#150 risk 3). Three steps replace it with a
+measurement:
+
+```sh
+# 1. lens model — wave a printed chessboard around; headless, no display
+python sidecar/camera_calibrate.py intrinsics --camera 0 --views 15 \
+    --board 9x6 --square-mm 25 --out /tmp/intrinsics.json
+
+# 2. where the camera is — board flat at a MEASURED spot, one frame
+python sidecar/camera_calibrate.py extrinsics --camera 0 \
+    --intrinsics /tmp/intrinsics.json --board 9x6 --square-mm 25 \
+    --board-origin 0.30 -0.10 0.0 --tower-port $LEX_XLE_LEFT_PORT \
+    --out sidecar/camera_calib.json
+
+# 3. does it predict reality?
+python sidecar/camera_calibrate.py verify --model sidecar/camera_calib.json \
+    --point 0.30 -0.10 0.0
+```
+
+`--board` is **inner corners**, not squares: a 10x7-square board is `9x6`. A
+square board is refused, because its orientation is ambiguous and it will
+silently flip.
+
+Each step reports an error in pixels, and it is worth knowing what each one
+does *not* cover. `intrinsics` RMS validates the lens only (under ~0.5 px is
+good, over ~1.0 px means re-shoot). `extrinsics` reprojection validates the
+solve — and **not** `--board-origin`: mistype where the board is relative to
+the arm and the solve is internally perfect while the answer is wrong by
+exactly your typo. That is what step 3 is for, and why the origin is the one
+number worth measuring twice.
+
+`extrinsics` **refuses to run while the tower is limp** (`--allow-limp-tower`
+overrides). Call `python sidecar/tower.py --port ... --hold` first: calibrating
+against a mount that can drift is work you find out was wasted much later. It
+records the tower ticks into the calibration's `tower` block, which is what
+`bus_preflight.py --tower-calib` then checks.
+
+
 ## Defense in depth (read DESIGN.md §8)
 
 The sidecar **must independently enforce hard limits** (joint/force/workspace)
