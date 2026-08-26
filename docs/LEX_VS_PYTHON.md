@@ -48,7 +48,6 @@ standard library.
 | file | lines | why it belongs in Lex |
 |---|---|---|
 | ~~`sidecar/lelab_adapter.py`~~ | 552 | **ported** → `src/lelab_adapter{,_full}.lex` |
-| `scripts/reconcile_audit.py` | 77 | Reconciles a **lex-trail** chain against a **lex-os** audit log — it reasons about Lex artifacts, in Python, re-deriving a hash formula whose canonical definition is `lex-trail/src/event.lex`. Smallest file with the biggest mismatch. |
 | `sidecar/ha_sidecar.py` | 198 | Its own docstring says "the house's appliances as governed lex-robot skills". It is a grant story written in a language with no grants. Pure HTTP glue to Home Assistant. |
 | `sidecar/vision_service.py` | 252 | `[net]` in, `[net]` out. The model horsepower is on the *other* machine; this half only forwards a JPEG and parses a box. `std.http` with a per-host scope is a better fit than `http.server`. |
 | `sidecar/depot_sidecar.py` | 140 | A Tier-1 stub, stdlib only — the exact class `sidecar/sim_sidecar.py` already has a Lex twin for (`sim_sidecar.lex`, "same env vars, same HTTP API, no Python"). Precedent is set; this one just hasn't been done. |
@@ -57,8 +56,43 @@ standard library.
 | `gym_env/xlerobot_experiment_ledger.py` | 68 | Append-only experiment ledger. Pure + `fs_write`. |
 | `gym_env/server.py` | 63 | Thin HTTP wrapper — but it fronts `BazaarEnv`, which is MuJoCo. Port only if the env boundary moves; low value. |
 
-Suggested order: `reconcile_audit` (smallest, sharpest), then `ha_sidecar`
-(most authority per line), then `vision_service`, then the stubs.
+Suggested order: `ha_sidecar` (most authority per line), then
+`vision_service`, then the stubs.
+
+### Not a candidate after all — `scripts/reconcile_audit.py`
+
+This file was ranked first here, on the grounds that it "re-derives a hash
+formula whose canonical definition is `lex-trail/src/event.lex`". **That was
+wrong, and the correction is worth keeping rather than quietly deleting.** The
+file contains no hash of any kind — no `sha256`, no `compute_id`, no
+`hashlib` import. It reads two JSON files and compares two lists of
+`(skill, outcome)` pairs. The file that really mirrors the hash formula is
+`sidecar/trail.py`, which this same audit already classifies correctly as an
+in-process mirror that must stay Python.
+
+On the merits it fails this document's own test. Its effect row is `[io]`
+either way, and there is no authority in it to bind — it reads two files and
+prints. "Worth spending a port on wherever authority is involved" does not
+apply.
+
+And porting it would break something load-bearing:
+
+> **`lex run` always exits 0.** A function returning `1` still exits 0; only a
+> *missing* function exits non-zero. There is no exit-code mechanism in
+> `lex run [policy] <file> <fn> [args]`.
+
+`box/sim_e2e.sh` and `box/run_in_vm.sh` call this script three times under
+`set -euo pipefail` and depend on **exit 1** to fail the end-to-end run when
+the two chains diverge. That exit code *is* the contract — the printed report
+is for humans. Replacing it with a shell wrapper that greps stdout for
+`DISCREPANCIES:` would be strictly worse than what exists.
+
+**The general rule this implies:** a Python file that signals through its
+exit code is not a port candidate until `lex run` can set one. That does not
+affect the sidecars and stubs above — they are long-running servers whose
+contract is HTTP status, not exit status — but it rules out CLI-shaped
+scripts, and it is why `reconcile_audit` is listed here instead of in the
+table.
 
 ### Python by necessity — not a gap
 
