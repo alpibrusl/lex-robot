@@ -116,6 +116,8 @@ sidecar/
   depot_*.py        depot backends: stub → MuJoCo → Unitree G1 → hardware seam
   xlerobot_*.py     XLeRobot 0.4.0 (dual SO-101 + diff-wheel base): stub → MuJoCo room → hardware seam
   xlerobot_rl_train.py  PPO training against gym_env/xlerobot_env.py's LexXLeRobotFetch-v0
+  governance.py     read-only ledger + lex-trail chain behind GET /governance
+  lelab_adapter.py  huggingface/leLab's HTTP routes, served over the skill API
 manifests/       lex-os grant for the task (pick_place.capsule.json)
 box/             lex-os agent programs + the three-layer enforcement guide
 ```
@@ -472,6 +474,33 @@ make xlerobot-voice
 #   head camera frame: {"width": 640, ...}
 #   muted robot → denied: skill listen not in grant   ← NEVER SENT
 ```
+
+**What the grant actually did** (`GET /governance`): the browser pages show the
+robot; this one shows the *envelope*. Every authority-exercising skill call, with
+the verdict the sidecar already reached for it — `allowed`, `denied` (a target
+outside `workspace_m`), `clamped` (grip force against the grant, base speed
+against the firmware floor), `failed` — over a hash chain using lex-trail's own
+event-id formula, so `GET /governance/trail` replays under `lex-trail`. It also
+lists every bound the loaded grant *declares* against whether this sidecar
+actually checks it, which is how you find out that `bases.*.floor_area_m` is in
+the capsule and nothing enforces it. The page observes and never decides:
+`sidecar/governance.py` has no enforcement branch, because a second opinion about
+authority is the one thing this layer must not add. See `SIDECAR.md`.
+
+![the governance view](media/governance.png)
+
+**leLab's UI over the same gate** (`sidecar/lelab_adapter.py`):
+[huggingface/leLab](https://github.com/huggingface/leLab) is LeRobot's web UI —
+calibrate, teleoperate, record, train, infer. Its backend drives LeRobot's
+`Robot` classes directly, so running it beside lex-robot on the same arms means
+two authority paths to the same servos, one ungoverned. The adapter is the other
+arrangement: it serves leLab's routes on leLab's port and executes nothing
+itself, translating every robot-touching request into a `POST /skill/*` so it
+inherits the grant gate, the firmware floors, the bus locks and the ledger. The
+routes the skill API cannot honestly express — leader→follower teleoperation,
+calibration, port detection — are refused with a 501 naming the reason rather
+than reaching around the grant, and training/upload/auth are refused as not this
+layer. `GET /lex/routes` prints both halves. Write-up: `docs/LELAB.md`.
 
 **Touchscreen consent — the display's input path as a granted capability**
 (`make xlerobot-touch`): the kiosk display (`GET /display`, the page a
