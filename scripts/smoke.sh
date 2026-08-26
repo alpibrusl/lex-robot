@@ -253,6 +253,29 @@ for sk in teach_replay teach_home_go release_arm reset; do
 done
 rm -f "$gate"
 
+# ha_sidecar.lex claims to be a drop-in for ha_sidecar.py -- "same env vars,
+# same HTTP API". Assert it instead of trusting it: both servers, same 28
+# requests, byte-identical answers. The appliance cases read back the state
+# they just changed, so the two are compared as state machines rather than as
+# pure functions.
+haq="$ROOT/.ha_lex.log"; hap="$ROOT/.ha_py.log"
+rm -f /tmp/lex-ha-8951.db
+LEX_ROBOT_SIDECAR_PORT=8951 lex run --allow-effects env,fs_write,io,net,sql \
+  "$ROOT/sidecar/ha_sidecar.lex" run >"$haq" 2>&1 &
+halex=$!
+LEX_ROBOT_SIDECAR_PORT=8952 "${PYTHON:-python3}" "$ROOT/sidecar/ha_sidecar.py" >"$hap" 2>&1 &
+hapy=$!
+sleep 5
+if haout="$(LEX_PORT=8951 PY_PORT=8952 "${PYTHON:-python3}" "$ROOT/scripts/ha_parity.py" 2>&1)"; then
+  pass "ha sidecar: the Lex port answers identically to the Python it replaces"
+else
+  bad "ha sidecar: the Lex port diverged from the Python it replaces"
+  echo "$haout" | sed 's/^/      /'
+  sed -n '1,5p' "$haq" | sed 's/^/      lex: /'
+fi
+kill $halex $hapy 2>/dev/null || true
+rm -f "$haq" "$hap" /tmp/lex-ha-8951.db
+
 # The structured SkillOutcome: the single grant-checked move records
 # skill+args+grant (integer milli-units) in the trail, so the lex-games
 # `robot_task` verifier can re-derive that the move stayed inside its workspace

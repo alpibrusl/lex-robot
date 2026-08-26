@@ -577,7 +577,9 @@ make vision-pose
 ```
 
 **The house as a governed robot — "wash when energy is cheap"** (`make
-home-wash`): one Home Assistant sidecar (`sidecar/ha_sidecar.py`) makes
+home-wash`): one Home Assistant sidecar (`sidecar/ha_sidecar.lex`, with the
+Python it was ported from kept alongside as the reference
+`scripts/ha_parity.py` compares it against) makes
 every HA device a grant-gated lex skill — an appliance command is an
 actuation with real-world costs (water, heat, energy cents), so it gets the
 same treatment as an arm reach. `src/home.lex` adds the energy-policy
