@@ -1,8 +1,12 @@
 # lex-robot — convenience targets. The five governance demos need only `lex` +
 # python3 (no pip). The ML demos (keep-out / MuJoCo / learned policy) need the
 # Python deps in sidecar/requirements.txt — see the README dependency matrix.
+#
+# PY overrides the interpreter for targets that need real robot deps:
+#     make bus-check PY=.venv/bin/python
+PY ?= python3
 
-.PHONY: help check smoke demo grant task budget depot xlerobot xlerobot-task xlerobot-voice xlerobot-touch vision-split vision-serve vision-pose stream home-wash ap2 dispense xlerobot-sim xlerobot-find xlerobot-find-sim keepout dynamic_keepout tool_fire mcp-grant a2a-grant xlerobot-rl-train xlerobot-rl-run xlerobot-rl-usage xlerobot-rl-finetune xlerobot-llm-mock xlerobot-llm xlerobot-llm-local fleet-clean-house bazaar-visit skill-acquisition skill-catalog fridge-report deps clean
+.PHONY: help check smoke bus-check bus-soak demo grant task budget depot xlerobot xlerobot-task xlerobot-voice xlerobot-touch vision-split vision-serve vision-pose stream home-wash ap2 dispense xlerobot-sim xlerobot-find xlerobot-find-sim keepout dynamic_keepout tool_fire mcp-grant a2a-grant xlerobot-rl-train xlerobot-rl-run xlerobot-rl-usage xlerobot-rl-finetune xlerobot-llm-mock xlerobot-llm xlerobot-llm-local fleet-clean-house bazaar-visit skill-acquisition skill-catalog fridge-report deps clean
 
 help: ## Show this help
 	@grep -hE '^[a-z-]+:.*##' $(MAKEFILE_LIST) | sed -E 's/:.*## /\t/' | sort
@@ -116,6 +120,12 @@ xlerobot-llm: ## "Bring me the cup", spoken + a REAL model plan — provider via
 	   lex run --allow-effects $$EFF examples/llm_command_demo.lex run; \
 	 fi; \
 	 kill `cat /tmp/lex-robot-xle-llm-sc.pid` `cat /tmp/lex-robot-xle-llm-a2a.pid` 2>/dev/null || true
+
+bus-soak: ## Soak the servo buses until stopped — catches the intermittent fault a single check misses (NEEDS: lerobot + real hardware)
+	@$(PY) sidecar/bus_preflight.py --repeat 0 --interval 30
+
+bus-check: ## Read-only servo-bus health gate — refuse to start on a bus that drops responses (NEEDS: lerobot + real hardware)
+	@$(PY) sidecar/bus_preflight.py
 
 xlerobot-rl-train: ## Train a real PPO policy against LexXLeRobotFetch-v0 (NEEDS: pip install stable-baselines3)
 	@python3 sidecar/xlerobot_rl_train.py
