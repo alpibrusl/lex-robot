@@ -1,6 +1,6 @@
 """Content-addressed event log — a Python mirror of lex-trail/src/event.lex.
 
-Each event id is sha256(join([kind, parent_or_empty, payload_json, ts_ms], " ")),
+Each event id is sha256(join([kind, parent_or_empty, payload_json, ts_ms], NUL)),
 and events chain via `parent` = the previous event's id. This lets the boxed
 run emit a genuine lex-trail chain that lex-trail's replay/export can read and
 that scripts/reconcile_audit.py can corroborate against the lex-os audit log.

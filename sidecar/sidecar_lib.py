@@ -167,6 +167,13 @@ def make_handler(handle_skill, *, tag, health=None, get_route=None, post_route=N
             return self._json(404, {"error": "not found"})
 
         def do_POST(self):
+            # Strip the query, same as do_GET. It used to be kept here, which
+            # meant POST /skill/read_tariff?x=1 resolved to a skill literally
+            # named "read_tariff?x=1" and answered "unknown skill" -- and
+            # depot's /v1/chargers/<id>/start route, which splits on "/", saw
+            # its last segment as "start?x=1" and fell through. Neither is
+            # behaviour anyone chose; both were the asymmetry with do_GET.
+            path = self.path.split("?", 1)[0]
             n = int(self.headers.get("Content-Length", "0") or "0")
             raw = self.rfile.read(n) if n else b"{}"
             try:
@@ -176,11 +183,11 @@ def make_handler(handle_skill, *, tag, health=None, get_route=None, post_route=N
 
             def dispatch():
                 if post_route is not None:
-                    hit = post_route(self.path, args)
+                    hit = post_route(path, args)
                     if hit is not None:
                         return hit
-                if self.path.startswith("/skill/"):
-                    return 200, handle_skill(self.path[len("/skill/"):], args)
+                if path.startswith("/skill/"):
+                    return 200, handle_skill(path[len("/skill/"):], args)
                 return 404, {"error": "not found"}
 
             if lock is not None:

@@ -28,7 +28,7 @@ case "$DEMO" in
   xlerobot_vision) SIDECAR=xlerobot_sidecar; FILE=examples/vision_split_demo.lex; EFF="net,sense,actuate,io,env"; VISION=1 ;;
   vision_pose) SIDECAR=xlerobot_sidecar; FILE=examples/vision_pose_demo.lex;   EFF="net,sense,actuate,io"; VISION=1 ;;
   stream)      SIDECAR=xlerobot_sidecar; FILE=examples/stream_demo.lex;        EFF="io,net"; export LEX_STREAM_MAX_FRAMES="${LEX_STREAM_MAX_FRAMES:-3}" ;;
-  home_wash)   SIDECAR=ha_sidecar;    FILE=examples/home_wash_demo.lex;      EFF="net,sense,actuate,io" ;;
+  home_wash)   SIDECAR=ha_sidecar;    FILE=examples/home_wash_demo.lex;      EFF="net,sense,actuate,io"; SIDECAR_EFF="env,fs_write,io,net,sql" ;;
   ap2)         SIDECAR=sim_sidecar;   FILE=examples/ap2_bazaar_demo.lex;     EFF="env,io,net,time"; AP2=1 ;;
   dispense)    SIDECAR=sim_sidecar;   FILE=examples/dispense_demo.lex;       EFF="actuate,fs_write,io,net,sense,sql,time" ;;
   xlerobot_find) SIDECAR=xlerobot_sidecar; FILE=examples/find_and_fetch_demo.lex; EFF="net,sense,actuate,io" ;;
@@ -80,7 +80,15 @@ else
   fi
 
   LOG="$(mktemp)"
-  "$PY" "sidecar/$SIDECAR.py" >"$LOG" 2>&1 &
+  # A sidecar that has a proven-identical Lex twin runs as Lex by default.
+  # scripts/ha_parity.py asserts the two answer the same 28 requests
+  # byte-for-byte, and scripts/smoke.sh runs it -- so this is a switch backed
+  # by a test, not a hope. LEX_SIDECAR=0 falls back to the Python.
+  if [ "${LEX_SIDECAR:-1}" = "1" ] && [ -f "sidecar/$SIDECAR.lex" ] && [ -n "${SIDECAR_EFF:-}" ]; then
+    lex run --allow-effects "$SIDECAR_EFF" "sidecar/$SIDECAR.lex" run >"$LOG" 2>&1 &
+  else
+    "$PY" "sidecar/$SIDECAR.py" >"$LOG" 2>&1 &
+  fi
   SID=$!
   cleanup() { kill "$SID" 2>/dev/null || true; [ -n "$VIS_PID" ] && kill "$VIS_PID" 2>/dev/null || true; [ -n "$CP_PID" ] && kill "$CP_PID" 2>/dev/null || true; }
   trap cleanup EXIT

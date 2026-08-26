@@ -48,8 +48,7 @@ standard library.
 | file | lines | why it belongs in Lex |
 |---|---|---|
 | ~~`sidecar/lelab_adapter.py`~~ | 552 | **ported** → `src/lelab_adapter{,_full}.lex` |
-| `scripts/reconcile_audit.py` | 77 | Reconciles a **lex-trail** chain against a **lex-os** audit log — it reasons about Lex artifacts, in Python, re-deriving a hash formula whose canonical definition is `lex-trail/src/event.lex`. Smallest file with the biggest mismatch. |
-| `sidecar/ha_sidecar.py` | 198 | Its own docstring says "the house's appliances as governed lex-robot skills". It is a grant story written in a language with no grants. Pure HTTP glue to Home Assistant. |
+| ~~`sidecar/ha_sidecar.py`~~ | 198 | **ported** → `sidecar/ha_sidecar.lex` (the Python stays as the reference the parity test compares against) |
 | `sidecar/vision_service.py` | 252 | `[net]` in, `[net]` out. The model horsepower is on the *other* machine; this half only forwards a JPEG and parses a box. `std.http` with a per-host scope is a better fit than `http.server`. |
 | `sidecar/depot_sidecar.py` | 140 | A Tier-1 stub, stdlib only — the exact class `sidecar/sim_sidecar.py` already has a Lex twin for (`sim_sidecar.lex`, "same env vars, same HTTP API, no Python"). Precedent is set; this one just hasn't been done. |
 | `examples/skills_api_stub.py` | 177 | Same: a Tier-1 stub backing `examples/skill_library.lex`. A stub for a Lex program, in Python. |
@@ -57,8 +56,93 @@ standard library.
 | `gym_env/xlerobot_experiment_ledger.py` | 68 | Append-only experiment ledger. Pure + `fs_write`. |
 | `gym_env/server.py` | 63 | Thin HTTP wrapper — but it fronts `BazaarEnv`, which is MuJoCo. Port only if the env boundary moves; low value. |
 
-Suggested order: `reconcile_audit` (smallest, sharpest), then `ha_sidecar`
-(most authority per line), then `vision_service`, then the stubs.
+Suggested order: `vision_service`, then the stubs.
+
+### What the `ha_sidecar` port cost, and what it bought
+
+`sidecar/ha_sidecar.lex` is a drop-in for the Python: same env vars, same HTTP
+API, same answers. It is **620 lines against 198** — a 3× expansion, and worth
+being honest about, because that ratio is what a reader should expect from
+this class of port rather than a surprise on the third one.
+
+Where the lines went: no mutable globals (the stub house's two entity states
+live in SQLite, since `net.serve_fn`'s handler is a function of the request
+alone), explicit `match` on every `Option`/`Result` where Python has
+`dict.get` and `try/except`, and roughly 90 lines of `examples {}` blocks that
+replace a test file.
+
+What it bought, in order of how much it mattered:
+
+1. **The authority is in the type.** `run` is
+   `[env, io, net, sql, fs_write]`, and `fs_write` appears there and nowhere
+   else — `sql.open` creates the DB. The request handler is `[net, sql]`, so a
+   skill call *cannot* touch the filesystem. In the Python that is a fact about
+   the code; here it is a fact the compiler enforces.
+2. **`json.parse` is typed.** Annotating the target record makes a missing
+   field arrive as `None` rather than raising, so there is no hand-rolled
+   string scanning and no `KeyError` path — a real improvement over both the
+   Python's `args.get(...)` and over the earlier Lex sidecars' manual JSON.
+3. **The tariff schedule is pinned at `lex check` time.** `stub_tariff`,
+   `parse_hour`, `hour_of_day`, `resting_state`, `split_service`,
+   `eur_to_cents` and `use_ha` all carry examples folded into their SigIds.
+
+**Two bugs the port found**, both in the Python, both fixed there rather than
+reproduced:
+
+- `sidecar_lib.do_POST` kept the query string while `do_GET` stripped it, so
+  `POST /skill/read_tariff?x=1` resolved to a skill literally named
+  `read_tariff?x=1` and answered "unknown skill". `depot_sidecar`'s
+  `/v1/chargers/<id>/start` route splits on `/` and had the same latent break.
+- The port's own first draft swallowed a malformed JSON body as empty
+  arguments where the Python correctly answers `400`. Caught by differential
+  testing, not by reading.
+
+That second one is the argument for `scripts/ha_parity.py`: it drives both
+servers with the same 28 requests and asserts byte-identical answers, with the
+appliance cases reading back the state they just changed so the two are
+compared as *state machines*, not as pure functions. `scripts/smoke.sh` runs
+it. A drop-in that claims parity should have to prove it.
+
+And because it proves it, `make home-wash` now runs the **Lex** sidecar:
+`scripts/demo.sh` prefers `sidecar/<name>.lex` wherever one exists and the
+demo declares its effect row (`LEX_SIDECAR=0` falls back to the Python). A
+port nothing runs is a shelf ornament; this one is on the default path, backed
+by a test that would catch it diverging.
+
+### Not a candidate after all — `scripts/reconcile_audit.py`
+
+This file was ranked first here, on the grounds that it "re-derives a hash
+formula whose canonical definition is `lex-trail/src/event.lex`". **That was
+wrong, and the correction is worth keeping rather than quietly deleting.** The
+file contains no hash of any kind — no `sha256`, no `compute_id`, no
+`hashlib` import. It reads two JSON files and compares two lists of
+`(skill, outcome)` pairs. The file that really mirrors the hash formula is
+`sidecar/trail.py`, which this same audit already classifies correctly as an
+in-process mirror that must stay Python.
+
+On the merits it fails this document's own test. Its effect row is `[io]`
+either way, and there is no authority in it to bind — it reads two files and
+prints. "Worth spending a port on wherever authority is involved" does not
+apply.
+
+And porting it would break something load-bearing:
+
+> **`lex run` always exits 0.** A function returning `1` still exits 0; only a
+> *missing* function exits non-zero. There is no exit-code mechanism in
+> `lex run [policy] <file> <fn> [args]`.
+
+`box/sim_e2e.sh` and `box/run_in_vm.sh` call this script three times under
+`set -euo pipefail` and depend on **exit 1** to fail the end-to-end run when
+the two chains diverge. That exit code *is* the contract — the printed report
+is for humans. Replacing it with a shell wrapper that greps stdout for
+`DISCREPANCIES:` would be strictly worse than what exists.
+
+**The general rule this implies:** a Python file that signals through its
+exit code is not a port candidate until `lex run` can set one. That does not
+affect the sidecars and stubs above — they are long-running servers whose
+contract is HTTP status, not exit status — but it rules out CLI-shaped
+scripts, and it is why `reconcile_audit` is listed here instead of in the
+table.
 
 ### Python by necessity — not a gap
 
