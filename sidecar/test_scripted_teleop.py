@@ -4,7 +4,6 @@ No lerobot hardware and no robot needed — this is the part of the
 record-without-a-human seam that can be verified in isolation, the same way
 test_xlerobot_hw.py covers the sidecar's pure helpers.
 """
-import time
 from pathlib import Path
 
 from scripted_teleop import JOINTS, ScriptedArmTeleop, ScriptedArmTeleopConfig
@@ -21,10 +20,19 @@ def _teleop(**kw):
 
 
 def _sample(t, cycles=3):
-    """Walk a deterministic clock across whole cycles, collecting actions."""
+    """Walk a deterministic clock across whole cycles, collecting actions.
+
+    The teleop's clock is injected rather than read from `time.perf_counter`,
+    so sample i lands at phase exactly i/FPS. Two runs sampled this way are
+    comparable frame-for-frame; a wall clock would drift them apart by
+    however long each iteration happened to take.
+    """
+    clock = [0.0]
+    t._now = lambda: clock[0]
+    t._t0 = 0.0
     out = []
     for i in range(int(t.cycle_s * FPS) * cycles):
-        t._t0 = time.perf_counter() - i / FPS
+        clock[0] = i / FPS
         out.append(t.get_action())
     return out
 

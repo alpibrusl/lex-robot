@@ -82,6 +82,8 @@ class ScriptedArmTeleop(Teleoperator):
         self._t0: float | None = None
         self._cycle = -1
         self._poses: list[dict[str, float]] = []
+        # The clock, as an attribute so a test can walk it deterministically.
+        self._now = time.perf_counter
 
         spec = json.loads(Path(config.waypoints_path).read_text())
         self._steps: list[dict[str, Any]] = spec["cycle"]
@@ -143,7 +145,7 @@ class ScriptedArmTeleop(Teleoperator):
     # ---- the action source ------------------------------------------------------
 
     def get_action(self) -> dict[str, float]:
-        now = time.perf_counter()
+        now = self._now()
         if self._t0 is None:
             self._t0 = now
         elapsed = now - self._t0
