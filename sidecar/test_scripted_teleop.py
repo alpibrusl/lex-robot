@@ -4,10 +4,11 @@ No lerobot hardware and no robot needed — this is the part of the
 record-without-a-human seam that can be verified in isolation, the same way
 test_xlerobot_hw.py covers the sidecar's pure helpers.
 """
-import time
 from pathlib import Path
+from unittest import mock
 
-from scripted_teleop import JOINTS, ScriptedArmTeleop, ScriptedArmTeleopConfig
+import scripted_teleop
+from scripted_teleop import BODY, JOINTS, ScriptedArmTeleop, ScriptedArmTeleopConfig
 
 WAYPOINTS = str(Path(__file__).parent / "waypoints_pick_place.json")
 FPS = 30
@@ -21,12 +22,52 @@ def _teleop(**kw):
 
 
 def _sample(t, cycles=3):
-    """Walk a deterministic clock across whole cycles, collecting actions."""
-    out = []
-    for i in range(int(t.cycle_s * FPS) * cycles):
-        t._t0 = time.perf_counter() - i / FPS
-        out.append(t.get_action())
-    return out
+    """Walk a deterministic clock across whole cycles, collecting actions.
+
+    get_action() reads the clock itself, so the clock has to be stubbed rather
+    than nudged via `_t0`: rewinding `_t0` by i/FPS off a fresh perf_counter()
+    leaves every frame a few microseconds *past* its nominal phase, by a margin
+    that varies per call. That is enough to shift where a ramp gets sampled
+    relative to its peak, which made step-size comparisons between two sampled
+    runs flaky at the ~1e-6 level (lex-robot#174).
+    """
+    clock = {"t": 0.0}
+    with mock.patch.object(scripted_teleop.time, "perf_counter", lambda: clock["t"]):
+        t._t0 = 0.0
+        out = []
+        for i in range(int(t.cycle_s * FPS) * cycles):
+            clock["t"] = i / FPS
+            out.append(t.get_action())
+        return out
+
+
+def _worst_body_step(samples):
+    return max(
+        abs(b[k] - a[k])
+        for a, b in zip(samples, samples[1:])
+        for k in a
+        if k != "gripper.pos"
+    )
+
+
+def _peak_body_step(t, jitter):
+    """The fastest single-frame body move this trajectory can command.
+
+    A segment covering `d` units in `move_s` peaks at 1.5*d/move_s, because
+    smoothstep's peak speed is 1.5x its average; per frame that is /FPS. A
+    sampled step can only be smaller (mean value theorem). Jitter displaces a
+    flagged waypoint by up to `jitter` units in either direction, so it can
+    lengthen a segment by that much at each jitter-flagged end.
+    """
+    bound = 0.0
+    prev = t._steps[-1]                   # a cycle starts from where it ended
+    for step in t._steps:
+        slack = jitter * (bool(prev.get("jitter")) + bool(step.get("jitter")))
+        for j in BODY:
+            d = abs(step["pose"][j] - prev["pose"][j]) + slack
+            bound = max(bound, 1.5 * d / float(step.get("move_s", 1.0)) / FPS)
+        prev = step
+    return bound
 
 
 def test_action_features_match_so101_keys():
@@ -69,20 +110,24 @@ def test_body_joints_are_continuous_across_cycle_boundaries():
     """Regression: jitter used to be gated per-segment and added to the
     interpolated output, which stepped the command by up to `jitter` units in
     a single frame when the trajectory crossed into an unjittered waypoint.
-    Baking the offset into the waypoint target keeps the path continuous."""
-    jittered = _sample(_teleop(jitter=3.0, seed=1))
-    plain = _sample(_teleop(jitter=0.0))
+    Baking the offset into the waypoint target keeps the path continuous.
 
-    def worst_body_step(samples):
-        return max(
-            abs(b[k] - a[k])
-            for a, b in zip(samples, samples[1:])
-            for k in a
-            if k != "gripper.pos"
-        )
+    The bound is interpolation's own peak speed, not the un-jittered
+    trajectory's: displacing a waypoint away from its neighbour genuinely
+    lengthens that segment, and the ramp covers it in the same move_s. On the
+    shipped trajectory a +2.7 draw on `traverse` outruns the un-jittered worst
+    step by 5%, which is smooth motion, not a discontinuity. The old bug's
+    single-frame `jitter`-sized hop (3.0 units, ~5x this bound) is what has to
+    stay caught, so sweep seeds rather than trusting one lucky draw.
+    """
+    jitter = 3.0
+    for seed in range(8):
+        t = _teleop(jitter=jitter, seed=seed)
+        worst = _worst_body_step(_sample(t))
+        assert worst <= _peak_body_step(t, jitter), f"seed={seed}"
 
-    # Jitter must not introduce motion the un-jittered trajectory doesn't have.
-    assert worst_body_step(jittered) <= worst_body_step(plain) + 1e-6
+    plain = _teleop(jitter=0.0)
+    assert _worst_body_step(_sample(plain)) <= _peak_body_step(plain, 0.0)
 
 
 def test_gripper_ramp_is_the_only_fast_axis():
