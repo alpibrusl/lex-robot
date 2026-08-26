@@ -56,12 +56,13 @@ It shows three things:
 **The grant, and which of its bounds this sidecar actually checks.** A dashboard
 that lists a declared bound as if it were enforced manufactures confidence the
 code doesn't back, so each row says which function does the checking, or that
-nothing here does. Today that surfaces a real gap: `bases.*.floor_area_m` and
-`bases.*.max_speed_mps` are in `manifests/xlerobot.capsule.json`, but `move_base`
-only clamps against the `LEX_XLE_HARD_SPEED_MPS` firmware floor and never checks
-the floor box at all. Same for `arms.*.max_velocity_mps` and `arms.*.max_force_n`.
-The page lists them as **declared, not enforced** rather than quietly implying a
-box that isn't there.
+nothing here does. That column immediately earned itself: it surfaced that
+`bases.*.floor_area_m` and `bases.*.max_speed_mps` were in
+`manifests/xlerobot.capsule.json` while `move_base` checked neither — so a
+direct caller could drive the base straight out of the granted room. Both are
+enforced now (refuse the position, clamp the speed, exactly as the arms do).
+`arms.*.max_velocity_mps` and `arms.*.max_force_n` are still declared-only, and
+the page says so rather than quietly implying a bound that isn't there.
 
 **Every authority-exercising call, with the verdict the sidecar already reached**
 — `allowed` / `denied` / `clamped` / `failed` / `unknown`. Read-only polling is

@@ -482,8 +482,9 @@ outside `workspace_m`), `clamped` (grip force against the grant, base speed
 against the firmware floor), `failed` — over a hash chain using lex-trail's own
 event-id formula, so `GET /governance/trail` replays under `lex-trail`. It also
 lists every bound the loaded grant *declares* against whether this sidecar
-actually checks it, which is how you find out that `bases.*.floor_area_m` is in
-the capsule and nothing enforces it. The page observes and never decides:
+actually checks it — which is how the `bases.*.floor_area_m` gap got found and
+closed (`move_base` now refuses a target outside the granted room and clamps to
+`max_speed_mps`, the way the arms always have). The page observes and never decides:
 `sidecar/governance.py` has no enforcement branch, because a second opinion about
 authority is the one thing this layer must not add. See `SIDECAR.md`.
 

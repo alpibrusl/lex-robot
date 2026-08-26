@@ -18,12 +18,14 @@ Two consequences of that posture worth stating plainly, because a governance
 page that overclaims is worse than none:
 
 - A bound the sidecar declares but does not check is reported as *declared*,
-  not as enforced. Today that is the base: `bases.*.floor_area_m` and
-  `max_speed_mps` are in the capsule, but `move_base` only clamps against the
-  `LEX_XLE_HARD_SPEED_MPS` firmware floor. `grant_enforcement()` says so.
-- A clamp is only reported where the sidecar really clamps. Grip force is
-  clamped against the grant (`grasp_arm`); base speed is clamped against the
-  firmware floor. Nothing else is, so nothing else is claimed.
+  not as enforced. `arms.*.max_velocity_mps` and `arms.*.max_force_n` are in
+  the capsule and nothing here checks them; `grant_enforcement()` says so.
+  (`bases.*.floor_area_m` and `max_speed_mps` used to be in that list too --
+  `move_base` now enforces both, which is what the honest column was for.)
+- A clamp is only reported where the sidecar really clamps. Grip force clamps
+  against the grant; base speed clamps against the grant and, beneath it, the
+  `LEX_XLE_HARD_SPEED_MPS` firmware floor -- attributed to whichever ceiling
+  actually bound the request. Nothing else is, so nothing else is claimed.
 """
 from __future__ import annotations
 
@@ -115,6 +117,22 @@ def summarize_args(args) -> dict:
     return out
 
 
+def base_entry(bases: Optional[dict]):
+    """`(name, bound)` for the one base this robot has, or `(None, None)`.
+
+    Mirrors XLeRobot._base_grant: keyed "base" by convention, a lone
+    differently-named entry accepted, two or more ambiguous. Kept in step with
+    the sidecar deliberately -- a ledger that resolved the bound differently
+    from the code enforcing it would be reporting on an envelope nothing
+    applies."""
+    bases = bases or {}
+    if "base" in bases:
+        return "base", bases["base"]
+    if len(bases) == 1:
+        return next(iter(bases.items()))
+    return None, None
+
+
 def _num(value) -> Optional[float]:
     try:
         return float(value)
@@ -147,10 +165,19 @@ def clamps(name: str, args: dict, grant: Optional[dict], firmware: Optional[dict
 
     if name == "move_base":
         requested = _num(args.get("speed"))
-        ceiling = _num(firmware.get("max_speed_mps"))
-        if requested is not None and ceiling is not None and requested > ceiling:
-            found.append({"bound": "LEX_XLE_HARD_SPEED_MPS", "source": "firmware",
-                          "requested": requested, "ceiling": ceiling})
+        base_name, base = base_entry(grant.get("bases"))
+        # Grant first, firmware second -- the order move_base applies them, so
+        # a tie is attributed to the grant, which is the one a reader can change.
+        ceilings = [(_num((base or {}).get("max_speed_mps")),
+                     f"bases.{base_name}.max_speed_mps", "grant"),
+                    (_num(firmware.get("max_speed_mps")),
+                     "LEX_XLE_HARD_SPEED_MPS", "firmware")]
+        ceilings = [c for c in ceilings if c[0] is not None]
+        if requested is not None and ceilings:
+            ceiling, bound, source = min(ceilings, key=lambda c: c[0])
+            if requested > ceiling:
+                found.append({"bound": bound, "source": source,
+                              "requested": requested, "ceiling": ceiling})
     return found
 
 
@@ -218,17 +245,24 @@ def grant_enforcement(grant: Optional[dict]) -> list:
             rows.append({"bound": f"grippers.{side}.max_grip_force_n", "value": cfg["max_grip_force_n"],
                          "enforced": True, "how": "grasp_arm clamps (never amplifies)",
                          "where": "_grant_max_grip_force"})
-    for side, cfg in (grant.get("bases") or {}).items():
+    bases = grant.get("bases") or {}
+    _bound_name, bound_base = base_entry(bases)
+    for side, cfg in bases.items():
+        # Only the entry that actually binds this robot's base is enforced; a
+        # second one is listed as unenforced rather than implied to apply.
+        applies = cfg is bound_base
         if cfg.get("floor_area_m"):
             rows.append({"bound": f"bases.{side}.floor_area_m", "value": cfg["floor_area_m"],
-                         "enforced": False,
-                         "how": "declared only — move_base does NOT check the floor box",
-                         "where": None})
+                         "enforced": applies,
+                         "how": "move_base refuses (outcome=denied)" if applies else
+                                "declared only — ambiguous which base this binds",
+                         "where": "_grant_floor_violation" if applies else None})
         if cfg.get("max_speed_mps") is not None:
             rows.append({"bound": f"bases.{side}.max_speed_mps", "value": cfg["max_speed_mps"],
-                         "enforced": False,
-                         "how": "declared only — move_base clamps against LEX_XLE_HARD_SPEED_MPS",
-                         "where": None})
+                         "enforced": applies,
+                         "how": "move_base clamps (never amplifies)" if applies else
+                                "declared only — ambiguous which base this binds",
+                         "where": "_grant_max_base_speed" if applies else None})
     return rows
 
 

@@ -27,7 +27,7 @@ only caller; it adds effect typing, grant enforcement, and the audit trail.
 |---|---|---|
 | `read_joints` | `{}` | `{ "names": [...], "positions": [...], "velocities": [...] }` |
 | `read_arm_pose` | `{ "arm": "left\|right" }` | `{ "ok": bool, "x","y","z", "detail"? }` |
-| `read_grant` | `{}` | `{ "ok": bool, "arms": {...}, "grippers": {...} }` — the loaded grant's workspace/force limits, see "Grant enforcement" below |
+| `read_grant` | `{}` | `{ "ok": bool, "arms": {...}, "grippers": {...}, "base"? : { "floor_area_m", "max_speed_mps" } }` — the loaded grant's workspace/force/floor limits, see "Grant enforcement" below |
 | `read_camera` | `{ "name": "head\|left\|right" }` | `{ "width": N, "height": N, "jpeg_b64": "..." }` |
 | `move_to` | `{ "x","y","z","rx","ry","rz" }` | `{ "outcome": "reached\|stalled\|timeout", "detail": "" }` |
 | `grasp` | `{ "force": 12.0 }` | `{ "outcome": "...", "detail": "" }` |
@@ -312,7 +312,7 @@ with the verdict the sidecar already reached for it:
 |---|---|
 | `allowed` | ran, nothing reduced it |
 | `denied` | the grant refused it outright (`move_arm` outside `workspace_m`) |
-| `clamped` | a ceiling reduced it (grip force against the grant, base speed against the firmware floor) |
+| `clamped` | a ceiling reduced it (grip force and base speed against the grant, and beneath that the firmware floors) |
 | `failed` | stalled, timed out, or errored — a robot problem, not a grant decision |
 | `unknown` | the reply didn't say; never guessed at |
 
@@ -321,10 +321,10 @@ Read-only polling (`read_joints`, `read_arm_pose`, …) is **not** recorded — 
 Set `LEX_XLE_LEDGER_READS=1` to include them.
 
 The page is an observer, not an enforcement point: the grant is checked in the
-skill path (`_grant_workspace_violation`, `_grant_max_grip_force`) and this view
-reads the result afterwards. It also lists every bound the loaded grant
-*declares* against whether this sidecar actually checks it — today
-`bases.*.floor_area_m`, `bases.*.max_speed_mps`, `arms.*.max_velocity_mps` and
+skill path (`_grant_workspace_violation`, `_grant_max_grip_force`,
+`_grant_floor_violation`, `_grant_max_base_speed`) and this view reads the
+result afterwards. It also lists every bound the loaded grant *declares*
+against whether this sidecar actually checks it — `arms.*.max_velocity_mps` and
 `arms.*.max_force_n` are declared and **not** checked here, and the page says so
 rather than letting them read as enforced.
 

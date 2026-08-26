@@ -70,14 +70,35 @@ def test_grip_force_inside_the_grant_is_plain_allowed():
     assert v["verdict"] == "allowed" and v["clamps"] == []
 
 
-def test_base_speed_clamp_is_attributed_to_firmware_not_the_grant():
-    # move_base clamps against LEX_XLE_HARD_SPEED_MPS only; the grant's
-    # bases.*.max_speed_mps is declared but unchecked, and must not be claimed.
+def test_base_speed_clamp_is_attributed_to_the_ceiling_that_bound_it():
+    # move_base applies the grant ceiling first, then the firmware floor. The
+    # grant's 0.5 is tighter than the firmware's 0.4? No -- 0.4 is tighter, so
+    # the firmware floor is what the request actually hit.
     v = gov.classify("move_base", {"x": 1.0, "y": 0.0, "speed": 2.0},
                      {"outcome": "reached"}, GRANT, FIRMWARE)
     assert v["verdict"] == "clamped"
     assert v["clamps"][0]["source"] == "firmware"
     assert v["clamps"][0]["ceiling"] == 0.4
+
+
+def test_a_grant_tighter_than_the_firmware_floor_is_attributed_to_the_grant():
+    v = gov.classify("move_base", {"speed": 2.0}, {"outcome": "reached"},
+                     GRANT, {"max_speed_mps": 1.0})
+    assert v["clamps"][0] == {"bound": "bases.base.max_speed_mps", "source": "grant",
+                              "requested": 2.0, "ceiling": 0.5}
+
+
+def test_a_base_speed_under_every_ceiling_is_plain_allowed():
+    v = gov.classify("move_base", {"speed": 0.3}, {"outcome": "reached"}, GRANT, FIRMWARE)
+    assert v["verdict"] == "allowed" and v["clamps"] == []
+
+
+def test_a_floor_area_refusal_reads_as_denied():
+    v = gov.classify("move_base", {"x": 9.0, "y": 1.0, "speed": 0.3},
+                     {"outcome": "denied", "detail": "x=9.000 outside granted floor area"},
+                     GRANT, FIRMWARE)
+    assert v["verdict"] == "denied"
+    assert "outside granted floor area" in v["reason"]
 
 
 def test_stall_and_error_read_as_failed():
@@ -93,13 +114,32 @@ def test_unreadable_results_say_unknown_rather_than_guessing():
 
 # ---- honesty about what is actually enforced ------------------------------
 
-def test_grant_enforcement_marks_the_base_box_as_declared_only():
+def test_grant_enforcement_reports_which_bounds_this_sidecar_checks():
     rows = {r["bound"]: r for r in gov.grant_enforcement(GRANT)}
     assert rows["arms.left.workspace_m"]["enforced"] is True
     assert rows["grippers.left.max_grip_force_n"]["enforced"] is True
-    assert rows["bases.base.floor_area_m"]["enforced"] is False
-    assert rows["bases.base.max_speed_mps"]["enforced"] is False
+    assert rows["bases.base.floor_area_m"]["enforced"] is True
+    assert rows["bases.base.max_speed_mps"]["enforced"] is True
+    # Still declared-only, and still said so rather than implied enforced.
     assert rows["arms.left.max_velocity_mps"]["enforced"] is False
+    assert rows["arms.left.max_force_n"]["enforced"] is False
+
+
+def test_two_bases_are_ambiguous_so_neither_is_claimed_as_enforced():
+    # The sidecar refuses to guess which envelope binds its one base; the
+    # ledger must not claim an envelope the code declines to apply.
+    grant = {"bases": {"left_base": {"max_speed_mps": 0.5},
+                       "right_base": {"max_speed_mps": 0.9}}}
+    rows = gov.grant_enforcement(grant)
+    assert rows and all(r["enforced"] is False for r in rows)
+    assert gov.base_entry(grant["bases"]) == (None, None)
+
+
+def test_a_single_differently_named_base_still_binds():
+    grant = {"bases": {"cart": {"floor_area_m": [{"min": 0.0, "max": 2.0},
+                                                 {"min": 0.0, "max": 2.0}]}}}
+    rows = {r["bound"]: r for r in gov.grant_enforcement(grant)}
+    assert rows["bases.cart.floor_area_m"]["enforced"] is True
 
 
 def test_no_grant_means_no_rows_rather_than_invented_ones():

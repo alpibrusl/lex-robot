@@ -2180,6 +2180,42 @@ class XLeRobot:
         g = self._grant.get("grippers", {}).get(arm)
         return g.get("max_grip_force_n") if g else None
 
+    def _base_grant(self):
+        """The grant's bound for THIS robot's base, or None.
+
+        Keyed "base" by convention (manifests/xlerobot.capsule.json). A single
+        differently-named entry is accepted; two or more is ambiguous -- this
+        robot has one base -- and returns None rather than guessing which
+        envelope applies, since guessing wrong is guessing a floor box.
+        """
+        bases = (self._grant or {}).get("bases") or {}
+        if "base" in bases:
+            return bases["base"]
+        return next(iter(bases.values())) if len(bases) == 1 else None
+
+    def _grant_floor_violation(self, x, y):
+        """None if there's no grant, no floor box, or the target is inside it.
+        Otherwise a detail string -- the caller turns this into a `denied`
+        outcome and nothing is ever sent to the wheels.
+
+        Refused, never clamped, for the same reason as the arms' workspace box
+        (see _grant_workspace_violation): squeezing a position into an
+        envelope invents a destination nobody asked to drive to.
+        """
+        cfg = self._base_grant()
+        bounds = cfg.get("floor_area_m") if cfg else None
+        if not bounds or len(bounds) != 2:
+            return None
+        for val, axis, b in zip((x, y), "xy", bounds):
+            if not (b["min"] <= val <= b["max"]):
+                return (f"{axis}={val:.3f} outside granted floor area "
+                        f"[{b['min']:.2f},{b['max']:.2f}]")
+        return None
+
+    def _grant_max_base_speed(self):
+        cfg = self._base_grant()
+        return cfg.get("max_speed_mps") if cfg else None
+
     def read_grant(self):
         if not self._grant:
             return {"ok": False, "detail": "no grant configured (LEX_XLE_GRANT_PATH not set or unreadable)"}
@@ -2192,7 +2228,14 @@ class XLeRobot:
             for side, cfg in self._grant.get("arms", {}).items()
         }
         grippers = {side: cfg.get("max_grip_force_n") for side, cfg in self._grant.get("grippers", {}).items()}
-        return {"ok": True, "arms": arms, "grippers": grippers}
+        # The base bound belongs here for the same reason the arms' does: a
+        # governed program can only respect an envelope it is able to read.
+        base = self._base_grant()
+        out = {"ok": True, "arms": arms, "grippers": grippers}
+        if base:
+            out["base"] = {"floor_area_m": base.get("floor_area_m"),
+                           "max_speed_mps": base.get("max_speed_mps")}
+        return out
 
     def _bring_up_hardware(self):
         left_port = os.environ.get("LEX_XLE_LEFT_PORT")
@@ -2650,6 +2693,20 @@ class XLeRobot:
         return {"outcome": "reached", "detail": f"{arm} released (was_holding={was})"}
 
     def move_base(self, x, y, speed):
+        # Grant floor area: refused outright, and nothing reaches the wheels.
+        # Until now this bound was declared in the capsule and checked only on
+        # the Lex side, so a direct caller (the /control page, curl, the leLab
+        # adapter) could drive the base straight out of the granted room. The
+        # arms have had this check since the beginning; the base now matches.
+        denial = self._grant_floor_violation(x, y)
+        if denial is not None:
+            return {"outcome": "denied", "detail": denial}
+        # Speed is a scalar, so it clamps rather than refusing: the grant's
+        # ceiling first, then the firmware floor beneath it -- the same
+        # two-layer defense in depth grasp_arm uses, never amplifying either.
+        granted_max = self._grant_max_base_speed()
+        if granted_max is not None:
+            speed = min(speed, granted_max)
         v = min(speed, HARD_SPEED_MPS)
         if USE_HW:
             missing = self._hw_base_missing()
@@ -2665,7 +2722,7 @@ class XLeRobot:
         self.base["heading"] = round(math.atan2(dy, dx), 3) if dist > 1e-9 else self.base["heading"]
         return {
             "outcome": "reached",
-            "detail": f"base at ({x:.2f},{y:.2f}) after {dist:.2f}m at {v:.2f}m/s (firmware-capped)",
+            "detail": f"base at ({x:.2f},{y:.2f}) after {dist:.2f}m at {v:.2f}m/s (capped)",
         }
 
 

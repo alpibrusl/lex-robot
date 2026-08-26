@@ -176,6 +176,9 @@ _TEST_GRANT = {
         },
     },
     "grippers": {"left": {"max_grip_force_n": 10.0}},
+    "bases": {"base": {"floor_area_m": [{"min": 0.0, "max": 4.0},
+                                        {"min": 0.0, "max": 3.0}],
+                       "max_speed_mps": 0.5}},
 }
 
 
@@ -225,6 +228,85 @@ def test_grasp_arm_unrestricted_when_no_grant_configured():
     result = robot.grasp_arm("left", 20.0)  # under HARD_GRIP_N, no grant to clamp it
     assert result["outcome"] == "reached"
     assert "20.0N" in result["detail"]
+
+
+def test_read_grant_reports_the_base_bound():
+    # A governed program can only respect an envelope it can read.
+    robot = XLeRobot()
+    result = robot.read_grant()
+    assert result["base"]["floor_area_m"][0] == {"min": 0.0, "max": 4.0}
+    assert result["base"]["max_speed_mps"] == 0.5
+
+
+def test_move_base_denied_outside_the_granted_floor_area():
+    # The bound was in the capsule from the start but only ever checked on the
+    # Lex side, so a direct caller could drive out of the granted room.
+    robot = XLeRobot()
+    robot._grant = _TEST_GRANT
+    result = robot.move_base(4.5, 1.5, 0.3)      # x=4.5 outside [0,4]
+    assert result["outcome"] == "denied"
+    assert "x=4.500 outside granted floor area [0.00,4.00]" in result["detail"]
+    assert robot.base["x"] == 0.0 and robot.base["y"] == 0.0   # never applied
+
+
+def test_move_base_denies_on_either_axis():
+    robot = XLeRobot()
+    robot._grant = _TEST_GRANT
+    assert robot.move_base(1.0, -0.5, 0.3)["outcome"] == "denied"
+    assert robot.move_base(1.0, 3.5, 0.3)["outcome"] == "denied"
+
+
+def test_move_base_reached_inside_the_granted_floor_area():
+    robot = XLeRobot()
+    robot._grant = _TEST_GRANT
+    result = robot.move_base(2.55, 0.85, 0.3)
+    assert result["outcome"] == "reached"
+    assert robot.base["x"] == 2.55
+
+
+def test_move_base_clamps_speed_to_the_granted_max():
+    robot = XLeRobot()
+    robot._grant = _TEST_GRANT
+    result = robot.move_base(1.0, 1.0, 2.0)      # grant caps the base at 0.5 m/s
+    assert result["outcome"] == "reached"
+    assert "0.50m/s" in result["detail"]
+
+
+def test_move_base_never_amplifies_a_slower_request():
+    robot = XLeRobot()
+    robot._grant = _TEST_GRANT
+    assert "0.20m/s" in robot.move_base(1.0, 1.0, 0.2)["detail"]
+
+
+def test_move_base_unrestricted_when_no_grant_configured():
+    robot = XLeRobot()
+    robot._grant = None
+    result = robot.move_base(999.0, 999.0, 0.3)
+    assert result["outcome"] == "reached"
+
+
+def test_move_base_ignores_a_grant_with_no_base_bound():
+    robot = XLeRobot()
+    robot._grant = {"arms": {}, "grippers": {}}
+    assert robot.move_base(999.0, 999.0, 0.3)["outcome"] == "reached"
+
+
+def test_move_base_refuses_to_guess_between_two_base_bounds():
+    # Two entries and no "base" key: which floor box applies is ambiguous, and
+    # guessing wrong means guessing a room. Unbounded and honest beats bounded
+    # by an envelope nobody chose.
+    robot = XLeRobot()
+    robot._grant = {"bases": {"cart_a": {"max_speed_mps": 0.1},
+                              "cart_b": {"max_speed_mps": 0.9}}}
+    assert robot._base_grant() is None
+    assert "0.30m/s" in robot.move_base(1.0, 1.0, 0.3)["detail"]
+
+
+def test_a_single_differently_named_base_still_binds():
+    robot = XLeRobot()
+    robot._grant = {"bases": {"cart": {"floor_area_m": [{"min": 0.0, "max": 1.0},
+                                                        {"min": 0.0, "max": 1.0}]}}}
+    assert robot.move_base(5.0, 0.5, 0.3)["outcome"] == "denied"
 
 
 def test_hw_base_missing_when_no_base_configured():
