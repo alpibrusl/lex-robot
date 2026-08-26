@@ -121,8 +121,40 @@ def test_grant_enforcement_reports_which_bounds_this_sidecar_checks():
     assert rows["bases.base.floor_area_m"]["enforced"] is True
     assert rows["bases.base.max_speed_mps"]["enforced"] is True
     # Still declared-only, and still said so rather than implied enforced.
-    assert rows["arms.left.max_velocity_mps"]["enforced"] is False
     assert rows["arms.left.max_force_n"]["enforced"] is False
+
+
+def test_the_velocity_row_names_the_call_site_it_does_not_bound():
+    # Enforced at one call site and not the other. Reporting the row as simply
+    # "enforced" would cover for move_arm, which has no velocity to bound --
+    # it commands positions and the servos travel at their own rate.
+    row = {r["bound"]: r for r in gov.grant_enforcement(GRANT)}["arms.left.max_velocity_mps"]
+    assert row["enforced"] is True
+    assert "teach_replay" in row["how"]
+    assert "move_arm is NOT bounded" in row["how"]
+    assert row["where"] == "_grant_clamp_replay_speed"
+
+
+def test_a_clamp_the_sidecar_reports_is_used_verbatim():
+    # Replay's speed ceiling depends on the recording's own kinematics, which
+    # this module has no robot to compute. The sidecar puts it in the reply;
+    # reading it is the same posture as everything else here.
+    reported = {"bound": "arms.left.max_velocity_mps", "source": "grant",
+                "requested": 0.83, "ceiling": 0.25}
+    out = gov.classify("teach_replay", {"name": "demo", "speed": 4.0},
+                       {"outcome": "reached", "clamps": [reported]}, GRANT, FIRMWARE)
+    assert out["verdict"] == "clamped"
+    assert out["clamps"] == [reported]
+    assert "0.83" in out["reason"] and "0.25" in out["reason"]
+
+
+def test_an_empty_reported_clamp_list_means_no_clamp_not_a_fallback():
+    # A replay that fit under the ceiling reports []. Falling back to deriving
+    # one would let this module invent a clamp the sidecar didn't apply.
+    out = gov.classify("teach_replay", {"name": "demo", "speed": 1.0},
+                       {"outcome": "reached", "clamps": []}, GRANT, FIRMWARE)
+    assert out["verdict"] == "allowed"
+    assert out["clamps"] == []
 
 
 def test_the_workspace_row_names_every_place_the_box_is_checked():

@@ -477,3 +477,142 @@ def test_reset_answers_on_the_same_wire_contract_as_every_other_skill():
     assert result["outcome"] == "reached"
     assert result["base"] == {"x": 0.0, "y": 0.0, "heading": 0.0}
     assert result["arms"]["left"] == [0.0] * 6
+
+
+# ---- grant enforcement (replay rate) ---------------------------------------
+#
+# `speed` is a caller-chosen multiplier and the gap between frames is
+# 1/(fps*speed), so a demonstration recorded at a safe pace could be replayed
+# at any pace at all. Clamped rather than refused: unlike a position, a speed
+# can be squeezed into the envelope without inventing anything -- the taught
+# path is preserved frame for frame, just slower.
+
+# Two frames 0.1 m apart in x. At 10 fps that is 1.0 m/s per unit of `speed`.
+_A = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+_B = (1.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+
+def _speed_robot(max_velocity_mps=0.25):
+    robot = XLeRobot()
+    robot._grant = {"arms": {"left": {"workspace_m": [{"min": -9.0, "max": 9.0}] * 3,
+                                      "max_velocity_mps": max_velocity_mps}}}
+    robot._hw_arms = {"left": _fk_arm((_A, (0.0, 0.0, 0.0)), (_B, (0.1, 0.0, 0.0)))}
+    return robot
+
+
+def _clamp(robot, speed, fps=10.0):
+    return robot._grant_clamp_replay_speed(
+        "left", ARM_JOINTS, [list(_A), list(_B)], fps, speed)
+
+
+def test_replay_speed_clamped_to_the_granted_ceiling():
+    # 0.1 m per frame at 10 fps x4 = 4.0 m/s peak; the grant allows 0.25.
+    speed, clamp = _clamp(_speed_robot(0.25), 4.0)
+    assert clamp["bound"] == "arms.left.max_velocity_mps"
+    assert clamp["requested"] == 4.0 and clamp["ceiling"] == 0.25
+    assert speed == pytest.approx(0.25)          # 4.0 * 0.25/4.0
+    # and the clamped speed really does land on the ceiling
+    assert 0.1 * 10.0 * speed == pytest.approx(0.25)
+
+
+def test_replay_speed_never_amplified():
+    # The ceiling is a ceiling, not a target: a slower request stays slower.
+    speed, clamp = _clamp(_speed_robot(10.0), 0.5)
+    assert clamp is None and speed == 0.5
+
+
+def test_replay_speed_exactly_at_the_ceiling_is_not_clamped():
+    speed, clamp = _clamp(_speed_robot(1.0), 1.0)   # 0.1 * 10 * 1.0 = 1.0
+    assert clamp is None and speed == 1.0
+
+
+def test_replay_speed_unrestricted_when_the_grant_declares_no_ceiling():
+    robot = _speed_robot(0.25)
+    robot._grant["arms"]["left"].pop("max_velocity_mps")
+    speed, clamp = _clamp(robot, 99.0)
+    assert clamp is None and speed == 99.0
+
+
+def test_replay_speed_unrestricted_without_a_grant():
+    robot = _speed_robot(0.25)
+    robot._grant = None
+    speed, clamp = _clamp(robot, 99.0)
+    assert clamp is None and speed == 99.0
+
+
+def test_replay_speed_check_is_inert_without_a_configured_arm():
+    robot = _speed_robot(0.25)
+    robot._hw_arms = {}
+    speed, clamp = _clamp(robot, 99.0)
+    assert clamp is None and speed == 99.0
+
+
+def test_replay_speed_is_bound_by_the_fastest_step_not_the_average():
+    # A path is only inside the envelope if its fastest moment is; averaging
+    # would let a brief lunge through on the strength of a slow tail.
+    robot = XLeRobot()
+    robot._grant = {"arms": {"left": {"max_velocity_mps": 0.5}}}
+    slow, fast, end = _A, _B, (2.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    robot._hw_arms = {"left": _fk_arm((slow, (0.0, 0.0, 0.0)),
+                                      (fast, (0.01, 0.0, 0.0)),    # 0.01 m step
+                                      (end, (0.21, 0.0, 0.0)))}    # 0.20 m step
+    speed, clamp = robot._grant_clamp_replay_speed(
+        "left", ARM_JOINTS, [list(slow), list(fast), list(end)], 10.0, 1.0)
+    assert clamp["requested"] == pytest.approx(2.0)   # the 0.20 m step, not 0.105
+    assert speed == pytest.approx(0.25)
+
+
+def test_a_single_frame_has_no_speed_to_bound():
+    robot = _speed_robot(0.25)
+    speed, clamp = robot._grant_clamp_replay_speed(
+        "left", ARM_JOINTS, [list(_A)], 10.0, 99.0)
+    assert clamp is None and speed == 99.0
+
+
+def test_smoothing_is_deterministic_so_the_checked_path_is_the_driven_path():
+    # Load-bearing: the handler smooths once to run the grant checks, then
+    # hands replay_on_bus the ORIGINAL trajectory with the same max_step_deg
+    # and lets it re-derive. If that were not identical, the checks would be
+    # verifying a path the arm never takes.
+    import teach as _teach
+    frames = [[0.0] * 6, [10.0, 0.0, 0.0, 0.0, 0.0, 0.0], [10.0, 25.0, 0.0, 0.0, 0.0, 0.0]]
+    once = _teach.smooth_steps(frames, _teach.MAX_STEP_DEG)
+    twice = _teach.smooth_steps(frames, _teach.MAX_STEP_DEG)
+    assert once == twice
+    assert len(once) > len(frames)                       # it really did interpolate
+    assert _teach.max_step(once) <= _teach.MAX_STEP_DEG + 1e-9
+
+
+def test_a_speed_ceiling_alone_still_refuses_an_uncomputable_path():
+    # The gate covers both Cartesian bounds. A grant with a ceiling but no box
+    # still needs the path, and passing the replay through because the box
+    # happened to be absent would be exactly the silent downgrade the check
+    # exists to prevent.
+    robot = XLeRobot()
+    robot._grant = {"arms": {"left": {"max_velocity_mps": 0.25}}}
+    robot._hw_arms = {"left": _fk_arm()}      # empty FK map -> uncomputable
+    detail = robot._grant_trajectory_violation("left", ARM_JOINTS, [list(_A), list(_B)])
+    assert detail is not None and "no forward kinematics available" in detail
+
+
+def test_no_arm_bound_at_all_means_no_refusal():
+    robot = XLeRobot()
+    robot._grant = {"arms": {"left": {}}}
+    robot._hw_arms = {"left": _fk_arm()}
+    assert robot._grant_trajectory_violation("left", ARM_JOINTS, [list(_A)]) is None
+
+
+def test_a_precomputed_path_is_used_instead_of_recomputing():
+    # The handler runs FK once and hands the result to both checks. If the
+    # passed path were ignored, a long recording would pay for FK twice before
+    # the arm moves -- and these two calls would disagree with the handler.
+    robot = _traj_robot()          # empty FK map: recomputing would refuse
+    inside = ([(0.5, 0.5, 0.5), (0.6, 0.5, 0.5)], None)
+    assert robot._grant_trajectory_violation(
+        "left", ARM_JOINTS, [list(_A), list(_B)], ee_path=inside) is None
+    # 0.1 m between those two ee points at 10 fps is 1.0 m/s; _TEST_GRANT
+    # allows 0.25, so the same passed path must drive a clamp to 1/4 speed.
+    speed, clamp = robot._grant_clamp_replay_speed(
+        "left", ARM_JOINTS, [list(_A), list(_B)], 10.0, 1.0, ee_path=inside)
+    assert clamp["ceiling"] == 0.25 and clamp["requested"] == pytest.approx(1.0)
+    assert speed == pytest.approx(0.25)

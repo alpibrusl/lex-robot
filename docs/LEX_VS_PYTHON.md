@@ -138,7 +138,7 @@ every frame through forward kinematics and refuses the whole recording if any
 end-effector position leaves the granted box. `teach_home_go` goes through the
 same check as a one-frame trajectory.
 
-Three properties of that check are deliberate:
+Three properties of that workspace check are deliberate:
 
 - **Checked whole, before any torque.** A replay stopped at frame 40 leaves the
   arm in a pose it was only ever meant to pass *through*. All of it or none of
@@ -149,6 +149,65 @@ Three properties of that check are deliberate:
   claiming an envelope nothing verified.
 - **No box declared means no refusal.** An arm the grant doesn't cover is
   unbounded and honestly so; inventing a box would be a bound nobody granted.
+
+### The same recording, the other bound
+
+`teach_replay` takes a `speed` multiplier, and the gap between frames is
+`1 / (fps * speed)` — so `speed: 10` drives the taught path ten times faster.
+Nothing bounded that. The workspace check constrains where the arm goes and
+the collision model constrains what it hits, but a demonstration recorded at a
+safe pace could be replayed at any pace at all.
+
+`_grant_clamp_replay_speed` closes it against `arms.*.max_velocity_mps`, and
+the choice of verb is the point: **clamped, not refused.** That is the same
+split `move_base` and `grasp_arm` already use — a position cannot be squeezed
+into an envelope without inventing a destination, but a speed can. Slowing the
+replay preserves the taught path frame for frame; refusing would reject a
+perfectly good recording over a number the caller picked. It is the *peak*
+per-step speed that has to fit, not the average: a path is only inside the
+envelope if its fastest moment is, and averaging would let a brief lunge
+through on the strength of a slow tail.
+
+The ceiling binds the **recording**, not just the multiplier. A demonstration
+taught faster than `max_velocity_mps` is slowed even at `speed: 1.0` — the
+bound is on how fast the arm may move, and who chose the number does not
+change that:
+
+```console
+$ curl -s -X POST :8900/skill/teach_replay -d '{"name":"demo","speed":8.0}'
+{"outcome":"reached",
+ "detail":"replayed 5 frames over 1.2s (speed clamped to 0.25 m/s by arms.left.max_velocity_mps)",
+ "clamps":[{"bound":"arms.left.max_velocity_mps","source":"grant",
+            "requested":9.6,"ceiling":0.25}]}
+```
+
+That `clamps` field is how the ledger sees it. `governance.py` has no robot and
+cannot compute a ceiling that depends on the recording's own kinematics, so the
+sidecar reports the clamp in its reply and `classify()` reads it — the same
+posture as everything else there: report the decision that was made, never
+re-derive one.
+
+Both checks run against the frames that will actually be **sent** — `replay`
+interpolates with `smooth_steps` before driving, and a straight line in joint
+space can bulge outside the box in Cartesian space. The handler smooths once
+with `teach.MAX_STEP_DEG`, checks that, and hands `replay_on_bus` the same
+constant so it re-derives an identical path. Checking one path and driving
+another would prove nothing, so that determinism has its own test.
+
+Two things this still does not cover, named rather than implied:
+
+- **The approach path.** `replay_on_bus` first drives from wherever the arm
+  currently is to the recording's first frame, at the same frame rate. That
+  path depends on live joint positions the check has no access to, so neither
+  the box nor the ceiling applies to it. It is bounded in joint space (no step
+  over `MAX_STEP_DEG`) and vetoed by the collision model — but its Cartesian
+  speed and destination are unchecked.
+- **`move_arm` has no velocity to bound.** It is a closed-loop IK servo: it
+  commands positions every 50 ms and the servos travel at whatever rate they
+  travel. Enforcing a speed there would mean *building* a rate limiter, which
+  is writing a motion controller, not enforcing a bound. So the governance
+  row says `max_velocity_mps` is enforced for `teach_replay` **and explicitly
+  not for `move_arm`**, rather than claiming the bound wholesale.
 
 The generalisation: *a capability whose Lex wrapper exists is not thereby
 bounded.* The wrapper answers "may this program ask?"; the sidecar still has to

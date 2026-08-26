@@ -65,9 +65,11 @@ It earned itself twice: the `workspace_m` row named `move_arm` as its only
 enforcement point while `teach_replay` drove the same arm through joint-space
 poses nothing checked against that box — now checked frame by frame through
 forward kinematics, refused whole rather than stopped halfway (see
-`docs/LEX_VS_PYTHON.md`, "Two kinds of bound"). `arms.*.max_velocity_mps`,
-`arms.*.max_force_n` and the capsule's `skills` allowlist are still
-declared-only here, and the page says so — the last with its reason, since it
+`docs/LEX_VS_PYTHON.md`, "Two kinds of bound"). `arms.*.max_velocity_mps` is now enforced too — `teach_replay`'s
+`speed` multiplier was unbounded, and is clamped so the peak end-effector
+speed fits the ceiling — but the row also says it does **not** bound
+`move_arm`, which commands positions rather than velocities. `arms.*.max_force_n`
+and the capsule's `skills` allowlist are still declared-only here, and the page says so — the last with its reason, since it
 is enforced in Lex against the agent and this port also answers the operator's
 own pages.
 
