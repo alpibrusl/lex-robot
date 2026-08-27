@@ -1,0 +1,157 @@
+{
+  "4": {
+    "arm_m": [
+      0.44687955256790474,
+      0.11973550623780936,
+      0.03251781901016512
+    ],
+    "board_mm": [
+      0.0,
+      125.0,
+      0.0
+    ],
+    "spread_mm": 0.0,
+    "joints": {
+      "shoulder_pan.pos": -16.65934065934066,
+      "shoulder_lift.pos": 78.9010989010989,
+      "elbow_flex.pos": -49.934065934065934,
+      "wrist_flex.pos": -25.406593406593405,
+      "wrist_roll.pos": 16.571428571428573,
+      "gripper.pos": -62.15384615384615
+    }
+  },
+  "2": {
+    "arm_m": [
+      0.4204833211176692,
+      -0.11023530636644702,
+      0.0666076270289673
+    ],
+    "board_mm": [
+      200.0,
+      0.0,
+      0.0
+    ],
+    "spread_mm": 0.0,
+    "joints": {
+      "shoulder_pan.pos": 15.780219780219781,
+      "shoulder_lift.pos": 124.43956043956044,
+      "elbow_flex.pos": -121.75824175824175,
+      "wrist_flex.pos": -19.164835164835164,
+      "wrist_roll.pos": 16.747252747252748,
+      "gripper.pos": -62.15384615384615
+    }
+  },
+  "1": {
+    "arm_m": [
+      0.4436346409441877,
+      0.09348630590168464,
+      0.07570552086124113
+    ],
+    "board_mm": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "spread_mm": 0.0,
+    "joints": {
+      "shoulder_pan.pos": -13.31868131868132,
+      "shoulder_lift.pos": 111.25274725274726,
+      "elbow_flex.pos": -105.31868131868131,
+      "wrist_flex.pos": -21.274725274725274,
+      "wrist_roll.pos": 16.65934065934066,
+      "gripper.pos": -62.15384615384615
+    }
+  },
+  "4b": {
+    "arm_m": [
+      0.44401425923484583,
+      0.1250021230278054,
+      0.0602125059742272
+    ],
+    "board_mm": [
+      0.0,
+      125.0,
+      0.0
+    ],
+    "spread_mm": 0.0,
+    "joints": {
+      "shoulder_pan.pos": -17.45054945054945,
+      "shoulder_lift.pos": 64.04395604395604,
+      "elbow_flex.pos": -37.010989010989015,
+      "wrist_flex.pos": -21.186813186813186,
+      "wrist_roll.pos": 16.483516483516482,
+      "gripper.pos": -62.15384615384615
+    }
+  },
+  "3": {
+    "arm_m": [
+      0.42371925520841586,
+      -0.1864377672627019,
+      0.05433678837472943
+    ],
+    "board_mm": [
+      200.0,
+      125.0,
+      0.0
+    ],
+    "spread_mm": 0.0,
+    "joints": {
+      "shoulder_pan.pos": 25.53846153846154,
+      "shoulder_lift.pos": 66.94505494505495,
+      "elbow_flex.pos": -52.21978021978022,
+      "wrist_flex.pos": 1.3186813186813187,
+      "wrist_roll.pos": 16.747252747252748,
+      "gripper.pos": -62.15384615384615
+    }
+  },
+  "5": {
+    "arm_m": [
+      0.46345865812576814,
+      -0.036531770269128905,
+      0.05124524706218059
+    ],
+    "board_mm": [
+      100.0,
+      50.0,
+      0.0
+    ],
+    "spread_mm": 0.0,
+    "joints": {
+      "shoulder_pan.pos": 4.615384615384615,
+      "shoulder_lift.pos": 91.03296703296704,
+      "elbow_flex.pos": -66.72527472527473,
+      "wrist_flex.pos": -32.61538461538461,
+      "wrist_roll.pos": 16.395604395604394,
+      "gripper.pos": -62.15384615384615
+    }
+  },
+  "_comment": [
+    "Toques del 2026-08-27, brazo 5B61 (config 'right'), tornillo sujeto en la pinza.",
+    "",
+    "NO USABLES. El ajuste conjunto deja 22.1 mm de residuo medio y devuelve un",
+    "desfase de punta de 310 mm, cuando el tornillo sobresale unos 20. Un parametro",
+    "fisicamente imposible es la senal de que el ajuste esta absorbiendo una",
+    "inconsistencia que no puede explicar.",
+    "",
+    "EL AJUSTE NO ES EL PROBLEMA: fit_extrinsics.py recupera un desfase conocido con",
+    "error 0.000 mm sobre datos sinteticos de 5 puntos con orientaciones variadas.",
+    "",
+    "CAUSA, identificada por el operador: hay que cambiar el angulo de muneca para no",
+    "chocar con el carro en los puntos cercanos a el. El metodo exige que el desfase",
+    "punta<->muneca sea CONSTANTE; al reorientar la muneca -- y probablemente sin",
+    "llegar a apoyar en los puntos mas comprometidos -- esa condicion se rompe. Mas",
+    "puntos no ayudan: cada uno anade su propia inconsistencia.",
+    "",
+    "GEOMETRIA A CORREGIR ANTES DE REPETIR: todas las z de los toques son POSITIVAS",
+    "(+32 a +76 mm), o sea la punta esta por encima del origen del brazo. El robot",
+    "esta montado en el carro, mas bajo que la mesa, y tiene que subir y sortear el",
+    "reborde de su propio carro. Hay que ponerlo POR ENCIMA de la superficie de",
+    "trabajo para que baje sobre ella: entonces la muneca aproxima vertical en todos",
+    "los puntos, el desfase pasa a ser constante, y desaparecen las colisiones.",
+    "Es ademas la disposicion que M3 en adelante necesita.",
+    "",
+    "4 y 4b son el MISMO punto del tablero con orientaciones de muneca distintas:",
+    "28.3 mm de diferencia, que es la firma esperada del desfase de herramienta.",
+    "Un primer '5' se descarto por ser lectura identica al 3 (el brazo no se movio)."
+  ]
+}
