@@ -40,7 +40,15 @@ try:
     for j,v in (a.delta or []): tgt[j]=cur[j]+float(v)
     moving={j:(cur[j],tgt[j]) for j in ARM if abs(tgt[j]-cur[j])>0.05}
     if not moving:
-        print("nada que mover"); raise SystemExit(0)
+        # --release por si solo es un uso legitimo: soltar el par sin mover nada.
+        # Salir aqui dejaba los servos forzando indefinidamente.
+        if a.release:
+            for j in ARM:
+                bus.write("Torque_Enable", j, 0)
+            print("par soltado en las 6, sin mover nada")
+        else:
+            print("nada que mover")
+        raise SystemExit(0)
     for j,(c,t) in moving.items(): print(f"  {j}: {c:.1f} -> {t:.1f} ({t-c:+.1f} deg)")
     for j in ARM:
         bus.write("Torque_Limit",j,a.torque,normalize=False)
