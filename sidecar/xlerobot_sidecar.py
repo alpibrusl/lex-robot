@@ -222,6 +222,7 @@ import math
 import mimetypes
 import contextlib
 import os
+import socket
 import threading
 import time
 import urllib.error
@@ -229,10 +230,18 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import perimeter
+
 import governance
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("LEX_ROBOT_SIDECAR_PORT", "8900"))
+# The perimeter: who may talk to this sidecar, who may change the robot, and
+# what happens when the caller goes quiet (sidecar/perimeter.py, #195/#196).
+# Every gate in it is off unless configured, so an unconfigured run behaves
+# exactly as it did before.
+SOCKET_PATH = os.environ.get("LEX_ROBOT_SIDECAR_SOCKET")
+DEADMAN = perimeter.Deadman.from_env()
 # Firmware floors — independent of (and behind) the Lex grant clamps.
 # STS3215 servos are 30 kg·cm class; 25 N at the fingertips is already generous.
 HARD_GRIP_N = float(os.environ.get("LEX_XLE_HARD_GRIP_N", "25"))
@@ -684,6 +693,15 @@ class _HwDiffBase:
         last_t = _time.monotonic()
         arrive_tol = 0.03
         while _time.monotonic() < deadline:
+            # The deadman (#195). A goal-point drive runs for up to
+            # LEX_XLE_BASE_TIMEOUT_S with nobody watching, so a planner that
+            # stalls mid-inference, a client that is killed, or a laptop that
+            # sleeps leaves the base driving to a goal nobody wants any more.
+            # Checked every tick, before any wheel command. Off unless a
+            # caller armed it by sending /heartbeat -- see perimeter.Deadman.
+            if DEADMAN.expired():
+                self._set_wheel_velocity(0.0, 0.0)
+                return {"outcome": "stalled", "detail": DEADMAN.stop_detail()}
             now = _time.monotonic()
             dt = now - last_t
             last_t = now
@@ -759,6 +777,15 @@ class _HwOmniBase:
         last_t = _time.monotonic()
         arrive_tol = 0.03
         while _time.monotonic() < deadline:
+            # The deadman (#195). A goal-point drive runs for up to
+            # LEX_XLE_BASE_TIMEOUT_S with nobody watching, so a planner that
+            # stalls mid-inference, a client that is killed, or a laptop that
+            # sleeps leaves the base driving to a goal nobody wants any more.
+            # Checked every tick, before any wheel command. Off unless a
+            # caller armed it by sending /heartbeat -- see perimeter.Deadman.
+            if DEADMAN.expired():
+                self.robot.send_action({"x.vel": 0.0, "y.vel": 0.0, "theta.vel": 0.0})
+                return {"outcome": "stalled", "detail": DEADMAN.stop_detail()}
             now = _time.monotonic()
             dt = now - last_t
             last_t = now
@@ -3316,6 +3343,17 @@ def _handle_skill(name, args):
     return {"error": f"unknown skill: {name}"}
 
 
+def _perimeter_status():
+    """What is actually holding the door, so `/health` answers it rather than
+    the reader having to infer it from which env vars they remember setting."""
+    return {
+        "bind": HOST if SOCKET_PATH is None else f"{HOST} + unix:{SOCKET_PATH}",
+        "token_auth": perimeter.configured_token() is not None,
+        "peer_allow_list": bool(os.environ.get(perimeter.ALLOW_UIDS_ENV)
+                                or os.environ.get(perimeter.ALLOW_GIDS_ENV)),
+    }
+
+
 class Handler(BaseHTTPRequestHandler):
     def _send(self, code, payload):
         # Compact (no space after ':') to match sim_sidecar.py and satisfy
@@ -3344,12 +3382,49 @@ class Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             return None
 
+    def _peer_creds(self):
+        """Who is on the other end -- only answerable over a unix socket."""
+        if self.server.address_family != socket.AF_UNIX:
+            return None
+        return perimeter.peer_credentials(self.connection)
+
+    def _authorize(self, skill):
+        """None when this caller may make this call, else the refusal reason.
+
+        Two independent gates, answering two different questions (microduck,
+        architecture.md §2.2): the token says whether the CALLER is known, the
+        peer allow-list says whether that uid may CHANGE the robot. Both are
+        off unless configured; both ignore read-only skills.
+        """
+        reason = perimeter.check_token(self.headers.get("Authorization"), skill)
+        if reason is not None:
+            return reason
+        return perimeter.peer_allowed(self._peer_creds(), skill)
+
     def do_POST(self):
         args = self._body()
         if args is None:
             return self._send(400, {"error": "invalid json"})
+        if self.path == "/heartbeat":
+            # Arms the base deadman on the first beat and keeps it clear after
+            # that (#195). Deliberately NOT a skill: a governed program does
+            # not ask permission to still be alive, and gating liveness behind
+            # the grant would mean a caller could lose the ability to say so.
+            DEADMAN.beat()
+            return self._send(200, {"ok": True, "deadman": DEADMAN.status()})
         if self.path.startswith("/skill/"):
-            return self._send(200, handle_skill(self.path[len("/skill/"):], args))
+            skill = self.path[len("/skill/"):]
+            refusal = self._authorize(skill)
+            if refusal is not None:
+                # 403, and the same `denied` vocabulary the grant uses: this is
+                # an envelope saying no, not the arm failing to get there.
+                return self._send(403, {"outcome": "denied", "ok": False,
+                                        "detail": f"perimeter: {refusal}"})
+            # Any skill call is evidence the caller is still there. An explicit
+            # /heartbeat is only needed DURING a long move_base, which blocks
+            # its own connection -- hence ThreadingHTTPServer.
+            DEADMAN.beat_if_armed()
+            return self._send(200, handle_skill(skill, args))
         if self.path == "/display/touch":
             # The kiosk page's tap comes back here, NOT through /skill/: a
             # human tapping the screen is input arriving at the sidecar, not
@@ -3372,7 +3447,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             return self._send(400, {"error": "/stream requires a WebSocket upgrade"})
         if path == "/health":
-            return self._send(200, {"ok": True, "hardware": USE_HW, "base": ROBOT.base})
+            return self._send(200, {"ok": True, "hardware": USE_HW, "base": ROBOT.base,
+                                    "deadman": DEADMAN.status(),
+                                    "perimeter": _perimeter_status()})
         if path == "/display":
             return self._send_bytes(200, "text/html; charset=utf-8", DISPLAY_PAGE_HTML.encode())
         if path == "/teach":
@@ -3414,14 +3491,92 @@ class Handler(BaseHTTPRequestHandler):
         print("[xlerobot]", self.command, self.path)
 
 
+class _UnixHTTPServer(ThreadingHTTPServer):
+    """The same Handler, over a unix socket.
+
+    This is where microduck's argument actually lands (architecture.md §2.2):
+    filesystem permissions are free authorization, and `SO_PEERCRED` names the
+    caller for both the audit and the allow-list. A TCP port on loopback is
+    reachable by every process and user on the box; a socket at mode 0660 with
+    a dedicated group is not.
+
+    The Lex client cannot use this yet -- `std.http` and `net.*` take an `Int`
+    port and lex 0.10.11 has no unix-socket client, which is a lex-lang change
+    and a coordinated release (#196). So this serves the local NON-Lex clients:
+    the Python tools in this directory, an operator's `curl --unix-socket`, and
+    whatever `robotctl` becomes.
+    """
+
+    address_family = socket.AF_UNIX
+
+    def server_bind(self):
+        # A leftover socket file from a killed process would make bind() fail
+        # with EADDRINUSE forever. Only ours is removed: the path is one we
+        # were told to own.
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(self.server_address)
+        super().server_bind()
+        # Group-readable/writable, world-nothing. This is the "who may TALK to
+        # the daemon" layer; the uid allow-list is the "who may CHANGE the
+        # robot" layer above it.
+        os.chmod(self.server_address, 0o660)
+
+    def get_request(self):
+        conn, _addr = self.socket.accept()
+        # BaseHTTPRequestHandler wants a (host, port) shaped peer for logging;
+        # AF_UNIX has none, so give it something honest instead of ''.
+        return conn, ("unix-socket", 0)
+
+
+def _serve_unix_socket():
+    """Start the unix-socket listener in a daemon thread, or return None."""
+    if not SOCKET_PATH:
+        return None
+    srv = _UnixHTTPServer(SOCKET_PATH, Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
 def main():
     mode = "REAL HARDWARE" if USE_HW else "stub (no hardware)"
+    # Before anything binds. A robot that actuates on an unauthenticated port
+    # must not be one interface-typo away from the network (#196).
+    perimeter.assert_loopback(HOST)
     srv = ThreadingHTTPServer((HOST, PORT), Handler)
+    unix_srv = _serve_unix_socket()
     print(f"lex-robot XLeRobot sidecar [{mode}] on http://{HOST}:{PORT}  (Ctrl-C to stop)")
+    if unix_srv is not None:
+        print(f"  also on unix:{SOCKET_PATH} (mode 0660; SO_PEERCRED identifies callers)")
+    # Say what is and is not holding the door, every start. An operator who
+    # believes the token is on when it is not is worse off than one who knows
+    # it is off.
+    st = _perimeter_status()
+    if not st["token_auth"] and not st["peer_allow_list"]:
+        print("  perimeter: UNAUTHENTICATED — any local process may drive this robot. "
+              "Set LEX_ROBOT_SIDECAR_TOKEN (and/or LEX_ROBOT_SIDECAR_ALLOW_UIDS) to gate "
+              "the skills that move it.")
+    else:
+        print(f"  perimeter: token_auth={st['token_auth']} "
+              f"peer_allow_list={st['peer_allow_list']} (mutating skills only)")
+    if st["token_auth"]:
+        # Said out loud, because the alternative is discovering it as a wave of
+        # 403s from a program that looks correct. client.lex cannot send a
+        # bearer token without widening every skill's effect row with [env] —
+        # see SIDECAR.md, "The perimeter".
+        print("  NOTE: Lex programs using src/client.lex do NOT send a bearer token, "
+              "so they will be refused on mutating skills while this is set.")
+    dm = DEADMAN.status()
+    if dm["interval_ms"]:
+        print(f"  deadman: {dm['interval_ms']}ms — arms on the first POST /heartbeat, "
+              f"then stops base motion if the beats stop. Arm hold is never dropped.")
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
         srv.shutdown()
+        if unix_srv is not None:
+            unix_srv.shutdown()
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(SOCKET_PATH)
 
 
 if __name__ == "__main__":

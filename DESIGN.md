@@ -191,6 +191,39 @@ lex-trail. `examples/budget_demo.lex` (a zero-action grant) and the
    boundary, not a physical guarantee.
 3. **Bridge cost.** A localhost sidecar is the pragmatic v1; a native lex-lang
    robotics binding is a later optimization if skill-boundary latency matters.
+4. **A loopback port is not a boundary.** "Localhost only, so no auth" was the
+   sidecar's rule until #196; it is wrong. A TCP port is reachable by every
+   process and user on the box, so on a Pi running the kiosk page, the vision
+   split (docs/XLEROBOT_SETUP.md §9) and whatever else, *anything* local could
+   `POST /skill/move_arm` — around the Lex layer entirely. The sidecar now has
+   a perimeter (bind guard, bearer token, `SO_PEERCRED` allow-list over a unix
+   socket — SIDECAR.md), but `client.lex` cannot use it yet, so the Lex path is
+   still unauthenticated by construction. Stated here rather than in a commit
+   message because it is a limit of the thesis, not a TODO.
+5. **Nothing stops a command nobody is waiting for.** Until #195 there was no
+   deadman anywhere: `move_base` drives synchronously for up to 20 s, so a
+   planner that stalls or a client that dies left the base driving. There is
+   one now, and it stops base motion only — a stale arm hold is harmless, a
+   stale velocity is not.
+
+### 8.1 Non-finite values (#193)
+
+Worth recording as its own entry, because it was live in the code that made
+the claim. Every bound in `grant.lex` was a chain of positive rejections
+(`if p.x < lo { false } …`), and for `NaN` both `<` and `>` are false — so a
+`NaN` fell through into the permissive branch. Measured on `lex 0.10.11`:
+`in_workspace` returned **true** for a `NaN` pose, and all three clamps
+returned `NaN` unchanged, which `flt.to_str` puts on the wire as `"NaN"` and
+Python's `json.loads` accepts. On the sidecar side `force > HARD_GRIP_N` is
+false for `NaN`, so a `NaN` grip request silently became the *maximum granted
+force*.
+
+The rule is microduck's (`duck-control/src/safety.rs`): a non-finite target
+"is not clamped, it is refused outright" — clamping `NaN` produces a
+plausible-looking boundary value, so the robot commits to a limit instead of
+declining to move. `grant.within` is now the single bound test, written so a
+non-finite value cannot satisfy it, and the clamps return a `Clamp` that
+reports the refusal. `tests/test_nonfinite.lex` locks it down; smoke runs it.
 
 ---
 
