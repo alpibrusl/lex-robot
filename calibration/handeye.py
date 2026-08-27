@@ -179,10 +179,11 @@ def cmd_auto(a):
 
     D = a.amplitud
     desvios = [{}]
-    for j, k in (("shoulder_pan", 1.0), ("shoulder_lift", 0.7),
-                 ("elbow_flex", 1.0), ("wrist_flex", 1.3), ("wrist_roll", 1.6)):
-        for s_ in (+1, -1):
-            desvios.append({j: s_ * D * k})
+    for frac in (1.0, 0.55):
+        for j, k in (("shoulder_pan", 1.0), ("shoulder_lift", 0.7),
+                     ("elbow_flex", 1.0), ("wrist_flex", 1.3), ("wrist_roll", 1.6)):
+            for s_ in (+1, -1):
+                desvios.append({j: s_ * D * k * frac})
     for s1 in (+1, -1):
         for s2 in (+1, -1):
             desvios.append({"shoulder_pan": s1 * D, "wrist_roll": s2 * D * 1.6})
@@ -207,8 +208,6 @@ def cmd_auto(a):
             print(f"   {i+1:2d}/{len(desvios)}  vista {len(views)} guardada", flush=True)
         _mover(bus, cur, seed)
     finally:
-        for j in ARM:
-            bus.write("Torque_Enable", j, 0)
         cap.release()
         # NOT a bare disconnect(): lerobot's default writes Torque_Enable=0
         # to every motor, which would drop a held arm.
@@ -261,7 +260,12 @@ def cmd_solve(a):
     R_b2t, t_b2t, R_g2c, t_g2c = cv2.calibrateRobotWorldHandEye(
         R_t2c, t_t2c, R_b2g, t_b2g)
 
-    X = np.eye(4); X[:3, :3] = R_g2c; X[:3, 3] = t_g2c.ravel()
+    # calibrateRobotWorldHandEye devuelve la transformacion en el sentido
+    # contrario al que hace falta aqui: con X tal cual la dispersion sale de
+    # 107.6 mm y con su inversa de 5.3 mm sobre los mismos datos. Comprobado
+    # sobre las seis composiciones posibles.
+    X = np.linalg.inv(np.block([[R_g2c, t_g2c.reshape(3, 1)],
+                                [np.zeros((1, 3)), np.ones((1, 1))]]))
     # T_brazo_tablero deberia salir igual desde cada vista; su dispersion es la
     # validacion honesta, no el residuo interno del solver.
     est = []
@@ -270,6 +274,11 @@ def cmd_solve(a):
         est.append(T @ X @ Tct)
     pos = np.array([e[:3, 3] for e in est])
     disp = np.linalg.norm(pos - pos.mean(0), axis=1)
+    # rotacion media por SVD: promediar matrices elemento a elemento no da una
+    # rotacion, hay que reproyectar sobre SO(3).
+    U, _, Vt = np.linalg.svd(sum(e[:3, :3] for e in est))
+    Rm = U @ np.diag([1, 1, np.sign(np.linalg.det(U @ Vt))]) @ Vt
+    T_bt = np.eye(4); T_bt[:3, :3] = Rm; T_bt[:3, 3] = pos.mean(0)
     print(f"\ntablero en el marco del brazo, visto desde cada pose:")
     print(f"   media   ({pos.mean(0)[0]:7.1f},{pos.mean(0)[1]:7.1f},{pos.mean(0)[2]:7.1f}) mm")
     print(f"   dispersion  media {disp.mean():.2f} mm   maxima {disp.max():.2f} mm")
@@ -285,6 +294,7 @@ def cmd_solve(a):
         "camara_en_pinza_mm": t_g2c.ravel().tolist(),
         "R_camara_en_pinza": R_g2c.tolist(),
         "tablero_en_brazo_mm": pos.mean(0).tolist(),
+        "T_tablero_en_brazo": T_bt.tolist(),
         "dispersion_media_mm": float(disp.mean()),
         "dispersion_max_mm": float(disp.max()),
     }, indent=2))
@@ -311,7 +321,7 @@ def main():
     u = s.add_parser("auto", help="el brazo se mueve solo desde la pose de partida")
     u.add_argument("--arm", choices=PORTS, default="right")
     u.add_argument("--views", type=int, default=18)
-    u.add_argument("--amplitud", type=float, default=7.0,
+    u.add_argument("--amplitud", type=float, default=22.0,
                    help="grados de desvio respecto a la pose de partida")
     u.add_argument("--torque", type=int, default=350)
     u.add_argument("--width", type=int, default=1280)

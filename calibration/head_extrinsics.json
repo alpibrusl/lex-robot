@@ -1,45 +1,31 @@
 {
-  "_nota": "Extrinsecos de la camara de cabeza medidos por toque directo, 8 puntos. Residuo medio 13.4 mm. NO es error de calibracion: tocando la MISMA interseccion tres veces la dispersion es 13.2 mm (ver repetibilidad_toque.json), o sea el mismo numero. El limite es el gesto de tocar a mano con el par apagado, no el ajuste. Para bajar de 5 mm hay que calibrar por vision con el brazo movido por sus servos.",
-  "residuo_medio_mm": 13.37,
-  "residuo_max_mm": 27.84,
-  "toques": [
-    "0,1",
-    "0,5",
-    "2,3",
-    "4,2",
-    "4,5",
-    "6,1",
-    "8,1",
-    "8,3"
-  ],
-  "desfase_punta_mm": [
-    -25.5,
-    36.4,
-    -70.1
-  ],
+  "_nota": "Extrinsecos de la camara de cabeza por mano-ojo con la camara de muneca. La punta no interviene: el brazo se movio SOLO a 13 poses y la correspondencia sale de ver el tablero, no de tocarlo. Dispersion 5.3 mm frente a los 13.4 mm del metodo de tocar a mano, que estaba limitado por la repetibilidad del gesto humano (13.2 mm medidos).",
+  "metodo": "mano-ojo (AX=ZB), 13 vistas, brazo movido por sus propios servos",
+  "dispersion_media_mm": 5.335269400651985,
+  "dispersion_max_mm": 8.858875423430371,
+  "error_pnp_cabeza_px": 1.211,
   "pos": [
-    0.18317,
-    -0.12526,
-    0.3755
+    0.12327,
+    -0.11971,
+    0.34443
   ],
   "right": [
-    0.06555,
-    -0.99785,
-    9e-05
+    -0.00157,
+    -0.99993,
+    0.01199
   ],
   "down": [
-    -0.90087,
-    -0.05922,
-    -0.43004
+    -0.81685,
+    -0.00563,
+    -0.57682
   ],
   "forward": [
-    0.42912,
-    0.02811,
-    -0.90281
+    0.57685,
+    -0.0107,
+    -0.81678
   ],
   "fx": 0.47313,
   "fy": 0.62956,
   "cx0": 0.5353,
-  "cy0": 0.5111,
-  "repetibilidad_toque_mm": 13.2
+  "cy0": 0.5111
 }
