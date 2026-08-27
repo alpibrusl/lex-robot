@@ -1,0 +1,9 @@
+{
+  "_nota": "Union de los extremos alcanzados en dos barridos con el mismo homing. wrist_roll gira mas de una vuelta: no se mide, se le pone un limite por software centrado en la postura de homing.",
+  "shoulder_pan":  {"range_min": 771,  "range_max": 3065},
+  "shoulder_lift": {"range_min": 428,  "range_max": 2752},
+  "elbow_flex":    {"range_min": 836,  "range_max": 3053},
+  "wrist_flex":    {"range_min": 896,  "range_max": 3206},
+  "wrist_roll":    {"range_min": 448,  "range_max": 3648},
+  "gripper":       {"range_min": 2043, "range_max": 3478}
+}
