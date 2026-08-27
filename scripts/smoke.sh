@@ -111,6 +111,16 @@ echo "== budget kill =="
 expect budget "action budget exhausted" "supervisor reports the budget breach reason"
 expect budget "task KILLED" "zero-action grant → run killed before any command"
 
+echo "== non-finite refusal (#193) =="
+# tests/test_nonfinite.lex panics (1/0) on any failure; exit 0 on all-pass.
+# Pure grant/wire functions only — no sidecar, no ML deps.
+if lex run --allow-effects io tests/test_nonfinite.lex main >/dev/null 2>&1; then
+  pass "grant refuses NaN/inf: workspace, keep-out boxes, and all three clamps"
+else
+  bad "grant admitted a non-finite value (or a clamp stopped reporting what bit)"
+  lex run --allow-effects io tests/test_nonfinite.lex main 2>&1 | sed 's/^/      /'
+fi
+
 echo "== MCP grant gate =="
 # test_mcp_grant.lex panics (1/0) on any failure; exit 0 on all-pass.
 if scripts/demo.sh mcp_grant >/dev/null 2>&1; then

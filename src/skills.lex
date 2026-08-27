@@ -159,10 +159,14 @@ fn read_inlet(r :: t.Robot) -> [net, sense] Result[t.Pose, Str] {
 # grant ceiling before the command is sent.
 fn connect_charger(r :: t.Robot, force :: Float) -> [net, sense, actuate] t.Outcome {
   if grant.skill_allowed(r.grant, "connect_charger") {
-    let clamped := grant.clamp_force(r.grant, force)
-    match client.call(r.sidecar_url, "connect_charger", str.join(["{\"force\":", f(clamped), "}"], "")) {
-      Err(e) => Stalled(e),
-      Ok(resp) => parse_outcome(resp),
+    let seat := grant.clamp_force_checked(r.grant, force)
+    if seat.ok {
+      match client.call(r.sidecar_url, "connect_charger", str.join(["{\"force\":", f(seat.applied), "}"], "")) {
+        Err(e) => Stalled(e),
+        Ok(resp) => parse_outcome(resp),
+      }
+    } else {
+      Denied("non-finite seating force refused")
     }
   } else {
     Denied("skill connect_charger not in grant")
@@ -339,13 +343,22 @@ fn read_bystander(r :: t.Robot) -> [net, sense] Result[t.Vec3, Str] {
 # ── Actuating (grant-gated) ──────────────────────────────────────────────────
 fn move_to(r :: t.Robot, target :: t.Pose) -> [net, sense, actuate] t.Outcome {
   if grant.skill_allowed(r.grant, "move_to") {
-    if grant.in_workspace(r.grant, target.pos) {
-      match client.call(r.sidecar_url, "move_to", pose_json(target)) {
-        Err(e) => Stalled(e),
-        Ok(resp) => parse_outcome(resp),
+    # Non-finite is refused BEFORE the envelope is consulted, and with its own
+    # message. `in_workspace` refuses it too now, but as "outside granted
+    # workspace" -- a different diagnosis, and one that sends whoever reads it
+    # looking at the wrong thing. microduck keeps NotFinite and Range as
+    # separate limits for exactly that reason (#193).
+    if grant.pose_finite(target) {
+      if grant.in_workspace(r.grant, target.pos) {
+        match client.call(r.sidecar_url, "move_to", pose_json(target)) {
+          Err(e) => Stalled(e),
+          Ok(resp) => parse_outcome(resp),
+        }
+      } else {
+        Denied(str.join(["target outside granted workspace (", grant.ws_str(r.grant), ")"], ""))
       }
     } else {
-      Denied(str.join(["target outside granted workspace (", grant.ws_str(r.grant), ")"], ""))
+      Denied("non-finite target refused (x, y, z, rx, ry, rz must be finite)")
     }
   } else {
     Denied("skill move_to not in grant")
@@ -354,10 +367,14 @@ fn move_to(r :: t.Robot, target :: t.Pose) -> [net, sense, actuate] t.Outcome {
 
 fn grasp(r :: t.Robot, force :: Float) -> [net, sense, actuate] t.Outcome {
   if grant.skill_allowed(r.grant, "grasp") {
-    let clamped := grant.clamp_grip(r.grant, force)
-    match client.call(r.sidecar_url, "grasp", str.join(["{\"force\":", f(clamped), "}"], "")) {
-      Err(e) => Stalled(e),
-      Ok(resp) => parse_outcome(resp),
+    let grip := grant.clamp_grip_checked(r.grant, force)
+    if grip.ok {
+      match client.call(r.sidecar_url, "grasp", str.join(["{\"force\":", f(grip.applied), "}"], "")) {
+        Err(e) => Stalled(e),
+        Ok(resp) => parse_outcome(resp),
+      }
+    } else {
+      Denied("non-finite grip force refused")
     }
   } else {
     Denied("skill grasp not in grant")
@@ -410,10 +427,18 @@ fn actuate_tool(r :: t.Robot, power :: Float, target :: t.Pose, tool_lo :: t.Vec
         Err(e) => Stalled(str.concat("workpiece sensor: ", e)),
         Ok(ws) => {
           if ws.clamped {
-            let safe_power := if power > max_power {
-              max_power
+            # `if power > max_power` is false for NaN, so before #193 a
+            # non-finite power went to the tool unclamped. The bound is not a
+            # grant field (it is this call's argument), so the finiteness test
+            # is explicit rather than a clamp_*_checked.
+            let safe_power := if grant.is_finite(power) {
+              if power > max_power {
+                max_power
+              } else {
+                power
+              }
             } else {
-              power
+              0.0
             }
             let body := str.join(["{\"power\":", f(safe_power), ",\"x\":", f(target.pos.x), ",\"y\":", f(target.pos.y), ",\"z\":", f(target.pos.z), "}"], "")
             match client.call(r.sidecar_url, "fire_tool", body) {
@@ -443,14 +468,18 @@ fn actuate_tool(r :: t.Robot, power :: Float, target :: t.Pose, tool_lo :: t.Vec
 # like move_to: skill allowed + target inside the arm grant's workspace box.
 fn move_arm(r :: t.Robot, arm :: Str, target :: t.Pose) -> [net, sense, actuate] t.Outcome {
   if grant.skill_allowed(r.grant, "move_arm") {
-    if grant.in_workspace(r.grant, target.pos) {
-      let body := str.join(["{\"arm\":\"", arm, "\",\"x\":", f(target.pos.x), ",\"y\":", f(target.pos.y), ",\"z\":", f(target.pos.z), ",\"rx\":", f(target.rx), ",\"ry\":", f(target.ry), ",\"rz\":", f(target.rz), "}"], "")
-      match client.call(r.sidecar_url, "move_arm", body) {
-        Err(e) => Stalled(e),
-        Ok(resp) => parse_outcome(resp),
+    if grant.pose_finite(target) {
+      if grant.in_workspace(r.grant, target.pos) {
+        let body := str.join(["{\"arm\":\"", arm, "\",\"x\":", f(target.pos.x), ",\"y\":", f(target.pos.y), ",\"z\":", f(target.pos.z), ",\"rx\":", f(target.rx), ",\"ry\":", f(target.ry), ",\"rz\":", f(target.rz), "}"], "")
+        match client.call(r.sidecar_url, "move_arm", body) {
+          Err(e) => Stalled(e),
+          Ok(resp) => parse_outcome(resp),
+        }
+      } else {
+        Denied(str.join([arm, " arm target outside granted workspace (", grant.ws_str(r.grant), ")"], ""))
       }
     } else {
-      Denied(str.join([arm, " arm target outside granted workspace (", grant.ws_str(r.grant), ")"], ""))
+      Denied(str.join([arm, " arm: non-finite target refused (x, y, z, rx, ry, rz must be finite)"], ""))
     }
   } else {
     Denied("skill move_arm not in grant")
@@ -461,11 +490,15 @@ fn move_arm(r :: t.Robot, arm :: Str, target :: t.Pose) -> [net, sense, actuate]
 # before the command is sent (the sidecar's firmware floor caps it again).
 fn grasp_arm(r :: t.Robot, arm :: Str, force :: Float) -> [net, sense, actuate] t.Outcome {
   if grant.skill_allowed(r.grant, "grasp_arm") {
-    let clamped := grant.clamp_grip(r.grant, force)
-    let body := str.join(["{\"arm\":\"", arm, "\",\"force\":", f(clamped), "}"], "")
-    match client.call(r.sidecar_url, "grasp_arm", body) {
-      Err(e) => Stalled(e),
-      Ok(resp) => parse_outcome(resp),
+    let grip := grant.clamp_grip_checked(r.grant, force)
+    if grip.ok {
+      let body := str.join(["{\"arm\":\"", arm, "\",\"force\":", f(grip.applied), "}"], "")
+      match client.call(r.sidecar_url, "grasp_arm", body) {
+        Err(e) => Stalled(e),
+        Ok(resp) => parse_outcome(resp),
+      }
+    } else {
+      Denied(str.join([arm, " arm: non-finite grip force refused"], ""))
     }
   } else {
     Denied("skill grasp_arm not in grant")
@@ -662,15 +695,23 @@ fn list_visible_items(vision_url :: Str, image_b64 :: Str) -> [net] Result[List[
 fn move_base(r :: t.Robot, target :: t.Vec3, speed :: Float) -> [net, sense, actuate] t.Outcome {
   if grant.skill_allowed(r.grant, "move_base") {
     let flat := { x: target.x, y: target.y, z: 0.0 }
-    if grant.in_workspace(r.grant, flat) {
-      let v := grant.clamp_velocity(r.grant, speed)
-      let body := str.join(["{\"x\":", f(flat.x), ",\"y\":", f(flat.y), ",\"speed\":", f(v), "}"], "")
-      match client.call(r.sidecar_url, "move_base", body) {
-        Err(e) => Stalled(e),
-        Ok(resp) => parse_outcome(resp),
+    let vel := grant.clamp_velocity_checked(r.grant, speed)
+    if grant.vec_finite(flat) {
+      if vel.ok {
+        if grant.in_workspace(r.grant, flat) {
+          let body := str.join(["{\"x\":", f(flat.x), ",\"y\":", f(flat.y), ",\"speed\":", f(vel.applied), "}"], "")
+          match client.call(r.sidecar_url, "move_base", body) {
+            Err(e) => Stalled(e),
+            Ok(resp) => parse_outcome(resp),
+          }
+        } else {
+          Denied(str.join(["base target outside granted floor area (", grant.ws_str(r.grant), ")"], ""))
+        }
+      } else {
+        Denied("non-finite base speed refused")
       }
     } else {
-      Denied(str.join(["base target outside granted floor area (", grant.ws_str(r.grant), ")"], ""))
+      Denied("non-finite base target refused (x, y must be finite)")
     }
   } else {
     Denied("skill move_base not in grant")

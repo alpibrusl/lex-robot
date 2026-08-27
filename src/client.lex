@@ -2,8 +2,22 @@
 #
 # The sidecar exposes each skill as POST <url>/skill/<name> with a JSON body,
 # returning a JSON result. (Streaming sensor/state is a later WebSocket add via
-# net.dial_ws — see DESIGN.md.) Localhost only, so no auth headers are needed,
-# which also sidesteps std.http's lack of custom-header support.
+# net.dial_ws — see DESIGN.md.)
+#
+# NO AUTH HEADER IS SENT, and "localhost" is not the reason it is safe to omit
+# one — it isn't. A loopback port is reachable by every process and every user
+# on the box, which is the hole lex-robot#196 names: today, anything on the Pi
+# can POST /skill/move_arm. The sidecar now has a perimeter (a bearer token
+# and, over a unix socket, an SO_PEERCRED allow-list — see SIDECAR.md), but
+# this client can use neither yet:
+#
+#   - the socket needs a `net.dial_unix` builtin lex 0.10.11 does not have;
+#   - a token needs either `[env]` on every skill signature (widening the
+#     audited effect row of the whole surface — `lex agent-guidelines` §1.2)
+#     or a new field on `t.Robot` that every literal in the repo would grow.
+#
+# So enabling the token gate refuses Lex callers on mutating skills. The
+# sidecar says so at startup. Closing this is the follow-up in #196.
 
 import "std.str" as str
 

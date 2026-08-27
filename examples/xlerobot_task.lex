@@ -24,6 +24,7 @@ import "std.io"    as io
 import "std.str"   as str
 import "std.int"   as int
 import "std.list"  as list
+import "std.float" as flt
 import "std.time"  as time
 
 import "lex-trail/src/event" as ev
@@ -33,6 +34,7 @@ import "lex-games/src/games/robot_task" as rt
 import "lex-games/src/arena/rank"       as rank
 
 import "../src/types"  as t
+import "../src/grant"  as grant
 import "../src/skills" as skills
 import "../src/wire"   as wire
 
@@ -90,10 +92,16 @@ fn run_mission(url :: Str) -> [net, sense, actuate, io, time] Chain {
   let __3 := io.print(str.concat("  [exec] left arm -> cup      ", wire.outcome_str(o3)))
   let c5 := emit(c4, "execute", wire.skill_payload_for("move_to", arms.grant, 0.35, 0.0, 0.45, 0.0, o3))
 
-  # 3. grasp at the grant ceiling (15 N — the referee re-checks force <= max_grip)
-  let o4 := skills.grasp_arm(arms, "left", 15.0)
-  let __4 := io.print(str.concat("  [exec] left grasp 15N       ", wire.outcome_str(o4)))
-  let c6 := emit(c5, "execute", wire.skill_payload_for("grasp", arms.grant, 0.35, 0.0, 0.45, 15.0, o4))
+  # 3. grasp ABOVE the grant ceiling: ask for 25 N against a 15 N ceiling. The
+  # clamp holds it to 15 (the referee re-checks force <= max_grip, and still
+  # passes), and — since #194 — the trail records BOTH numbers plus the limit
+  # that bit. Without that, a replayer sees 15 N and cannot tell "asked for 15"
+  # from "asked for 25 and was held to 15"; the second is the one the audit
+  # exists to prove.
+  let grip := grant.clamp_grip_checked(arms.grant, 25.0)
+  let o4 := skills.grasp_arm(arms, "left", 25.0)
+  let __4 := io.print(str.join(["  [exec] left grasp 25N req   ", wire.outcome_str(o4), " (applied ", flt.to_str(grip.applied), "N, limited_by ", wire.limits_json(grip.limits), ")"], ""))
+  let c6 := emit(c5, "execute", wire.skill_payload_clamped("grasp", arms.grant, 0.35, 0.0, 0.45, grip, o4))
 
   # 4. carry it home
   let o5 := skills.move_base(base, { x: 1.0, y: 1.5, z: 0.0 }, 0.4)
