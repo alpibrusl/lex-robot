@@ -40,3 +40,11 @@ jobs:
 
       - name: Smoke (type-check + 5 governance demos)
         run: bash scripts/smoke.sh
+
+      # The sidecar's perimeter (bind guard, token/peer gates, base deadman).
+      # Stdlib-only on both sides — the live tests drive the Tier-1 stub, so no
+      # lerobot, mujoco or numpy is pulled in and this stays a fast job.
+      - name: Perimeter tests (sidecar/perimeter.py)
+        run: |
+          python -m pip install --quiet pytest
+          python -m pytest sidecar/test_perimeter.py sidecar/test_perimeter_live.py -q
