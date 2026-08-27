@@ -302,6 +302,120 @@ def cmd_solve(a):
     return 0
 
 
+def cmd_verify(a):
+    """Comprobacion con poses NUEVAS, que no entraron en la calibracion.
+
+    La dispersion que imprime 'solve' mide consistencia interna: cuanto se
+    parecen entre si las estimaciones del ajuste con sus propios datos. Es
+    necesaria pero no suficiente -- el metodo de tocar el tablero tambien era
+    consistente consigo mismo y estaba a 13 mm de la realidad.
+
+    Aqui el brazo va a poses distintas de las usadas para calibrar y en cada una
+    se compara donde PREDICE el modelo que esta el tablero respecto a la camara
+    con donde lo VE. La punta no interviene, asi que no hace falta conocer el
+    desfase de la herramienta.
+    """
+    from lerobot.model.kinematics import RobotKinematics
+    modelo = json.loads(Path(a.modelo).read_text())
+    T_bt = np.array(modelo["T_tablero_en_brazo"])
+    Rgc = np.array(modelo["R_camara_en_pinza"])
+    tgc = np.array(modelo["camara_en_pinza_mm"])
+    X = np.linalg.inv(np.block([[Rgc, tgc.reshape(3, 1)],
+                                [np.zeros((1, 3)), np.ones((1, 1))]]))
+    K = np.array(modelo["intrinsecos_muneca"]["K"])
+    dist = np.array(modelo["intrinsecos_muneca"]["dist"])
+    op = objp()
+
+    cap = cv2.VideoCapture(WRIST_CAM[a.arm], cv2.CAP_V4L2)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, a.width)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, a.height)
+    bus = open_bus(a.arm)
+    crit = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 40, 0.001)
+    kin = RobotKinematics(urdf_path=os.environ["LEX_XLE_URDF_PATH"],
+                          target_frame_name="gripper_frame_link",
+                          joint_names=ARM)
+
+    def medir():
+        for _ in range(6):
+            ok, f = cap.read()
+        if not ok:
+            return None
+        g = cv2.cvtColor(f, cv2.COLOR_BGR2GRAY)
+        found, c = cv2.findChessboardCorners(
+            g, (NX, NY),
+            cv2.CALIB_CB_ADAPTIVE_THRESH + cv2.CALIB_CB_NORMALIZE_IMAGE)
+        if not found:
+            return None
+        c = cv2.cornerSubPix(g, c, (11, 11), (-1, -1), crit)
+        ok2, rv, tv = cv2.solvePnP(op, c, K, dist)
+        T = np.eye(4); T[:3, :3] = cv2.Rodrigues(rv)[0]; T[:3, 3] = tv.ravel()
+        return T, c
+
+    seed = {j: float(bus.read("Present_Position", j)) for j in ARM}
+    for j in ARM:
+        bus.write("Torque_Limit", j, a.torque, normalize=False)
+    bus.sync_write("Goal_Position", seed)
+    for j in ARM:
+        bus.write("Torque_Enable", j, 1)
+    if medir() is None:
+        print("FALLO: desde la pose actual la camara de muneca no ve el tablero")
+        cap.release(); bus.disconnect(disable_torque=False)
+        return 1
+
+    D = a.amplitud
+    # desvios deliberadamente distintos de los de 'auto', para que ninguna pose
+    # de comprobacion coincida con una de calibracion
+    nuevos = []
+    for s1 in (+1, -1):
+        nuevos.append({"shoulder_pan": s1 * D * 0.8, "wrist_flex": -s1 * D * 0.9})
+        nuevos.append({"elbow_flex": s1 * D * 0.6, "wrist_roll": s1 * D * 1.1})
+        nuevos.append({"shoulder_lift": s1 * D * 0.5, "shoulder_pan": -s1 * D * 0.6})
+        nuevos.append({"wrist_flex": s1 * D * 0.7, "wrist_roll": -s1 * D * 0.8})
+
+    errores, cur = [], dict(seed)
+    try:
+        for i, dd in enumerate(nuevos):
+            tgt = {j: seed[j] + dd.get(j, 0.0) for j in ARM}
+            _mover(bus, cur, tgt); cur = tgt
+            q = np.array([bus.read("Present_Position", j) for j in ARM])
+            m = medir()
+            if m is None:
+                print(f"   {i+1:2d}/{len(nuevos)}  tablero fuera de cuadro", flush=True)
+                continue
+            T_ct_visto, c = m
+            T_bg = kin.forward_kinematics(q).copy(); T_bg[:3, 3] *= 1000.0
+            # el modelo es T_bt = T_bg @ X @ T_ct, luego al despejar T_ct sale
+            # inv(X) delante. Ponerlo sin invertir da 169 grados de error, que
+            # es la firma de una inversion, no de un ajuste malo.
+            T_ct_pred = np.linalg.inv(X) @ np.linalg.inv(T_bg) @ T_bt
+            err_mm = float(np.linalg.norm(T_ct_pred[:3, 3] - T_ct_visto[:3, 3]))
+            Rrel = T_ct_pred[:3, :3].T @ T_ct_visto[:3, :3]
+            err_deg = float(np.degrees(np.arccos(
+                np.clip((np.trace(Rrel) - 1) / 2, -1, 1))))
+            # error donde importa: reproyectar las esquinas con la pose predicha
+            rp, _ = cv2.projectPoints(op, cv2.Rodrigues(T_ct_pred[:3, :3])[0],
+                                      T_ct_pred[:3, 3], K, dist)
+            err_px = float(np.sqrt(((rp.reshape(-1, 2)
+                                     - c.reshape(-1, 2)) ** 2).sum(1).mean()))
+            errores.append((err_mm, err_deg, err_px))
+            print(f"   {i+1:2d}/{len(nuevos)}  {err_mm:6.1f} mm  {err_deg:5.2f} deg"
+                  f"  {err_px:6.1f} px", flush=True)
+        _mover(bus, cur, seed)
+    finally:
+        cap.release()
+        bus.disconnect(disable_torque=False)
+
+    if not errores:
+        print("\nFALLO: ninguna pose de comprobacion vio el tablero")
+        return 1
+    e = np.array(errores)
+    print(f"\n{len(errores)} poses NUEVAS (ninguna se uso para calibrar)")
+    print(f"   error de posicion  media {e[:,0].mean():6.1f} mm   max {e[:,0].max():6.1f} mm")
+    print(f"   error de angulo    media {e[:,1].mean():6.2f} deg  max {e[:,1].max():6.2f} deg")
+    print(f"   reproyeccion       media {e[:,2].mean():6.1f} px   max {e[:,2].max():6.1f} px")
+    return 0
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -328,6 +442,14 @@ def main():
     u.add_argument("--height", type=int, default=720)
     u.add_argument("--out", default="vistas_muneca.npz")
     u.set_defaults(fn=cmd_auto)
+    q = s.add_parser("verify", help="comprobar el modelo con poses nuevas")
+    q.add_argument("--arm", choices=PORTS, default="right")
+    q.add_argument("--modelo", default="calibration/handeye_right.json")
+    q.add_argument("--amplitud", type=float, default=9.0)
+    q.add_argument("--torque", type=int, default=350)
+    q.add_argument("--width", type=int, default=1280)
+    q.add_argument("--height", type=int, default=720)
+    q.set_defaults(fn=cmd_verify)
     v = s.add_parser("solve")
     v.add_argument("--views-file", default="vistas_muneca.npz")
     v.add_argument("--out", default="calibration/handeye_right.json")

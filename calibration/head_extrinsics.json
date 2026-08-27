@@ -27,5 +27,13 @@
   "fx": 0.47313,
   "fy": 0.62956,
   "cx0": 0.5353,
-  "cy0": 0.5111
+  "cy0": 0.5111,
+  "verificacion_poses_nuevas": {
+    "poses": 5,
+    "error_pos_medio_mm": 7.2,
+    "error_pos_max_mm": 9.2,
+    "error_ang_medio_deg": 0.99,
+    "reproyeccion_media_px": 17.3,
+    "nota": "Poses distintas de las 13 de calibracion. Este es el error real; la dispersion de 5.3 mm es consistencia interna y sale optimista."
+  }
 }
