@@ -1,0 +1,44 @@
+{
+  "_nota": "Extrinsecos de la camara de cabeza medidos por toque directo, 8 puntos. Residuo medio 13.4 mm: dominado por la precision de los ceros articulares, que salen del punto medio de recorridos barridos a mano (~2 grados de holgura, que a 400 mm de alcance son ~14 mm). NO sirve para el objetivo de 5 mm.",
+  "residuo_medio_mm": 13.37,
+  "residuo_max_mm": 27.84,
+  "toques": [
+    "0,1",
+    "0,5",
+    "2,3",
+    "4,2",
+    "4,5",
+    "6,1",
+    "8,1",
+    "8,3"
+  ],
+  "desfase_punta_mm": [
+    -25.5,
+    36.4,
+    -70.1
+  ],
+  "pos": [
+    0.18317,
+    -0.12526,
+    0.3755
+  ],
+  "right": [
+    0.06555,
+    -0.99785,
+    9e-05
+  ],
+  "down": [
+    -0.90087,
+    -0.05922,
+    -0.43004
+  ],
+  "forward": [
+    0.42912,
+    0.02811,
+    -0.90281
+  ],
+  "fx": 0.47313,
+  "fy": 0.62956,
+  "cx0": 0.5353,
+  "cy0": 0.5111
+}
