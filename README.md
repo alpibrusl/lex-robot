@@ -1395,3 +1395,9 @@ enforced.
   inside" above) — this is a deliberate, unfixable-in-process gap, not an
   oversight; [`deploy/Caddyfile.example`](deploy/Caddyfile.example) is the
   sanctioned mitigation for a real public deployment.
+
+## License
+
+Copyright (c) 2026 lex-robot contributors.
+
+Licensed under the [EUPL-1.2](LICENSE) — the European Union Public Licence, as used across the `lex-*` ecosystem.
