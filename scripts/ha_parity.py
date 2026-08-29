@@ -79,6 +79,16 @@ REAL_CASES = [
     # Unknown domain: guessed at switch.*, then refused rather than sent.
     ("POST", "/skill/appliance_start", b'{"entity":"sensor.pvpc"}'),
     ("POST", "/skill/read_state", b'{"entity":"sensor.pvpc"}'),
+    # An appliance that accepts every call and changes nothing — a TV without
+    # Wake-on-LAN, a washer without Remote Start. Same-domain, so the guard
+    # cannot see it; both ports must reach the same unhappy conclusion, and
+    # must take the same time to reach it (LEX_HA_VERIFY_MS is set low in
+    # smoke.sh so this does not dominate the run).
+    ("POST", "/skill/appliance_start", b'{"entity":"vacuum.deaf"}'),
+    ("POST", "/skill/read_state", b'{"entity":"vacuum.deaf"}'),
+    ("POST", "/skill/appliance_start", b'{"entity":"media_player.no_wol"}'),
+    # Idempotent: already off, asked to stop. Verified, not timed out.
+    ("POST", "/skill/appliance_stop", b'{"entity":"switch.washer"}'),
     # No tariff entity configured: both must decline the same way.
     ("POST", "/skill/read_tariff", b"{}"),
     ("POST", "/skill/read_tariff", b'{"at":"03:00"}'),

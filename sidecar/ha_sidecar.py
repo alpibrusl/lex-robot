@@ -15,8 +15,14 @@ Skills (POST /skill/<name>, same protocol as every lex-robot sidecar):
     read_state   {"entity": "..."}          -> {"entity","state","detail"?}
     read_tariff  {"at": "HH:MM"?}           -> {"price_cents_kwh": N, "period":
                                                 "peak|flat|valley", "at": "HH:MM"}
-    appliance_start {"entity": "..."}       -> outcome
-    appliance_stop  {"entity": "..."}       -> outcome
+    appliance_start {"entity": "..."}       -> outcome + "verified"
+    appliance_stop  {"entity": "..."}       -> outcome + "verified"
+
+`verified` says whether the actuation was EVIDENCED by reading the entity's
+state back, as opposed to merely accepted by HA. `reached` with
+`"verified": false` means the call was dispatched and we cannot show it did
+anything; `timeout` means HA accepted it and the state never changed. Tune the
+wait with LEX_HA_VERIFY_MS (default 5000; 0 turns verification off).
 
 Money/price convention: INTEGER cents per kWh (lex-os: never floats in a
 budget). The tariff shape follows the Spanish PVPC three-period day —
@@ -53,6 +59,7 @@ whatever HA grants it — scope it to the entities you mean to govern.
 
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 
@@ -95,6 +102,34 @@ FALLBACK_SERVICES = ("switch.turn_on", "switch.turn_off")
 # The one HA domain whose services deliberately act on entities of any domain.
 GENERIC_DOMAIN = "homeassistant"
 
+# What each service is trying to make true, in HA's own state vocabulary. This
+# is how an actuation is EVIDENCED rather than assumed: the domain guard catches
+# a call that cannot work, but a Samsung TV without Wake-on-LAN and a Samsung
+# washer whose Remote Start is not armed both accept a well-formed, same-domain
+# call and quietly ignore it. Only reading the state back distinguishes those
+# from a success. See issue #198.
+EXPECTED_STATE = {
+    "vacuum.start": "cleaning",
+    "vacuum.return_to_base": "returning",
+    "vacuum.pause": "paused",
+    "vacuum.stop": "idle",
+    "switch.turn_on": "on",
+    "switch.turn_off": "off",
+    "media_player.turn_on": "on",
+    "media_player.turn_off": "off",
+}
+
+# How long to wait for the state to show the command landed, and how often to
+# look. Appliances are not instant — a vacuum takes a moment to report
+# `cleaning` — so a single immediate re-read would report false failures, and a
+# stop that wrongly claims it failed is its own kind of harm.
+#
+# 0 disables verification: for an entity whose state genuinely never reflects
+# the command, waiting the full budget on every call to learn nothing is worse
+# than saying plainly that the outcome is unverified.
+VERIFY_MS = int(os.environ.get("LEX_HA_VERIFY_MS", "5000"))
+VERIFY_POLL_MS = int(os.environ.get("LEX_HA_VERIFY_POLL_MS", "250"))
+
 
 def domain_of(entity_or_service):
     """The part before the first dot. `vacuum.xiaomi_s10` -> `vacuum`."""
@@ -115,10 +150,10 @@ def refusal_reason(service, entity):
     This is the cheap half of "never report a success we cannot evidence": a
     service from one domain aimed at an entity from another cannot do anything,
     so it is refused BEFORE dispatch rather than sent and misread as reached.
-    It does not catch every silent no-op — a TV that needs Wake-on-LAN and a
-    washer whose Remote Start is not armed both accept a same-domain call and
-    ignore it. Those need the state re-read that is still to come; this catches
-    the class that is decidable without asking HA anything.
+    It is the half decidable without asking HA anything. It does not catch a
+    same-domain call that is accepted and ignored — a TV that needs Wake-on-LAN,
+    a washer whose Remote Start is not armed — and those are caught instead by
+    reading the state back (EXPECTED_STATE / `_await_state`).
     """
     sdom, edom = domain_of(service), domain_of(entity)
     if sdom == edom or sdom == GENERIC_DOMAIN:
@@ -161,11 +196,15 @@ class StubHouse:
         return {"price_cents_kwh": price, "period": period, "at": f"{hour:02d}:00"}
 
     def _set(self, entity, running, verb):
+        # `verified` is not decoration here: the stub sets the state itself, so
+        # it has read-back evidence by construction, and answering with the same
+        # shape as RealHouse keeps the two houses swappable for a caller.
         if entity not in self.entities:
-            return {"outcome": "stalled",
+            return {"outcome": "stalled", "verified": False,
                     "detail": f"(stub) unknown entity '{entity}'"}
         self.entities[entity] = "running" if running else ("idle" if entity.startswith("washer") else "off")
-        return {"outcome": "reached", "detail": f"(stub) {entity} {verb}"}
+        return {"outcome": "reached", "verified": True,
+                "detail": f"(stub) {entity} {verb}"}
 
     def start(self, entity):
         return self._set(entity, True, "started")
@@ -228,12 +267,67 @@ class RealHouse:
             return {"outcome": "stalled", "detail": f"HA service {service} failed: {e}"}
         return {"outcome": "reached", "detail": f"{entity} {verb} via {service}"}
 
+    def _state_now(self, entity):
+        """The bare state string, or "" if it could not be read.
+
+        "" rather than None so the Lex port can say the same thing: an
+        unreadable state ends up quoted in the timeout detail, and `'None'`
+        against `''` would be a parity divergence in the error path.
+        """
+        try:
+            return str(self._req("GET", f"/api/states/{entity}").get("state", ""))
+        except Exception:
+            return ""
+
+    def _await_state(self, entity, expected):
+        """Poll until the entity reports `expected`, or the budget runs out.
+
+        Returns the last state seen, or None. Deliberately polls rather than
+        reading once: an appliance that IS obeying may take a second to say so,
+        and calling that a failure would be its own false report.
+
+        Note this also settles the idempotent case for free — turning off an
+        already-off TV changes nothing, and the first read sees `off` and is
+        satisfied, rather than waiting the whole budget for a change that
+        correctly never comes.
+        """
+        deadline = time.monotonic() + VERIFY_MS / 1000.0
+        state = self._state_now(entity)
+        while state != expected and time.monotonic() < deadline:
+            time.sleep(VERIFY_POLL_MS / 1000.0)
+            state = self._state_now(entity)
+        return state
+
     def _dispatch(self, entity, kind, override, verb):
         service = service_for(entity, kind, override)
         why = refusal_reason(service, entity)
         if why:
-            return {"outcome": "stalled", "detail": why}
-        return self._call_service(service, entity, verb)
+            return {"outcome": "stalled", "detail": why, "verified": False}
+
+        out = self._call_service(service, entity, verb)
+        if out["outcome"] != "reached":
+            return {**out, "verified": False}
+
+        expected = EXPECTED_STATE.get(service)
+        if expected is None or VERIFY_MS <= 0:
+            # Dispatched, and honestly labelled as unevidenced rather than
+            # dressed up as a confirmed actuation.
+            unknown = ("verification off" if VERIFY_MS <= 0
+                       else f"no expected state for {service}")
+            return {**out, "verified": False,
+                    "detail": f"{out['detail']} (unverified: {unknown})"}
+
+        seen = self._await_state(entity, expected)
+        if seen == expected:
+            return {**out, "verified": True,
+                    "detail": f"{out['detail']}; {entity} is {seen}"}
+        return {
+            "outcome": "timeout",
+            "verified": False,
+            "detail": (f"{service} was accepted by HA, but {entity} is still "
+                       f"'{seen}' after {VERIFY_MS}ms — expected '{expected}'. "
+                       f"The call did nothing observable."),
+        }
 
     def start(self, entity):
         return self._dispatch(entity, "start", START_SERVICE, "started")
@@ -253,12 +347,14 @@ def handle_skill(name, args):
     if name == "appliance_start":
         entity = args.get("entity", "")
         if not entity:
-            return {"outcome": "stalled", "detail": "appliance_start needs an entity"}
+            return {"outcome": "stalled", "verified": False,
+                    "detail": "appliance_start needs an entity"}
         return HOUSE.start(entity)
     if name == "appliance_stop":
         entity = args.get("entity", "")
         if not entity:
-            return {"outcome": "stalled", "detail": "appliance_stop needs an entity"}
+            return {"outcome": "stalled", "verified": False,
+                    "detail": "appliance_stop needs an entity"}
         return HOUSE.stop(entity)
     return {"error": f"unknown skill: {name}"}
 
