@@ -67,7 +67,13 @@ if bad:
     print("\n*** RECHAZADA ***"); [print("   ",b) for b in bad]; sys.exit(2)
 json.dump({"rms_px":float(rms),"width":W,"height":H,"K":K.tolist(),"dist":k.tolist(),
            "views":len(kept),"board":f"{COLS}x{ROWS}","square_mm":sq,
-           "camera":f"index 0 (darwin)","pooled_from":FILES,"diversity":kept,
+           "camera":f"index 0 (darwin)","pooled_from":FILES,
+           # Las ESQUINAS no se copian aqui: ya estan en los ficheros por tanda
+           # que lista pooled_from, y duplicarlas creaba un fichero de ~20k
+           # lineas y una segunda copia que se queda desfasada en cuanto
+           # alguien toque una tanda. Este resumen por vista basta para leerlo;
+           # para reajustar, se vuelve a correr este script.
+           "diversity":[{k:v for k,v in m.items() if k != "corners"} for m in kept],
            "normalized":{"fx":fx/W,"fy":fy/H,"cx0":cx/W,"cy0":cy/H}},
           open("calibration/head_intrinsics_mac_640x480.pooled.json","w"), indent=2)
 print("\nACEPTADA -> calibration/head_intrinsics_mac_640x480.pooled.json")
