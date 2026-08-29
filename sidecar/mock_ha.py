@@ -38,13 +38,28 @@ TOKEN = "mock-long-lived-token"
 KNOWN_SERVICES = {
     "vacuum": {"start", "stop", "pause", "return_to_base", "locate"},
     "switch": {"turn_on", "turn_off"},
+    "media_player": {"turn_on", "turn_off", "play_media"},
+    # The generic domain, whose services deliberately act on any entity.
+    "homeassistant": {"turn_on", "turn_off"},
 }
 
 # What a service call does to an entity's state, when domain and entity agree.
+# These are Home Assistant's own state strings: a switch and a media_player are
+# `on`/`off`, and a vacuum has its own vocabulary. Getting these right matters
+# now that the sidecar verifies an actuation by reading the state back.
 _EFFECT = {
     "start": "cleaning", "return_to_base": "returning", "stop": "idle",
-    "pause": "paused", "turn_on": "running", "turn_off": "off",
+    "pause": "paused", "turn_on": "on", "turn_off": "off",
 }
+
+
+# Entities that accept every service call and change nothing — HA answers 200,
+# the appliance ignores it. This is not an edge case invented for a test: it is
+# what a Samsung TV without Wake-on-LAN does to `media_player.turn_on`, and what
+# a Samsung washer whose Remote Start is not armed does to a start. Both are
+# same-domain calls, so the domain guard cannot see them; only reading the state
+# back can. See issue #198.
+DEAF_ENTITIES = {"vacuum.deaf", "media_player.no_wol"}
 
 
 def default_states():
@@ -52,6 +67,10 @@ def default_states():
         "vacuum.xiaomi_s10": {"state": "docked", "attributes": {
             "battery_level": 100, "fan_speed": "balanced",
             "friendly_name": "Xiaomi S10"}},
+        "vacuum.deaf": {"state": "docked", "attributes": {
+            "friendly_name": "Accepts every call, does nothing"}},
+        "media_player.no_wol": {"state": "off", "attributes": {
+            "friendly_name": "Cannot be woken over the network"}},
         "switch.washer": {"state": "off", "attributes": {}},
         "sensor.pvpc": {"state": "0.11", "attributes": {}},
     }
@@ -100,7 +119,8 @@ def _make_handler(states, calls):
             # entity. HA says 200 and does nothing. See the module docstring.
             if entity and not entity.startswith(domain + "."):
                 return self._json([])
-            if entity in states and service in _EFFECT:
+            if (entity in states and service in _EFFECT
+                    and entity not in DEAF_ENTITIES):
                 states[entity]["state"] = _EFFECT[service]
             return self._json([])
 

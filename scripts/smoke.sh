@@ -270,7 +270,7 @@ rm -f "$gate"
 # pure functions.
 haq="$ROOT/.ha_lex.log"; hap="$ROOT/.ha_py.log"
 rm -f /tmp/lex-ha-8951.db
-LEX_ROBOT_SIDECAR_PORT=8951 lex run --allow-effects env,fs_write,io,net,sql \
+LEX_ROBOT_SIDECAR_PORT=8951 lex run --allow-effects env,fs_write,io,net,sql,time \
   "$ROOT/sidecar/ha_sidecar.lex" run >"$haq" 2>&1 &
 halex=$!
 LEX_ROBOT_SIDECAR_PORT=8952 "${PYTHON:-python3}" "$ROOT/sidecar/ha_sidecar.py" >"$hap" 2>&1 &
@@ -295,11 +295,11 @@ ham="$ROOT/.ha_mock.log"
 hamock=$!
 sleep 1
 rm -f /tmp/lex-ha-8951.db
-LEX_HA_URL=http://127.0.0.1:8123 LEX_HA_TOKEN=mock-long-lived-token \
-  LEX_ROBOT_SIDECAR_PORT=8951 lex run --allow-effects env,fs_write,io,net,sql \
+LEX_HA_URL=http://127.0.0.1:8123 LEX_HA_TOKEN=mock-long-lived-token LEX_HA_VERIFY_MS=600 \
+  LEX_ROBOT_SIDECAR_PORT=8951 lex run --allow-effects env,fs_write,io,net,sql,time \
   "$ROOT/sidecar/ha_sidecar.lex" run >"$haq" 2>&1 &
 halex=$!
-LEX_HA_URL=http://127.0.0.1:8123 LEX_HA_TOKEN=mock-long-lived-token \
+LEX_HA_URL=http://127.0.0.1:8123 LEX_HA_TOKEN=mock-long-lived-token LEX_HA_VERIFY_MS=600 \
   LEX_ROBOT_SIDECAR_PORT=8952 "${PYTHON:-python3}" "$ROOT/sidecar/ha_sidecar.py" >"$hap" 2>&1 &
 hapy=$!
 sleep 5

@@ -32,7 +32,7 @@
 #   LEX_ROBOT_SIDECAR_PORT           default 8900
 #
 # Run:
-#   lex run --allow-effects env,io,net,sql,fs_read,fs_write \
+#   lex run --allow-effects env,io,net,sql,fs_read,fs_write,time \
 #     sidecar/ha_sidecar.lex run
 
 import "std.env" as env
@@ -42,6 +42,8 @@ import "std.io" as io
 import "std.str" as str
 
 import "std.int" as int
+
+import "std.time" as time
 
 import "std.float" as flt
 
@@ -274,6 +276,39 @@ fn refusal_reason(service :: Str, entity :: Str) -> Str
   }
 }
 
+# What each service is trying to make true, in HA's own state vocabulary. The
+# domain guard above catches a call that CANNOT work; this is how a call that
+# was accepted is shown to have actually DONE something. A Samsung TV without
+# Wake-on-LAN and a Samsung washer whose Remote Start is not armed both accept
+# a well-formed, same-domain call and quietly ignore it -- only reading the
+# state back tells those apart from a success. See issue #198.
+fn expected_states() -> List[(Str, Str)] {
+  [("vacuum.start", "cleaning"), ("vacuum.return_to_base", "returning"), ("vacuum.pause", "paused"), ("vacuum.stop", "idle"), ("switch.turn_on", "on"), ("switch.turn_off", "off"), ("media_player.turn_on", "on"), ("media_player.turn_off", "off")]
+}
+
+# "" when we cannot predict what this service should produce -- an override to
+# a service we do not model, for instance. Unpredictable is not the same as
+# failed, and the caller is told which it got.
+fn expected_state(service :: Str) -> Str
+  examples {
+    expected_state("vacuum.start") => "cleaning",
+    expected_state("vacuum.return_to_base") => "returning",
+    expected_state("switch.turn_off") => "off",
+    expected_state("media_player.turn_on") => "on",
+    expected_state("homeassistant.turn_on") => ""
+  }
+{
+  list.fold(expected_states(), "", fn (acc :: Str, kv :: (Str, Str)) -> Str {
+    match kv {
+      (k, v) => if k == service {
+        v
+      } else {
+        acc
+      },
+    }
+  })
+}
+
 # EUR/kWh -> integer cents, rounded rather than truncated. Prices are positive,
 # so +0.5 before truncation is the same as rounding; a negative tariff (which
 # real day-ahead markets do produce) would need a signed round, and this
@@ -329,6 +364,17 @@ fn cfg_tariff_entity() -> [env] Str {
   env_or("LEX_HA_TARIFF_ENTITY", "")
 }
 
+# How long to wait for the state to show the command landed, and how often to
+# look. Appliances are not instant -- a vacuum takes a moment to report
+# `cleaning` -- so a single immediate re-read would report false failures, and
+# a stop that wrongly claims it failed is its own kind of harm. 0 disables it.
+fn cfg_int(key :: Str, fallback :: Int) -> [env] Int {
+  match str.to_int(env_or(key, "")) {
+    Some(v) => v,
+    None => fallback,
+  }
+}
+
 fn cfg_stub_now() -> [env] Str {
   env_or("LEX_HA_STUB_NOW", "13:00")
 }
@@ -373,8 +419,17 @@ fn state_json(entity :: Str, state :: Str, detail :: Str) -> Str {
   str.join(["{", jstr("entity", entity), ",", jstr("state", state), ",", jstr("detail", detail), "}"], "")
 }
 
-fn outcome_json(outcome :: Str, detail :: Str) -> Str {
-  str.join(["{", jstr("outcome", outcome), ",", jstr("detail", detail), "}"], "")
+# `verified` says whether the actuation was EVIDENCED by reading the entity's
+# state back, as opposed to merely accepted by HA. Separate from `outcome` on
+# purpose: "dispatched" and "shown to have worked" are different claims, and
+# collapsing them is what #198 was.
+fn outcome_json_v(outcome :: Str, detail :: Str, verified :: Bool) -> Str {
+  let flag := if verified {
+    "true"
+  } else {
+    "false"
+  }
+  str.join(["{", jstr("outcome", outcome), ",", jstr("detail", detail), ",\"verified\":", flag, "}"], "")
 }
 
 fn error_json(detail :: Str) -> Str {
@@ -441,7 +496,7 @@ fn stub_read_state(db :: Db, entity :: Str) -> [sql] Str {
 
 fn stub_set(db :: Db, entity :: Str, running :: Bool, verb :: Str) -> [sql] Str {
   match stub_lookup(db, entity) {
-    None => outcome_json("stalled", str.join(["(stub) unknown entity '", entity, "'"], "")),
+    None => outcome_json_v("stalled", str.join(["(stub) unknown entity '", entity, "'"], ""), false),
     Some(_) => {
       let next := if running {
         "running"
@@ -450,7 +505,7 @@ fn stub_set(db :: Db, entity :: Str, running :: Bool, verb :: Str) -> [sql] Str 
       }
       let q := str.join(["UPDATE entities SET state = '", next, "' WHERE id = '", entity, "'"], "")
       let __lex_discard_5 := sql.exec(db, q, [])
-      outcome_json("reached", str.join(["(stub) ", entity, " ", verb], ""))
+      outcome_json_v("reached", str.join(["(stub) ", entity, " ", verb], ""), true)
     },
   }
 }
@@ -472,7 +527,7 @@ fn stub_read_tariff(at_raw :: Str, stub_now :: Str) -> Str {
 # ── The real house ────────────────────────────────────────────────────────────
 # Errors are passed through honestly -- an unreachable HA is a stalled outcome
 # carrying the reason, never a fabricated success.
-type Cfg = { url :: Str, token :: Str, start_service :: Str, stop_service :: Str, tariff_entity :: Str, stub_now :: Str, real :: Bool }
+type Cfg = { url :: Str, token :: Str, start_service :: Str, stop_service :: Str, tariff_entity :: Str, stub_now :: Str, real :: Bool, verify_ms :: Int, verify_poll_ms :: Int }
 
 fn http_err_str(e :: HttpError) -> Str {
   match e {
@@ -559,28 +614,87 @@ fn real_read_tariff(cfg :: Cfg, at :: Str) -> [net] Str {
   }
 }
 
-# Resolve the service from the entity, refuse what provably cannot work, and
-# only then spend a request on it.
-fn real_dispatch(cfg :: Cfg, entity :: Str, kind :: Str, override :: Str, verb :: Str) -> [net] Str {
+# Resolve the service from the entity, refuse what provably cannot work, spend
+# a request on what is left -- and then read the state back before claiming it
+# worked. Three gates, in increasing cost: the first two ask HA nothing.
+fn real_dispatch(cfg :: Cfg, entity :: Str, kind :: Str, override :: Str, verb :: Str) -> [net, time] Str {
   let service := service_for(entity, kind, override)
   let why := refusal_reason(service, entity)
-  if str.is_empty(why) {
-    real_call_service(cfg, service, entity, verb)
+  if not str.is_empty(why) {
+    outcome_json_v("stalled", why, false)
   } else {
-    outcome_json("stalled", why)
+    match real_call_service(cfg, service, entity, verb) {
+      Err(e) => outcome_json_v("stalled", e, false),
+      Ok(detail) => {
+        let expected := expected_state(service)
+        if str.is_empty(expected) or cfg.verify_ms <= 0 {
+          let unknown := if cfg.verify_ms <= 0 {
+            "verification off"
+          } else {
+            str.concat("no expected state for ", service)
+          }
+          outcome_json_v("reached", str.join([detail, " (unverified: ", unknown, ")"], ""), false)
+        } else {
+          let seen := await_state(cfg, entity, expected, cfg.verify_ms / cfg.verify_poll_ms)
+          if seen == expected {
+            outcome_json_v("reached", str.join([detail, "; ", entity, " is ", seen], ""), true)
+          } else {
+            outcome_json_v("timeout", str.join([service, " was accepted by HA, but ", entity, " is still '", seen, "' after ", int.to_str(cfg.verify_ms), "ms — expected '", expected, "'. The call did nothing observable."], ""), false)
+          }
+        }
+      },
+    }
   }
 }
 
-fn real_call_service(cfg :: Cfg, service :: Str, entity :: Str, verb :: Str) -> [net] Str {
+# Ok(detail) when HA accepted the call. Accepted is NOT the same as done --
+# `real_dispatch` is what turns this into a claim, and only after evidence.
+fn real_call_service(cfg :: Cfg, service :: Str, entity :: Str, verb :: Str) -> [net] Result[Str, Str] {
   match split_service(service) {
     (domain, name) => {
       let path := str.join(["/api/services/", domain, "/", name], "")
       let body := bytes.from_str(str.join(["{", jstr("entity_id", entity), "}"], ""))
       match ha_text(cfg, "POST", path, Some(body)) {
-        Err(e) => outcome_json("stalled", str.join(["HA service ", service, " failed: ", e], "")),
-        Ok(_) => outcome_json("reached", str.join([entity, " ", verb, " via ", service], "")),
+        Err(e) => Err(str.join(["HA service ", service, " failed: ", e], "")),
+        Ok(_) => Ok(str.join([entity, " ", verb, " via ", service], "")),
       }
     },
+  }
+}
+
+# The bare state string, or "" if it could not be read.
+fn real_state_now(cfg :: Cfg, entity :: Str) -> [net] Str {
+  match ha_text(cfg, "GET", str.concat("/api/states/", entity), None) {
+    Err(_) => "",
+    Ok(text) => match ha_state_field(text) {
+      Err(_) => "",
+      Ok(field) => match field {
+        None => "",
+        Some(st) => st,
+      },
+    },
+  }
+}
+
+# Poll until the entity reports `expected`, or the fuel runs out; returns the
+# last state seen. Polls rather than reading once because an appliance that IS
+# obeying may take a second to say so.
+#
+# Reading BEFORE the first sleep also settles the idempotent case for free:
+# turning off an already-off TV changes nothing, and the first read is
+# satisfied rather than waiting the whole budget for a change that correctly
+# never comes.
+fn await_state(cfg :: Cfg, entity :: Str, expected :: Str, fuel :: Int) -> [net, time] Str {
+  let seen := real_state_now(cfg, entity)
+  if seen == expected {
+    seen
+  } else {
+    if fuel <= 0 {
+      seen
+    } else {
+      let __slept := time.sleep_ms(cfg.verify_poll_ms)
+      await_state(cfg, entity, expected, fuel - 1)
+    }
   }
 }
 
@@ -613,7 +727,7 @@ fn arg_or_empty(o :: Option[Str]) -> Str {
   }
 }
 
-fn handle_skill(db :: Db, cfg :: Cfg, name :: Str, args :: SkillArgs) -> [net, sql] Str {
+fn handle_skill(db :: Db, cfg :: Cfg, name :: Str, args :: SkillArgs) -> [net, sql, time] Str {
   let entity := arg_or_empty(args.entity)
   let at := arg_or_empty(args.at)
   if name == "read_state" {
@@ -632,7 +746,7 @@ fn handle_skill(db :: Db, cfg :: Cfg, name :: Str, args :: SkillArgs) -> [net, s
     } else {
       if name == "appliance_start" {
         if str.is_empty(entity) {
-          outcome_json("stalled", "appliance_start needs an entity")
+          outcome_json_v("stalled", "appliance_start needs an entity", false)
         } else {
           if cfg.real {
             real_dispatch(cfg, entity, "start", cfg.start_service, "started")
@@ -643,7 +757,7 @@ fn handle_skill(db :: Db, cfg :: Cfg, name :: Str, args :: SkillArgs) -> [net, s
       } else {
         if name == "appliance_stop" {
           if str.is_empty(entity) {
-            outcome_json("stalled", "appliance_stop needs an entity")
+            outcome_json_v("stalled", "appliance_stop needs an entity", false)
           } else {
             if cfg.real {
               real_dispatch(cfg, entity, "stop", cfg.stop_service, "stopped")
@@ -709,7 +823,7 @@ fn strip_query(path :: Str) -> Str
 # route had the same latent break. Fixed there rather than reproduced here --
 # writing deliberately-wrong Lex to stay bug-compatible is not what "drop-in"
 # should mean, and scripts/ha_parity.py now pins the two together.
-fn handle(db :: Db, cfg :: Cfg, req :: Request) -> [net, sql] Response {
+fn handle(db :: Db, cfg :: Cfg, req :: Request) -> [net, sql, time] Response {
   if req.method == "GET" and strip_query(req.path) == "/health" {
     reply(200, health_json(cfg))
   } else {
@@ -730,13 +844,13 @@ fn handle(db :: Db, cfg :: Cfg, req :: Request) -> [net, sql] Response {
 fn load_cfg() -> [env] Cfg {
   let url := cfg_url()
   let token := cfg_token()
-  { url: url, token: token, start_service: cfg_start_service(), stop_service: cfg_stop_service(), tariff_entity: cfg_tariff_entity(), stub_now: cfg_stub_now(), real: use_ha(url, token) }
+  { url: url, token: token, start_service: cfg_start_service(), stop_service: cfg_stop_service(), tariff_entity: cfg_tariff_entity(), stub_now: cfg_stub_now(), real: use_ha(url, token), verify_ms: cfg_int("LEX_HA_VERIFY_MS", 5000), verify_poll_ms: cfg_int("LEX_HA_VERIFY_POLL_MS", 250) }
 }
 
 # fs_write is here and nowhere else: sql.open creates the stub house's DB file.
 # The request handler below does not carry it -- a skill call cannot write to
 # the filesystem, only to the two rows this file seeded.
-fn run() -> [env, io, net, sql, fs_write] Unit {
+fn run() -> [env, io, net, sql, fs_write, time] Unit {
   let cfg := load_cfg()
   let port := cfg_port()
   let mode := if cfg.real {
@@ -749,7 +863,7 @@ fn run() -> [env, io, net, sql, fs_write] Unit {
     Err(e) => io.print(str.concat("[ha] db error: ", e.message)),
     Ok(db) => {
       let __lex_discard_7 := init_stub(db)
-      net.serve_fn(port, fn (req :: Request) -> [net, sql] Response {
+      net.serve_fn(port, fn (req :: Request) -> [net, sql, time] Response {
         handle(db, cfg, req)
       })
     },

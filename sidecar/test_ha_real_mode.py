@@ -151,7 +151,7 @@ def test_one_sidecar_drives_a_vacuum_and_a_washer_at_once():
         assert sc.skill("appliance_start", entity=VACUUM)["outcome"] == "reached"
         assert sc.skill("appliance_start", entity=WASHER)["outcome"] == "reached"
         assert ha.state_of(VACUUM) == "cleaning"
-        assert ha.state_of(WASHER) == "running"
+        assert ha.state_of(WASHER) == "on"
         assert {c["service"] for c in ha.calls} == {"vacuum.start", "switch.turn_on"}
 
 
@@ -176,6 +176,70 @@ def test_a_homeassistant_domain_service_is_allowed_through():
             ha.url, LEX_HA_START_SERVICE="homeassistant.turn_on") as sc:
         sc.skill("appliance_start", entity=VACUUM)
         assert ha.calls[-1]["service"] == "homeassistant.turn_on"
+
+
+def test_a_confirmed_actuation_says_it_was_verified():
+    with MockHA() as ha, Sidecar(ha.url) as sc:
+        out = sc.skill("appliance_start", entity=VACUUM)
+        assert out["outcome"] == "reached"
+        assert out["verified"] is True
+        assert "cleaning" in out["detail"]
+
+
+def test_an_appliance_that_accepts_and_ignores_is_not_reported_as_reached():
+    """The half the domain guard cannot see. `vacuum.deaf` answers 200 to every
+    service call and changes nothing — exactly what a TV without Wake-on-LAN
+    and a washer without Remote Start do. Before the state re-read this was
+    indistinguishable from success."""
+    with MockHA() as ha, Sidecar(ha.url, LEX_HA_VERIFY_MS=600) as sc:
+        out = sc.skill("appliance_start", entity="vacuum.deaf")
+        assert out["outcome"] == "timeout", out
+        assert out["verified"] is False
+        assert "did nothing observable" in out["detail"]
+        assert ha.state_of("vacuum.deaf") == "docked"
+        # It really was dispatched — this is not the domain guard firing.
+        assert ha.calls[-1]["service"] == "vacuum.start"
+
+
+def test_a_tv_that_cannot_be_woken_is_caught_the_same_way():
+    with MockHA() as ha, Sidecar(ha.url, LEX_HA_VERIFY_MS=600) as sc:
+        out = sc.skill("appliance_start", entity="media_player.no_wol")
+        assert out["outcome"] == "timeout", out
+        assert ha.calls[-1]["service"] == "media_player.turn_on"
+
+
+def test_an_idempotent_command_is_verified_not_timed_out():
+    """Turning off an already-off TV changes nothing and is still correct. A
+    naive "did the state change?" check would call this a failure and wait the
+    whole budget to do it; polling for the TARGET state settles immediately."""
+    with MockHA() as ha, Sidecar(ha.url, LEX_HA_VERIFY_MS=4000) as sc:
+        assert ha.state_of(WASHER) == "off"
+        started = time.monotonic()
+        out = sc.skill("appliance_stop", entity=WASHER)
+        assert out["outcome"] == "reached", out
+        assert out["verified"] is True
+        assert time.monotonic() - started < 2.0, "waited for a change not coming"
+
+
+def test_verification_can_be_turned_off_and_says_so():
+    """For an entity whose state never reflects the command, burning the budget
+    on every call to learn nothing is worse than saying it is unverified."""
+    with MockHA() as ha, Sidecar(ha.url, LEX_HA_VERIFY_MS=0) as sc:
+        out = sc.skill("appliance_start", entity="vacuum.deaf")
+        assert out["outcome"] == "reached"
+        assert out["verified"] is False
+        assert "unverified" in out["detail"]
+
+
+def test_an_unpredictable_override_is_dispatched_but_not_claimed_as_evidenced():
+    """`homeassistant.turn_on` has no single expected state, so there is nothing
+    to check against. It is sent, and labelled honestly rather than dressed up."""
+    with MockHA() as ha, Sidecar(
+            ha.url, LEX_HA_START_SERVICE="homeassistant.turn_on") as sc:
+        out = sc.skill("appliance_start", entity=VACUUM)
+        assert out["outcome"] == "reached"
+        assert out["verified"] is False
+        assert "no expected state" in out["detail"]
 
 
 def test_an_unknown_domain_is_not_silently_guessed_at():
