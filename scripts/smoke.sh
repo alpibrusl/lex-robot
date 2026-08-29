@@ -286,6 +286,34 @@ fi
 kill $halex $hapy 2>/dev/null || true
 rm -f "$haq" "$hap" /tmp/lex-ha-8951.db
 
+# The stub house never dispatches a service, so the parity above cannot reach
+# the domain-keyed service map (#198). Run both ports again against a shared
+# mock Home Assistant, where they resolve services, refuse cross-domain calls,
+# and read state back. This is the only coverage that logic has in CI.
+ham="$ROOT/.ha_mock.log"
+"${PYTHON:-python3}" "$ROOT/sidecar/mock_ha.py" 8123 >"$ham" 2>&1 &
+hamock=$!
+sleep 1
+rm -f /tmp/lex-ha-8951.db
+LEX_HA_URL=http://127.0.0.1:8123 LEX_HA_TOKEN=mock-long-lived-token \
+  LEX_ROBOT_SIDECAR_PORT=8951 lex run --allow-effects env,fs_write,io,net,sql \
+  "$ROOT/sidecar/ha_sidecar.lex" run >"$haq" 2>&1 &
+halex=$!
+LEX_HA_URL=http://127.0.0.1:8123 LEX_HA_TOKEN=mock-long-lived-token \
+  LEX_ROBOT_SIDECAR_PORT=8952 "${PYTHON:-python3}" "$ROOT/sidecar/ha_sidecar.py" >"$hap" 2>&1 &
+hapy=$!
+sleep 5
+if haout="$(LEX_PORT=8951 PY_PORT=8952 PARITY_CASES=real \
+    "${PYTHON:-python3}" "$ROOT/scripts/ha_parity.py" 2>&1)"; then
+  pass "ha sidecar: both ports resolve services from the entity, against a real HA API"
+else
+  bad "ha sidecar: the two ports diverged driving a real HA API"
+  echo "$haout" | sed 's/^/      /'
+  sed -n '1,5p' "$haq" | sed 's/^/      lex: /'
+fi
+kill $halex $hapy $hamock 2>/dev/null || true
+rm -f "$haq" "$hap" "$ham" /tmp/lex-ha-8951.db
+
 # The structured SkillOutcome: the single grant-checked move records
 # skill+args+grant (integer milli-units) in the trail, so the lex-games
 # `robot_task` verifier can re-derive that the move stayed inside its workspace

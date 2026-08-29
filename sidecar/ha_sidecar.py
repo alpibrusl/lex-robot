@@ -35,11 +35,12 @@ Real mode — set both:
 and the sidecar answers from the real house:
     read_state       GET  /api/states/<entity>
     appliance_start  POST /api/services/<domain>/<service> {"entity_id": ...}
-                     service from LEX_HA_START_SERVICE (default
-                     "switch.turn_on") — appliance service names vary by
-                     integration (a SmartThings washer differs from a smart
-                     plug), so this is configuration, not code.
-    appliance_stop   LEX_HA_STOP_SERVICE (default "switch.turn_off")
+                     service derived from the ENTITY'S OWN DOMAIN (see
+                     DOMAIN_SERVICES) — a vacuum is started by vacuum.start,
+                     a smart plug by switch.turn_on, and one sidecar drives
+                     both. LEX_HA_START_SERVICE overrides it for an appliance
+                     whose integration wants a service we do not know.
+    appliance_stop   the same, via LEX_HA_STOP_SERVICE.
     read_tariff      the state of LEX_HA_TARIFF_ENTITY (e.g. a PVPC or
                      Nordpool sensor), read as EUR/kWh and converted to
                      integer cents. Asking for a future "at" is answered
@@ -60,10 +61,71 @@ from sidecar_lib import serve
 HA_URL = os.environ.get("LEX_HA_URL", "").rstrip("/")
 HA_TOKEN = os.environ.get("LEX_HA_TOKEN", "")
 USE_HA = bool(HA_URL and HA_TOKEN)
-START_SERVICE = os.environ.get("LEX_HA_START_SERVICE", "switch.turn_on")
-STOP_SERVICE = os.environ.get("LEX_HA_STOP_SERVICE", "switch.turn_off")
 TARIFF_ENTITY = os.environ.get("LEX_HA_TARIFF_ENTITY", "")
 STUB_NOW = os.environ.get("LEX_HA_STUB_NOW", "13:00")
+
+# Empty means "derive from the entity's domain". These exist for an appliance
+# whose integration wants a service DOMAIN_SERVICES does not know; they are
+# NOT the normal path, and a single global service name was the bug in #198 —
+# it could only ever be right for one appliance at a time.
+START_SERVICE = os.environ.get("LEX_HA_START_SERVICE", "")
+STOP_SERVICE = os.environ.get("LEX_HA_STOP_SERVICE", "")
+
+# How to start and stop an entity, by the entity's own domain. HA routes a
+# service call to entities of the SERVICE's domain, so `switch.turn_on` with a
+# `vacuum.*` entity_id is not an error — it is accepted, answered 200, and
+# applied to nothing. Deriving the service from the entity is what lets one
+# sidecar drive a vacuum and a washer at once.
+#
+#   domain         -> (start, stop)
+DOMAIN_SERVICES = {
+    "vacuum": ("vacuum.start", "vacuum.return_to_base"),
+    "media_player": ("media_player.turn_on", "media_player.turn_off"),
+    "switch": ("switch.turn_on", "switch.turn_off"),
+}
+
+# A vacuum's stop is `return_to_base`, not `vacuum.stop`: stopping the robot
+# where it stands leaves it mid-floor, and an appliance that is now an obstacle
+# in the hallway is not what a caller asking to stop it meant.
+
+# An unknown domain gets the old default. It is a guess, but a loud one — the
+# domain guard below refuses to send it unless the entity really is a switch.
+FALLBACK_SERVICES = ("switch.turn_on", "switch.turn_off")
+
+# The one HA domain whose services deliberately act on entities of any domain.
+GENERIC_DOMAIN = "homeassistant"
+
+
+def domain_of(entity_or_service):
+    """The part before the first dot. `vacuum.xiaomi_s10` -> `vacuum`."""
+    return entity_or_service.partition(".")[0]
+
+
+def service_for(entity, kind, override=""):
+    """Which service starts (or stops) this entity. `kind` is "start"/"stop"."""
+    if override:
+        return override
+    start, stop = DOMAIN_SERVICES.get(domain_of(entity), FALLBACK_SERVICES)
+    return start if kind == "start" else stop
+
+
+def refusal_reason(service, entity):
+    """None when the call is worth making, else why it provably is not.
+
+    This is the cheap half of "never report a success we cannot evidence": a
+    service from one domain aimed at an entity from another cannot do anything,
+    so it is refused BEFORE dispatch rather than sent and misread as reached.
+    It does not catch every silent no-op — a TV that needs Wake-on-LAN and a
+    washer whose Remote Start is not armed both accept a same-domain call and
+    ignore it. Those need the state re-read that is still to come; this catches
+    the class that is decidable without asking HA anything.
+    """
+    sdom, edom = domain_of(service), domain_of(entity)
+    if sdom == edom or sdom == GENERIC_DOMAIN:
+        return None
+    return (f"{service} cannot act on {entity}: a '{sdom}' service does not "
+            f"reach a '{edom}' entity. Home Assistant would accept this call, "
+            f"answer 200, and change nothing.")
 
 # Stub tariff: a caricature of the Spanish PVPC three-period day, integer
 # cents/kWh. Hour -> (price, period).
@@ -124,8 +186,17 @@ class RealHouse:
             headers={"Authorization": f"Bearer {HA_TOKEN}",
                      "Content-Type": "application/json"},
             method=method)
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            return json.loads(resp.read() or b"{}")
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                return json.loads(resp.read() or b"{}")
+        except urllib.error.HTTPError as e:
+            # Formatted to match ha_sidecar.lex exactly. `http.send` there
+            # returns a status rather than raising, so the Lex port composes
+            # this string itself; letting urllib's own "HTTP Error 404: Not
+            # Found" through instead made the two ports disagree on `detail`
+            # for every non-2xx. Real-mode parity caught it — the stub house
+            # makes no HTTP calls, so nothing had ever compared this path.
+            raise RuntimeError(f"HTTP {e.code} from {path}") from None
 
     def read_state(self, entity):
         try:
@@ -157,11 +228,18 @@ class RealHouse:
             return {"outcome": "stalled", "detail": f"HA service {service} failed: {e}"}
         return {"outcome": "reached", "detail": f"{entity} {verb} via {service}"}
 
+    def _dispatch(self, entity, kind, override, verb):
+        service = service_for(entity, kind, override)
+        why = refusal_reason(service, entity)
+        if why:
+            return {"outcome": "stalled", "detail": why}
+        return self._call_service(service, entity, verb)
+
     def start(self, entity):
-        return self._call_service(START_SERVICE, entity, "started")
+        return self._dispatch(entity, "start", START_SERVICE, "started")
 
     def stop(self, entity):
-        return self._call_service(STOP_SERVICE, entity, "stopped")
+        return self._dispatch(entity, "stop", STOP_SERVICE, "stopped")
 
 
 HOUSE = RealHouse() if USE_HA else StubHouse()

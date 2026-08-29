@@ -24,8 +24,8 @@
 #
 # Env vars (identical to the Python):
 #   LEX_HA_URL, LEX_HA_TOKEN         both set -> real house; otherwise stub
-#   LEX_HA_START_SERVICE             default switch.turn_on
-#   LEX_HA_STOP_SERVICE              default switch.turn_off
+#   LEX_HA_START_SERVICE             override; empty (default) derives the
+#   LEX_HA_STOP_SERVICE              service from the entity's own domain
 #   LEX_HA_TARIFF_ENTITY             a PVPC/Nordpool-style price sensor
 #   LEX_HA_STUB_NOW                  default "13:00" (peak -- keeps the wash
 #                                    demo's refusal reproducible in CI)
@@ -179,6 +179,101 @@ fn split_service(service :: Str) -> (Str, Str)
   (dom, rest)
 }
 
+# The part before the first dot. Entities and services share this shape, so one
+# function reads both: "vacuum.xiaomi_s10" -> "vacuum", "switch.turn_on" ->
+# "switch".
+fn domain_of(s :: Str) -> Str
+  examples {
+    domain_of("vacuum.xiaomi_s10") => "vacuum",
+    domain_of("switch.turn_on") => "switch",
+    domain_of("bare") => "bare"
+  }
+{
+  match split_service(s) {
+    (d, _) => d,
+  }
+}
+
+# How to start and stop an entity, by the entity's OWN domain. An unknown
+# domain gets the old switch.* guess -- a guess the refusal check below then
+# refuses to send unless the entity really is a switch.
+#
+# A vacuum's stop is `return_to_base`, not `vacuum.stop`: stopping the robot
+# where it stands leaves it mid-floor, and an appliance that is now an obstacle
+# in the hallway is not what a caller asking to stop it meant.
+fn domain_services(domain :: Str) -> (Str, Str)
+  examples {
+    domain_services("vacuum") => ("vacuum.start", "vacuum.return_to_base"),
+    domain_services("media_player") => ("media_player.turn_on", "media_player.turn_off"),
+    domain_services("switch") => ("switch.turn_on", "switch.turn_off"),
+    domain_services("sensor") => ("switch.turn_on", "switch.turn_off")
+  }
+{
+  if domain == "vacuum" {
+    ("vacuum.start", "vacuum.return_to_base")
+  } else {
+    if domain == "media_player" {
+      ("media_player.turn_on", "media_player.turn_off")
+    } else {
+      ("switch.turn_on", "switch.turn_off")
+    }
+  }
+}
+
+# Which service starts (or stops) this entity. A non-empty override wins; it is
+# the escape hatch for an integration wanting a service we do not know, NOT the
+# normal path -- one global service name was the bug in #198, since it could
+# only ever be right for one appliance at a time.
+fn service_for(entity :: Str, kind :: Str, override :: Str) -> Str
+  examples {
+    service_for("vacuum.x", "start", "") => "vacuum.start",
+    service_for("vacuum.x", "stop", "") => "vacuum.return_to_base",
+    service_for("switch.washer", "start", "") => "switch.turn_on",
+    service_for("vacuum.x", "start", "script.custom") => "script.custom"
+  }
+{
+  if str.is_empty(override) {
+    match domain_services(domain_of(entity)) {
+      (start, stop) => if kind == "start" {
+        start
+      } else {
+        stop
+      },
+    }
+  } else {
+    override
+  }
+}
+
+# "" when the call is worth making, else why it provably is not.
+#
+# HA routes a service call to entities of the SERVICE's domain, so a service
+# from one domain aimed at an entity from another is not an error -- it is
+# accepted, answered 200, and applied to nothing. Refusing before dispatch is
+# the half of "never report a success we cannot evidence" that is decidable
+# without asking HA anything. It does NOT catch every silent no-op: a TV
+# needing Wake-on-LAN and a washer whose Remote Start is not armed both accept
+# a same-domain call and ignore it. Those need a state re-read (still to come).
+#
+# `homeassistant.*` is exempt: that domain's services deliberately act on
+# entities of any domain, and refusing them would trade one wrong answer for
+# another.
+fn refusal_reason(service :: Str, entity :: Str) -> Str
+  examples {
+    refusal_reason("vacuum.start", "vacuum.x") => "",
+    refusal_reason("homeassistant.turn_on", "vacuum.x") => "",
+    refusal_reason("switch.turn_on", "vacuum.x") => "switch.turn_on cannot act on vacuum.x: a 'switch' service does not reach a 'vacuum' entity. Home Assistant would accept this call, answer 200, and change nothing."
+  }
+{
+  let sdom := domain_of(service)
+  let edom := domain_of(entity)
+  if sdom == edom or sdom == "homeassistant" {
+    ""
+  } else {
+    str.join([service, " cannot act on ", entity, ": a '", sdom, "' service does not reach a '", edom, "' entity. Home Assistant would accept this call, answer 200, and change nothing."], "")
+  }
+}
+
 # EUR/kWh -> integer cents, rounded rather than truncated. Prices are positive,
 # so +0.5 before truncation is the same as rounding; a negative tariff (which
 # real day-ahead markets do produce) would need a signed round, and this
@@ -223,11 +318,11 @@ fn cfg_token() -> [env] Str {
 }
 
 fn cfg_start_service() -> [env] Str {
-  env_or("LEX_HA_START_SERVICE", "switch.turn_on")
+  env_or("LEX_HA_START_SERVICE", "")
 }
 
 fn cfg_stop_service() -> [env] Str {
-  env_or("LEX_HA_STOP_SERVICE", "switch.turn_off")
+  env_or("LEX_HA_STOP_SERVICE", "")
 }
 
 fn cfg_tariff_entity() -> [env] Str {
@@ -464,6 +559,18 @@ fn real_read_tariff(cfg :: Cfg, at :: Str) -> [net] Str {
   }
 }
 
+# Resolve the service from the entity, refuse what provably cannot work, and
+# only then spend a request on it.
+fn real_dispatch(cfg :: Cfg, entity :: Str, kind :: Str, override :: Str, verb :: Str) -> [net] Str {
+  let service := service_for(entity, kind, override)
+  let why := refusal_reason(service, entity)
+  if str.is_empty(why) {
+    real_call_service(cfg, service, entity, verb)
+  } else {
+    outcome_json("stalled", why)
+  }
+}
+
 fn real_call_service(cfg :: Cfg, service :: Str, entity :: Str, verb :: Str) -> [net] Str {
   match split_service(service) {
     (domain, name) => {
@@ -528,7 +635,7 @@ fn handle_skill(db :: Db, cfg :: Cfg, name :: Str, args :: SkillArgs) -> [net, s
           outcome_json("stalled", "appliance_start needs an entity")
         } else {
           if cfg.real {
-            real_call_service(cfg, cfg.start_service, entity, "started")
+            real_dispatch(cfg, entity, "start", cfg.start_service, "started")
           } else {
             stub_set(db, entity, true, "started")
           }
@@ -539,7 +646,7 @@ fn handle_skill(db :: Db, cfg :: Cfg, name :: Str, args :: SkillArgs) -> [net, s
             outcome_json("stalled", "appliance_stop needs an entity")
           } else {
             if cfg.real {
-              real_call_service(cfg, cfg.stop_service, entity, "stopped")
+              real_dispatch(cfg, entity, "stop", cfg.stop_service, "stopped")
             } else {
               stub_set(db, entity, false, "stopped")
             }

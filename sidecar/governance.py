@@ -61,12 +61,17 @@ CATEGORIES = {
         "move_arm", "move_to", "grasp_arm", "grasp", "release_arm", "move_base",
         "teach_replay", "teach_home_go", "teach_free", "teach_hold",
         "run_policy", "reset",
+        # ha_sidecar: starting the washer spends water and electricity, which
+        # is an actuation with a cost even though nothing on the robot moves.
+        "appliance_start", "appliance_stop",
     ),
     "sense": (
         "read_joints", "read_arm_pose", "read_base", "read_camera", "read_grant",
         "read_touch", "policy_status", "teach_status", "teach_list",
         "teach_home_get", "detect_object", "locate_object", "transform_to_arm",
         "scan_qr", "listen",
+        # ha_sidecar.
+        "read_state", "read_tariff",
     ),
     "present": (
         "show_text", "show_image", "show_video", "show_url", "show_report",
