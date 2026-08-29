@@ -31,6 +31,21 @@ type Located = { arm :: Str, world :: Vec3, offset :: Vec3 }
 #                    command was admissible, but the run ran out of budget.
 type Outcome = Reached | Stalled(Str) | Denied(Str) | Killed(Str) | Timeout
 
+# What the envelope actually did to a requested scalar — the record microduck's
+# `duck_control::safety::Applied` keeps, for the same reason: a caller whose
+# command was silently altered has no way to know why the robot is not doing as
+# asked, and safety clamps things constantly.
+#
+#   requested  what the caller asked for
+#   applied    what left the box (never amplified)
+#   limits     wire-spelled names of every ceiling that bit (see wire.lex)
+#   ok         false ONLY for a non-finite request, which is REFUSED, not
+#              clamped — clamping NaN yields a plausible-looking boundary
+#              value and the robot commits to a limit instead of declining to
+#              move. `applied` is 0.0 there so a caller that ignores `ok`
+#              still gets the harmless value rather than NaN.
+type Clamp = { requested :: Float, applied :: Float, limits :: List[Str], ok :: Bool }
+
 # The capability envelope checked before every command leaves the box.
 # A runtime mirror of the relevant slice of the lex-os grant manifest.
 #

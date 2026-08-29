@@ -28,7 +28,7 @@ case "$DEMO" in
   xlerobot_vision) SIDECAR=xlerobot_sidecar; FILE=examples/vision_split_demo.lex; EFF="net,sense,actuate,io,env"; VISION=1 ;;
   vision_pose) SIDECAR=xlerobot_sidecar; FILE=examples/vision_pose_demo.lex;   EFF="net,sense,actuate,io"; VISION=1 ;;
   stream)      SIDECAR=xlerobot_sidecar; FILE=examples/stream_demo.lex;        EFF="io,net"; export LEX_STREAM_MAX_FRAMES="${LEX_STREAM_MAX_FRAMES:-3}" ;;
-  home_wash)   SIDECAR=ha_sidecar;    FILE=examples/home_wash_demo.lex;      EFF="net,sense,actuate,io"; SIDECAR_EFF="env,fs_write,io,net,sql" ;;
+  home_wash)   SIDECAR=ha_sidecar;    FILE=examples/home_wash_demo.lex;      EFF="net,sense,actuate,io"; SIDECAR_EFF="env,fs_write,io,net,sql,time" ;;
   ap2)         SIDECAR=sim_sidecar;   FILE=examples/ap2_bazaar_demo.lex;     EFF="env,io,net,time"; AP2=1 ;;
   dispense)    SIDECAR=sim_sidecar;   FILE=examples/dispense_demo.lex;       EFF="actuate,fs_write,io,net,sense,sql,time" ;;
   xlerobot_find) SIDECAR=xlerobot_sidecar; FILE=examples/find_and_fetch_demo.lex; EFF="net,sense,actuate,io" ;;

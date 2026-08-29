@@ -5,7 +5,10 @@ cameras, learned policies, the high-rate control loop) and exposes a few
 **discrete skills** over a localhost HTTP API. `lex-robot` (the Lex side) is the
 only caller; it adds effect typing, grant enforcement, and the audit trail.
 
-- Transport: HTTP on `127.0.0.1:8900` (default). Localhost only ⇒ no auth.
+- Transport: HTTP on `127.0.0.1:8900` (default), and optionally a unix
+  socket alongside it — see "The perimeter" below. **Unauthenticated by
+  default**: any process on the box can call any skill until you configure
+  a token or a peer allow-list.
 - Request: `POST /skill/<name>` with a JSON body.
 - Response: JSON. Actuating skills return `{ "outcome": "...", "detail": "..." }`.
 - Browser pages, same origin, no build step: `GET /control` (arm jog),
@@ -412,6 +415,83 @@ against a mount that can drift is work you find out was wasted much later. It
 records the tower ticks into the calibration's `tower` block, which is what
 `bus_preflight.py --tower-calib` then checks.
 
+
+## The perimeter (`sidecar/perimeter.py`)
+
+Who may talk to the sidecar, who may change the robot, and what happens when
+the caller goes quiet. Ported from
+[pollen-robotics/microduck](https://github.com/pollen-robotics/microduck)
+(Apache-2.0) — see lex-robot#195 and #196.
+
+**Every gate here is off unless configured**, so an unconfigured run behaves
+exactly as it always has, and every demo and script in this repo is unchanged.
+
+| env | default | what it does |
+|---|---|---|
+| `LEX_ROBOT_SIDECAR_TOKEN` | unset | require `Authorization: Bearer <token>` on skills that **mutate**. Reads stay ungated. |
+| `LEX_ROBOT_SIDECAR_TOKEN_FILE` | unset | same, read from a `0600` file instead of the environment |
+| `LEX_ROBOT_SIDECAR_SOCKET` | unset | also serve the same handler on a unix socket at this path (mode `0660`) |
+| `LEX_ROBOT_SIDECAR_ALLOW_UIDS` / `_ALLOW_GIDS` | unset | over the unix socket, which peers (by `SO_PEERCRED`) may make **mutating** calls. Our own uid always may. |
+| `LEX_ROBOT_ALLOW_REMOTE_BIND` | unset | required to bind a non-loopback address. Without it the sidecar **refuses to start** rather than exposing actuation to the network. |
+| `LEX_XLE_DEADMAN_MS` | `0` (off) | base-motion deadman — see below |
+
+Three rules worth stating plainly, because each is a decision rather than an
+implementation detail:
+
+- **Read-only calls are never gated.** Support must be able to inspect a robot
+  it is not authorised to change.
+- **An unknown skill counts as mutating.** A read-only allow-list someone
+  forgets to extend needlessly gates a new sensor read; a mutating deny-list
+  someone forgets to extend leaves a new actuator ungated. Only one of those is
+  survivable, so `perimeter.READ_ONLY_SKILLS` is the list that must be kept up
+  to date, and forgetting fails closed.
+- **The Lex client can use neither gate yet, and that is the honest limit of
+  this change.** `std.http` and `net.*` take an `Int` port and `lex 0.10.11`
+  has no unix-socket client, so `client.lex` cannot reach the socket; and it
+  cannot send a token either without either `[env]` on every skill signature
+  (widening the audited effect row of the whole skill surface — exactly what
+  `lex agent-guidelines` §1.2 says not to do) or a new field on `t.Robot`
+  (which every `Robot` literal in the repo would have to grow). **So setting
+  `LEX_ROBOT_SIDECAR_TOKEN` today locks Lex programs out of mutating skills.**
+  The sidecar prints that warning at startup rather than letting you discover
+  it as a wave of `403`s.
+
+  What the gates *do* cover today is the threat #196 actually names: the
+  browser pages, `curl`, the leLab adapter, the Python tools, and anything else
+  running on the box. Closing the last gap needs a `net.dial_unix` builtin in
+  lex-lang — a coordinated release, tracked as the follow-up in #196.
+
+### The base deadman (`POST /heartbeat`)
+
+`move_base` is a goal-point command driven synchronously for up to
+`LEX_XLE_BASE_TIMEOUT_S` (20 s). If the planner stalls mid-inference, the HTTP
+client is killed, or the laptop sleeps, the base keeps driving to a goal nobody
+is waiting for any more. The deadman stops it:
+
+```sh
+LEX_XLE_DEADMAN_MS=500 python3 sidecar/xlerobot_sidecar.py
+# then, from the caller, every ~200ms:
+curl -sX POST http://127.0.0.1:8900/heartbeat
+```
+
+- It arms on the **first** `/heartbeat` and never before, so a program that has
+  never heard of it is never stopped by it. An armed-from-birth deadman would
+  stop the first base move of every existing demo, which is how a safety
+  feature gets switched off for good.
+- Once armed it cannot be disarmed: a caller does not get to un-claim being
+  alive.
+- Any skill call refreshes it (a request *is* an intent); only `/heartbeat`
+  arms it.
+- **It stops base motion only.** The arm hold is deliberately untouched —
+  microduck's rule, and the reason is theirs: "a stale head pose is harmless,
+  while a stale velocity walks the robot into a wall." Dropping an arm hold is
+  worse than keeping it.
+- The stop is reported (`{"outcome":"stalled","detail":"deadman: …"}`), never
+  silent.
+
+`GET /health` carries both `deadman` and `perimeter` state, so what is actually
+holding the door is answerable rather than inferred from which env vars someone
+remembers setting.
 
 ## Defense in depth (read DESIGN.md §8)
 

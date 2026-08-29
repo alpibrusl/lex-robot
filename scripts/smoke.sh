@@ -111,6 +111,16 @@ echo "== budget kill =="
 expect budget "action budget exhausted" "supervisor reports the budget breach reason"
 expect budget "task KILLED" "zero-action grant → run killed before any command"
 
+echo "== non-finite refusal (#193) =="
+# tests/test_nonfinite.lex panics (1/0) on any failure; exit 0 on all-pass.
+# Pure grant/wire functions only — no sidecar, no ML deps.
+if lex run --allow-effects io tests/test_nonfinite.lex main >/dev/null 2>&1; then
+  pass "grant refuses NaN/inf: workspace, keep-out boxes, and all three clamps"
+else
+  bad "grant admitted a non-finite value (or a clamp stopped reporting what bit)"
+  lex run --allow-effects io tests/test_nonfinite.lex main 2>&1 | sed 's/^/      /'
+fi
+
 echo "== MCP grant gate =="
 # test_mcp_grant.lex panics (1/0) on any failure; exit 0 on all-pass.
 if scripts/demo.sh mcp_grant >/dev/null 2>&1; then
@@ -260,7 +270,7 @@ rm -f "$gate"
 # pure functions.
 haq="$ROOT/.ha_lex.log"; hap="$ROOT/.ha_py.log"
 rm -f /tmp/lex-ha-8951.db
-LEX_ROBOT_SIDECAR_PORT=8951 lex run --allow-effects env,fs_write,io,net,sql \
+LEX_ROBOT_SIDECAR_PORT=8951 lex run --allow-effects env,fs_write,io,net,sql,time \
   "$ROOT/sidecar/ha_sidecar.lex" run >"$haq" 2>&1 &
 halex=$!
 LEX_ROBOT_SIDECAR_PORT=8952 "${PYTHON:-python3}" "$ROOT/sidecar/ha_sidecar.py" >"$hap" 2>&1 &
@@ -275,6 +285,34 @@ else
 fi
 kill $halex $hapy 2>/dev/null || true
 rm -f "$haq" "$hap" /tmp/lex-ha-8951.db
+
+# The stub house never dispatches a service, so the parity above cannot reach
+# the domain-keyed service map (#198). Run both ports again against a shared
+# mock Home Assistant, where they resolve services, refuse cross-domain calls,
+# and read state back. This is the only coverage that logic has in CI.
+ham="$ROOT/.ha_mock.log"
+"${PYTHON:-python3}" "$ROOT/sidecar/mock_ha.py" 8123 >"$ham" 2>&1 &
+hamock=$!
+sleep 1
+rm -f /tmp/lex-ha-8951.db
+LEX_HA_URL=http://127.0.0.1:8123 LEX_HA_TOKEN=mock-long-lived-token LEX_HA_VERIFY_MS=600 \
+  LEX_ROBOT_SIDECAR_PORT=8951 lex run --allow-effects env,fs_write,io,net,sql,time \
+  "$ROOT/sidecar/ha_sidecar.lex" run >"$haq" 2>&1 &
+halex=$!
+LEX_HA_URL=http://127.0.0.1:8123 LEX_HA_TOKEN=mock-long-lived-token LEX_HA_VERIFY_MS=600 \
+  LEX_ROBOT_SIDECAR_PORT=8952 "${PYTHON:-python3}" "$ROOT/sidecar/ha_sidecar.py" >"$hap" 2>&1 &
+hapy=$!
+sleep 5
+if haout="$(LEX_PORT=8951 PY_PORT=8952 PARITY_CASES=real \
+    "${PYTHON:-python3}" "$ROOT/scripts/ha_parity.py" 2>&1)"; then
+  pass "ha sidecar: both ports resolve services from the entity, against a real HA API"
+else
+  bad "ha sidecar: the two ports diverged driving a real HA API"
+  echo "$haout" | sed 's/^/      /'
+  sed -n '1,5p' "$haq" | sed 's/^/      lex: /'
+fi
+kill $halex $hapy $hamock 2>/dev/null || true
+rm -f "$haq" "$hap" "$ham" /tmp/lex-ha-8951.db
 
 # The structured SkillOutcome: the single grant-checked move records
 # skill+args+grant (integer milli-units) in the trail, so the lex-games
