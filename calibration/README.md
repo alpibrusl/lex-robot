@@ -92,6 +92,37 @@ que las capturas sean mejores, es que 88 vistas sujetan el ajuste y 22 no.
 esquinas se guardan siempre (tambien si el ajuste propio se rechaza), asi que
 cada tanda nueva se suma al conjunto sin recapturar nada.
 
+### Mover la CAMARA con el tablero quieto: probado, no funciono
+
+`sweep_tower_intrinsics.py` mueve la torre pan/tilt para pasear el tablero por
+el encuadre, sin que nadie sostenga nada. La idea es buena -- las vistas de
+BORDE son las que faltan y a mano salen pocas -- pero la primera tanda
+(2026-08-29) **aporto cero vistas**: 5 utiles de 19 objetivos, y las 5
+descartadas despues por error de reproyeccion. Tres causas, todas medidas:
+
+1. **Girar la camara no cambia la DISTANCIA.** El area se quedo en 3,1-7,7% y
+   sin esa variacion el ajuste no separa focal de profundidad: su ajuste propio
+   dio fx normalizada 3,92 (siete veces la real) y FOV 14,5 grados. Es el mismo
+   modo de fallo degenerado que la primera tanda historica, con otro disfraz.
+2. **El tablero estaba pequeno en el encuadre** (4,9% de area desde la pose de
+   partida), asi que las esquinas se localizan mal y las 5 vistas cayeron al
+   filtro de >1,5 px.
+3. **La escala real de la torre es la mitad de la teorica**: 1 tick = 0,38 px
+   medidos frente a 0,66 px que salen de 4096 ticks/vuelta -- lleva reduccion.
+   Ademas el tilt tenia solo +41 ticks de margen hacia arriba, asi que los
+   objetivos de la fila superior eran inalcanzables y 12 de 19 perdieron el
+   tablero.
+
+**Que haria falta para que sirva:** acercar el robot al tablero (o un tablero
+mas grande) hasta que ocupe >15% del encuadre, y calcular los objetivos con el
+tamano angular del tablero y el margen real de tilt, no con un margen fijo.
+Aun asi seguiria sin dar variacion de distancia, asi que como mucho es un
+complemento de las tandas a mano, nunca un sustituto.
+
+**Leccion de proceso:** `pool_intrinsics.py` informa ahora de los descartes POR
+FICHERO. Sin eso el conjunto salia identico con y sin el barrido y parecia que
+sumaba, cuando lo que pasaba es que el filtro lo tiraba entero en silencio.
+
 ### CameraModel no modela la distorsion, y aqui cuesta ~9 mm
 
 `src/camera.lex` es un pinhole puro: no tiene k1/k2/k3/p1/p2, asi que los

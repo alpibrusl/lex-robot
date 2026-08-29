@@ -34,7 +34,8 @@
     "calibration/head_intrinsics_mac_640x480.json",
     "calibration/head_intrinsics_mac_640x480.run2.json",
     "calibration/head_intrinsics_mac_640x480.run3.json",
-    "calibration/head_intrinsics_mac_640x480.run4_edges.json"
+    "calibration/head_intrinsics_mac_640x480.run4_edges.json",
+    "calibration/head_intrinsics_mac_640x480.sweep1.json"
   ],
   "diversity": [
     {

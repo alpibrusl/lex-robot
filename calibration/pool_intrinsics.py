@@ -11,10 +11,11 @@ sq = runs[0]["square_mm"]
 assert all(r["width"]==W and r["height"]==H for r in runs), "resoluciones distintas: no se pueden fundir"
 objp = np.array([[c*sq/1000, r*sq/1000, 0] for r in range(ROWS) for c in range(COLS)], np.float32)
 
-corners, meta = [], []
-for r in runs:
+corners, meta, origin = [], [], []
+for f, r in zip(FILES, runs):
     for m in r["diversity"]:
-        corners.append(np.array(m["corners"], np.float32).reshape(-1,1,2)); meta.append(m)
+        corners.append(np.array(m["corners"], np.float32).reshape(-1,1,2))
+        meta.append(m); origin.append(f)
 print(f"{len(corners)} vistas de {len(runs)} tandas, {W}x{H}")
 
 def fit(idx):
@@ -29,7 +30,18 @@ idx = list(range(len(corners)))
 rms,K,dist,per = fit(idx)
 dropped = [(i,e) for i,e in per if e > 1.5]
 if dropped:
-    print(f"descarto {len(dropped)} vistas movidas (>1.5 px)")
+    # Por FICHERO, no solo el total: una tanda entera descartada es una tanda
+    # que no aporta nada, y en silencio parece que si. Paso justo con el
+    # barrido de torre -- sus 5 vistas cayeron enteras por error de
+    # reproyeccion (tablero pequeno, esquinas mal localizadas) y el conjunto
+    # salio identico, lo que se lee como "sumo" cuando en realidad no sumo.
+    by_file = {}
+    for i,_ in dropped: by_file[origin[i]] = by_file.get(origin[i], 0) + 1
+    print(f"descarto {len(dropped)} vistas movidas (>1.5 px):")
+    for f in FILES:
+        tot = sum(1 for o in origin if o == f); dr = by_file.get(f, 0)
+        flag = "   <-- LA TANDA ENTERA, no aporta nada" if dr == tot else ""
+        print(f"   {f.split('/')[-1]:44s} {dr:3d}/{tot:3d} descartadas{flag}")
     idx = [i for i,e in per if e <= 1.5]; rms,K,dist,per = fit(idx)
 fx,fy,cx,cy = K[0][0],K[1][1],K[0][2],K[1][2]
 hf = 2*math.degrees(math.atan(W/(2*fx))); k = dist.ravel()
