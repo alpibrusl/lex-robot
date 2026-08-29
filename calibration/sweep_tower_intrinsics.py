@@ -30,7 +30,10 @@ ap.add_argument("--width", type=int, default=640)
 ap.add_argument("--height", type=int, default=480)
 ap.add_argument("--square-mm", type=float, default=20.15)
 ap.add_argument("--settle", type=float, default=1.2, help="espera tras mover, por la vibracion")
-ap.add_argument("--margin", type=int, default=70, help="px del borde a los que apuntar")
+ap.add_argument("--edge-px", type=float, default=25,
+                help="px entre el borde del TABLERO y el del encuadre en las vistas de borde")
+ap.add_argument("--min-spacing", type=float, default=18.0,
+                help="px minimos entre esquinas vecinas; cornerSubPix usa ventana 11x11")
 ap.add_argument("--out", required=True)
 a = ap.parse_args()
 
@@ -61,9 +64,11 @@ def look():
         (cv2.TERM_CRITERIA_EPS+cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001))
     p = cor.reshape(-1,2); cen = p.mean(0)
     q = cor.reshape(ROWS, COLS, 2); dxp = np.linalg.norm(q[:,1:]-q[:,:-1], axis=2)
+    dyp = np.linalg.norm(q[1:,:]-q[:-1,:], axis=2)
+    spacing = float(min(np.median(dxp), np.median(dyp)))
     area = float((p[:,0].max()-p[:,0].min())*(p[:,1].max()-p[:,1].min())/(W*H))
     edge = float(min(p[:,0].min(), W-p[:,0].max(), p[:,1].min(), H-p[:,1].max()))
-    return cor, cen, area, edge, float(dxp.std()/dxp.mean())
+    return cor, cen, area, edge, float(dxp.std()/dxp.mean()), spacing
 
 drv = tower.TowerDriver(port=a.port)
 st = drv.read(); pan0, tilt0 = st["pan_ticks"], st["tilt_ticks"]
@@ -86,7 +91,24 @@ try:
     if base is None:
         print("no veo el tablero desde la pose actual; apunta la torre primero", file=sys.stderr)
         sys.exit(1)
-    print(f"tablero visible en ({base[1][0]:.0f},{base[1][1]:.0f}), area {100*base[2]:.1f}%")
+    _bp = base[0].reshape(-1,2)
+    bw = float(np.ptp(_bp[:,0])); bh = float(np.ptp(_bp[:,1]))  # np.ptp: ndarray.ptp se quito en NumPy 2.0
+    print(f"tablero visible en ({base[1][0]:.0f},{base[1][1]:.0f}), area {100*base[2]:.1f}%, "
+          f"{bw:.0f}x{bh:.0f} px")
+    # El criterio es la SEPARACION ENTRE ESQUINAS, no el area. Un tablero visto
+    # en oblicuo tiene un area pequena por escorzo aunque sus esquinas esten
+    # perfectamente separadas, y lo que limita la precision es la ventana de
+    # cornerSubPix (11x11): por debajo de ~18 px las ventanas de esquinas
+    # vecinas se solapan y la localizacion se degrada. La tanda que fallo
+    # entera tenia 4,9% de area; el area se sigue informando, pero no decide.
+    print(f"separacion entre esquinas: {base[5]:.1f} px (minimo util {a.min_spacing:.0f})")
+    if base[5] < a.min_spacing:
+        print(f"\nEL TABLERO ESTA DEMASIADO LEJOS: esquinas a {base[5]:.1f} px, hacen falta "
+              f"{a.min_spacing:.0f}.\nPor debajo de eso las ventanas de cornerSubPix se solapan, "
+              "las esquinas salen\nmal y las vistas acaban descartadas por error de reproyeccion "
+              "-- paso en la\nprimera tanda, 5/5 fuera. Acerca el tablero y vuelve a lanzarlo.",
+              file=sys.stderr)
+        sys.exit(3)
 
     # ---- fase A: cuantos pixeles mueve un tick ----
     probes, D = [], 150
@@ -109,26 +131,44 @@ try:
     Jinv = np.linalg.inv(J)
 
     # ---- fase B: apuntar a posiciones concretas, bordes incluidos ----
-    m = a.margin
-    targets = [(x, y) for y in (m, H//2, H-m) for x in (m, W//4, W//2, 3*W//4, W-m)]
-    targets += [(m, m), (W-m, m), (m, H-m), (W-m, H-m)]     # esquinas, repetidas a proposito
-    print(f"\n{len(targets)} posiciones objetivo")
-    for i, (tx, ty) in enumerate(targets, 1):
+    # El margen sale del TAMANO DEL TABLERO, no de una constante: pedir (70,70)
+    # con un tablero de 140 px de ancho lo saca medio fuera del encuadre y no se
+    # detecta. Con esto el borde del tablero queda a `edge_px` del borde del
+    # encuadre, que es lo que cuenta como vista de borde.
+    mx, my = bw/2 + a.edge_px, bh/2 + a.edge_px
+    xs = [mx, W/2, W-mx] if W-mx > mx else [W/2]
+    ys = [my, H/2, H-my] if H-my > my else [H/2]
+    targets = [(x, y) for y in ys for x in xs]
+    targets += [(mx, my), (W-mx, my), (mx, H-my), (W-mx, H-my)]
+
+    # Y se DESCARTA lo que la torre no alcanza, en vez de recortarlo en silencio:
+    # clamp_ticks convertia un objetivo inalcanzable en otra pose cualquiera, y
+    # 12 de 19 objetivos acababan sin tablero a la vista.
+    reach = []
+    for tx, ty in targets:
         d = Jinv @ np.array([tx - kx[2], ty - ky[2]])
-        p, t = goto(pan0 + int(round(d[0])), tilt0 + int(round(d[1])))
+        p, t = pan0 + int(round(d[0])), tilt0 + int(round(d[1]))
+        if PAN_LO <= p <= PAN_HI and TILT_LO <= t <= TILT_HI:
+            reach.append((tx, ty, p, t))
+        else:
+            print(f"  objetivo ({tx:.0f},{ty:.0f}) fuera del alcance de la torre "
+                  f"(pan {p}, tilt {t}), lo salto")
+    print(f"\n{len(reach)} de {len(targets)} posiciones alcanzables")
+    for i, (tx, ty, pw, tw) in enumerate(reach, 1):
+        p, t = goto(pw, tw)
         r = look()
         if r is None:
-            print(f"  {i:>2}/{len(targets)} objetivo ({tx},{ty}): el tablero no entra, salto")
+            print(f"  {i:>2}/{len(reach)} objetivo ({tx:.0f},{ty:.0f}): el tablero no entra, salto")
             continue
-        cor, cen, area, edge, slant = r
+        cor, cen, area, edge, slant, _sp = r
         if any(np.linalg.norm(cen - np.array([m2["cx"], m2["cy"]])) < 25 for m2 in meta):
-            print(f"  {i:>2}/{len(targets)} ({cen[0]:.0f},{cen[1]:.0f}) casi-duplicada, salto")
+            print(f"  {i:>2}/{len(reach)} ({cen[0]:.0f},{cen[1]:.0f}) casi-duplicada, salto")
             continue
         views.append(cor)
         meta.append({"cx":float(cen[0]),"cy":float(cen[1]),"area":area,"slant":slant,
                      "edge_gap":edge,"corners":cor.reshape(-1,2).tolist(),
                      "pan_ticks":int(p),"tilt_ticks":int(t)})
-        print(f"  {i:>2}/{len(targets)} objetivo ({tx:>3},{ty:>3}) -> real ({cen[0]:4.0f},{cen[1]:4.0f})"
+        print(f"  {i:>2}/{len(reach)} objetivo ({tx:>4.0f},{ty:>4.0f}) -> real ({cen[0]:4.0f},{cen[1]:4.0f})"
               f"  area={100*area:4.1f}%  borde={edge:4.0f}px{'  BORDE!' if edge < 60 else ''}")
 finally:
     try:

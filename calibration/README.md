@@ -113,11 +113,27 @@ descartadas despues por error de reproyeccion. Tres causas, todas medidas:
    objetivos de la fila superior eran inalcanzables y 12 de 19 perdieron el
    tablero.
 
-**Que haria falta para que sirva:** acercar el robot al tablero (o un tablero
-mas grande) hasta que ocupe >15% del encuadre, y calcular los objetivos con el
-tamano angular del tablero y el margen real de tilt, no con un margen fijo.
-Aun asi seguiria sin dar variacion de distancia, asi que como mucho es un
-complemento de las tandas a mano, nunca un sustituto.
+**Segundo intento, con las tres causas corregidas: tampoco.** Se acerco el
+tablero (esquinas a 21,4 px, area 9,3%), se cambio el guardia de area a
+SEPARACION ENTRE ESQUINAS -- que es lo que de verdad limita a cornerSubPix con
+su ventana 11x11, y un tablero oblicuo tiene area pequena por escorzo aunque
+sus esquinas esten bien separadas -- y los objetivos pasaron a calcularse con
+el tamano del tablero y a descartarse si la torre no llega. Resultado: **2
+vistas utiles**. La causa es MECANICA y no se arregla con codigo:
+
+* **Arriba no llega.** El tilt vive a ~3356 con tope en 3400: **44 ticks de
+  margen**. Toda la fila superior del encuadre pide tilt 3683-3744.
+* **Abajo hay recorrido (-833) pero no tablero.** A corta distancia la
+  geometria se va, y el propio cuerpo del robot (la cesta) entra en el
+  encuadre.
+* Queda una banda horizontal. En pan sobra recorrido (-1137/+2263), pero esas
+  vistas saldrian todas a la misma altura y la misma distancia.
+
+**Rendimiento: 2 vistas por barrido frente a 22 de una tanda a mano**, y encima
+pidiendo que alguien mueva el tablero entre barridos. **Recomendacion: no
+insistir por aqui** mientras el tilt siga aparcado en su tope. Lo desbloquearia
+montar el tablero mas ALTO (que la camara tenga que mirar hacia abajo, usando
+los 833 ticks disponibles) o recolocar el tope del tilt.
 
 **Leccion de proceso:** `pool_intrinsics.py` informa ahora de los descartes POR
 FICHERO. Sin eso el conjunto salia identico con y sin el barrido y parecia que
