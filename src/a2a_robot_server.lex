@@ -132,6 +132,10 @@ fn listen_cap() -> cap.Capability {
   cap.inbound("listen", "Capture and locally transcribe microphone audio (sensing only — raw audio never leaves the sidecar).", { title: "ListenArgs", description: "Recording duration in seconds.", fields: [sch.required_float("seconds", [])] })
 }
 
+fn scan_ahead_cap() -> cap.Capability {
+  cap.inbound("scan_ahead", "Look ahead and report obstacles WITH BEARINGS IN DEGREES (negative left, 0 straight ahead, positive right), plus whether the floor is clear: \"yes\", \"no\", or \"unknown\". A labelled degree scale is drawn into the frame before the vision model reads it, so bearings are read off a ruler rather than guessed. \"unknown\" means the floor could not be seen (dark, occluded, camera angled up) and is NEVER a yes. Sensing only — no actuation, no budget charge.", { title: "ScanAheadArgs", description: "Optional free-text hint about what the caller intends to do.", fields: [sch.optional(sch.required_str("question", []))] })
+}
+
 fn locate_object_cap() -> cap.Capability {
   cap.inbound("locate_object", "Find a named object's real-world position via the head camera (Tier-2: color detection + ray-cast against the rendered image; Tier-1: a canned lookup; sensing only — no actuation, no budget charge).", { title: "LocateObjectArgs", description: "The object's name (e.g. \"cup\").", fields: [sch.required_str("name", [StrNonEmpty])] })
 }
@@ -141,7 +145,7 @@ fn transform_to_arm_cap() -> cap.Capability {
 }
 
 fn all_capabilities() -> List[cap.Capability] {
-  [mcp.move_to_cap(), mcp.grasp_cap(), mcp.connect_charger_cap(), mcp.read_joints_cap(), mcp.read_camera_cap(), move_arm_cap(), grasp_arm_cap(), move_base_cap(), read_base_cap(), listen_cap(), locate_object_cap(), transform_to_arm_cap(), speak_cap()]
+  [mcp.move_to_cap(), mcp.grasp_cap(), mcp.connect_charger_cap(), mcp.read_joints_cap(), mcp.read_camera_cap(), move_arm_cap(), grasp_arm_cap(), move_base_cap(), read_base_cap(), listen_cap(), locate_object_cap(), scan_ahead_cap(), transform_to_arm_cap(), speak_cap()]
 }
 
 fn robot_agent_card(base_url :: Str) -> card.AgentCard {
@@ -251,6 +255,13 @@ fn dispatch_read_base(robot :: t.Robot) -> [net, sense] Str {
   }
 }
 
+fn dispatch_scan_ahead(robot :: t.Robot, args :: jv.Json) -> [net, sense] Str {
+  match skills.scan_ahead(robot, mcp.get_str(args, "question", "")) {
+    Err(e) => str.concat("error: scan_ahead: ", e),
+    Ok(s) => s,
+  }
+}
+
 fn dispatch_listen(robot :: t.Robot, args :: jv.Json) -> [net, sense] Str {
   match skills.listen(robot, get_int(args, "seconds", 3)) {
     Err(e) => str.concat("error: listen: ", e),
@@ -310,10 +321,14 @@ fn dispatch_skill(robot :: t.Robot, db :: Db, log :: trail.Log, ctx_id :: Str, n
               if name == "locate_object" {
                 dispatch_locate_object(robot, args)
               } else {
-                if name == "transform_to_arm" {
-                  dispatch_transform_to_arm(robot, args)
+                if name == "scan_ahead" {
+                  dispatch_scan_ahead(robot, args)
                 } else {
-                  mcp.dispatch_skill(robot, db, log, name, args)
+                  if name == "transform_to_arm" {
+                    dispatch_transform_to_arm(robot, args)
+                  } else {
+                    mcp.dispatch_skill(robot, db, log, name, args)
+                  }
                 }
               }
             }

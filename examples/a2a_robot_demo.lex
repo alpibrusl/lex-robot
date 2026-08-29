@@ -38,7 +38,7 @@ import "../src/a2a_card" as card
 import "../src/a2a_consent" as consent
 
 fn demo_grant() -> t.Grant {
-  { skills: ["move_arm", "grasp_arm", "move_base", "read_base"], ws_min: { x: 0.05, y: 0.0, z: 0.0 }, ws_max: { x: 0.45, y: 0.35, z: 0.5 }, max_velocity: 0.25, max_force: 15.0, max_grip_force: 15.0, budget_actions: 200, budget_wall_ms: 120000 }
+  { skills: ["move_arm", "grasp_arm", "move_base", "read_base", "scan_ahead"], ws_min: { x: 0.05, y: 0.0, z: 0.0 }, ws_max: { x: 0.45, y: 0.35, z: 0.5 }, max_velocity: 0.25, max_force: 15.0, max_grip_force: 15.0, budget_actions: 200, budget_wall_ms: 120000 }
 }
 
 # Every tasks/send now needs a session opened first (a2a_robot_auth.lex) —

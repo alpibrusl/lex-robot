@@ -35,8 +35,10 @@ Env:
     LEX_VISION_PORT        default 8901
     LEX_VISION_LLM_URL     OpenAI-compatible base URL
                            (default http://127.0.0.1:11434/v1 — Ollama)
-    LEX_VISION_MODEL       vision-capable model tag (default qwen2.5vl:7b;
-                           llava, minicpm-v, or a LiteLLM route all work)
+    LEX_VISION_MODEL       vision-capable model tag (default qwen3.8:27b-mlx;
+                           llava, minicpm-v, gemma4, or a LiteLLM route all
+                           work. qwen2.5vl was the old default and is several
+                           generations behind)
     LEX_VISION_API_KEY     optional bearer token (LiteLLM virtual keys;
                            Ollama ignores it)
     LEX_VISION_TIMEOUT_S   upstream call budget (default 60)
@@ -56,9 +58,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 HOST = os.environ.get("LEX_VISION_HOST", "0.0.0.0")
 PORT = int(os.environ.get("LEX_VISION_PORT", "8901"))
 LLM_URL = os.environ.get("LEX_VISION_LLM_URL", "http://127.0.0.1:11434/v1").rstrip("/")
-MODEL = os.environ.get("LEX_VISION_MODEL", "qwen2.5vl:7b")
+MODEL = os.environ.get("LEX_VISION_MODEL", "qwen3.8:27b-mlx")
 API_KEY = os.environ.get("LEX_VISION_API_KEY", "")
 TIMEOUT_S = float(os.environ.get("LEX_VISION_TIMEOUT_S", "60"))
+# Generous by default — see the note in _chat. A truncated JSON reply fails
+# confusingly rather than loudly, so headroom is cheaper than the debugging.
+MAX_TOKENS = int(os.environ.get("LEX_VISION_MAX_TOKENS", "1024"))
 MOCK = os.environ.get("LEX_VISION_MOCK", "0") == "1"
 
 MOCK_ITEMS = ["(mock) a cup", "(mock) a plate", "(mock) a folded towel"]
@@ -78,6 +83,31 @@ JUDGE_PROMPT = (
     "the task was completed, answer false. Reply with ONLY a JSON object, no "
     'prose, no markdown fence: {{"success": true/false, "confidence": 0..1, '
     '"reason": "one short sentence"}}'
+)
+
+# Navigational read of a frame that carries a bearing scale (drawn by
+# sidecar/camera_overlay.py). The scale is the whole point: asking a model to
+# estimate an angle from a bare photo is asking it to do geometry, which it is
+# bad at; asking it to read a labelled ruler already in the image is character
+# recognition, which it is good at. Measured on this unit's vision model, the
+# scale halved mean bearing error (3.8 deg -> 1.2 deg), with the largest gain
+# at the edges of the frame where steering decisions actually live.
+#
+# "unknown" for clear_ahead is a first-class answer, not a cop-out: a dark or
+# occluded frame must not be reported as clear. The local model was chosen
+# partly because it declines to claim clearance it cannot see (see
+# deploy/pi/litellm.config.yaml for that comparison).
+SCAN_PROMPT = (
+    "You are a mobile robot's forward camera. A bearing scale is printed across "
+    "the top of this image, labelled in degrees: negative is LEFT, 0 is straight "
+    "ahead, positive is RIGHT. Read obstacle positions off that scale rather than "
+    "guessing.\n"
+    "Reply with ONLY a JSON object, no prose, no markdown fence: "
+    '{{"obstacles": [{{"what": "short noun", "bearing_deg": <number>}}], '
+    '"clear_ahead": "yes"|"no"|"unknown", "detail": "one short sentence"}}\n'
+    "Use \"unknown\" for clear_ahead if the floor ahead is too dark or hidden to "
+    "judge. Never report the way clear if you cannot actually see the floor.\n"
+    "Extra instruction from the caller: {question}"
 )
 
 DETECT_PROMPT = (
@@ -103,10 +133,19 @@ def _chat(image_b64, prompt, model=None):
             "type": "image_url",
             "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"},
         })
+    # max_tokens is REQUIRED here, not an optimisation. Left unset, the reply
+    # is capped by whatever the provider defaults to — Ollama's default is
+    # small — and a JSON answer that gets cut mid-object does NOT arrive as an
+    # error: it arrives as text that _extract_json then fails to parse, with a
+    # message that points at column 128 rather than at truncation. Observed
+    # exactly that on /vision/scan, whose replies are longer than describe's.
+    # Reasoning models need more still: they spend hundreds of tokens before
+    # emitting any content at all.
     body = json.dumps({
         "model": model or MODEL,
         "messages": [{"role": "user", "content": content}],
         "temperature": 0,
+        "max_tokens": MAX_TOKENS,
     }).encode()
     headers = {"Content-Type": "application/json"}
     if API_KEY:
@@ -125,10 +164,25 @@ def _extract_json(text, opener, closer):
     delimiters is the standard robust middle ground.
     """
     start = text.find(opener)
-    end = text.rfind(closer)
-    if start == -1 or end == -1 or end <= start:
-        raise ValueError(f"no {opener}...{closer} JSON in model reply: {text[:200]!r}")
-    return json.loads(text[start:end + 1])
+    if start == -1:
+        raise ValueError(f"no {opener} in model reply: {text[:200]!r}")
+    # Match the delimiter by DEPTH, not by rfind. rfind picks the last closer
+    # anywhere in the text, so a reply truncated mid-object slices to an inner
+    # closer and yields invalid JSON — reported as a baffling "Expecting value
+    # at column N" instead of "the model got cut off". Depth-matching turns
+    # that into an explicit truncation error.
+    depth = 0
+    for i in range(start, len(text)):
+        if text[i] == opener:
+            depth += 1
+        elif text[i] == closer:
+            depth -= 1
+            if depth == 0:
+                return json.loads(text[start:i + 1])
+    raise ValueError(
+        f"unterminated {opener}...{closer} in model reply — it was almost "
+        f"certainly truncated (raise LEX_VISION_MAX_TOKENS, currently "
+        f"{MAX_TOKENS}): {text[:200]!r}")
 
 
 def _clamp01(v):
@@ -203,6 +257,44 @@ def judge(image_b64, question, model=None):
             "detail": f"model {model or MODEL}"}
 
 
+def scan(image_b64, question="", model=None):
+    """Navigational read of a bearing-scaled frame. See SCAN_PROMPT.
+
+    Never raises upward: every failure path returns clear_ahead "unknown" with
+    a detail saying why. A planner asking "can I drive?" must get "I don't
+    know" from a broken vision service, never an implicit yes.
+    """
+    if MOCK:
+        return {"obstacles": [], "clear_ahead": "unknown",
+                "detail": "(mock) canned scan — no model consulted"}
+    if not image_b64:
+        return {"obstacles": [], "clear_ahead": "unknown",
+                "detail": "empty image_b64 — the sidecar's camera produced no frame"}
+    q = re.sub(r"[^\w \-.,?']", "", question or "none")
+    try:
+        reply = _chat(image_b64, SCAN_PROMPT.format(question=q), model=model)
+        v = _extract_json(reply, "{", "}")
+    except Exception as e:
+        return {"obstacles": [], "clear_ahead": "unknown",
+                "detail": f"vision model failed: {e}"}
+    obstacles = []
+    for o in (v.get("obstacles") or [])[:8]:
+        if not isinstance(o, dict):
+            continue
+        try:
+            bearing = float(o.get("bearing_deg"))
+        except (TypeError, ValueError):
+            continue  # an obstacle with no usable bearing cannot be steered around
+        obstacles.append({"what": str(o.get("what", ""))[:40],
+                          "bearing_deg": round(bearing, 1)})
+    clear = str(v.get("clear_ahead", "unknown")).lower()
+    if clear not in ("yes", "no", "unknown"):
+        clear = "unknown"      # anything unrecognised is NOT a yes
+    return {"obstacles": obstacles, "clear_ahead": clear,
+            "detail": str(v.get("detail", ""))[:200],
+            "model": model or MODEL}
+
+
 class Handler(BaseHTTPRequestHandler):
     def _json(self, code, payload):
         body = json.dumps(payload, separators=(",", ":")).encode()
@@ -232,6 +324,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/vision/judge":
             return self._json(200, judge(args.get("image_b64", ""), args.get("question", ""),
                                          args.get("model") or None))
+        if path == "/vision/scan":
+            return self._json(200, scan(args.get("image_b64", ""), args.get("question", ""),
+                                        args.get("model") or None))
         return self._json(404, {"error": "not found"})
 
     def log_message(self, *a):

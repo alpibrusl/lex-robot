@@ -1,0 +1,151 @@
+# LiteLLM proxy on the robot's Raspberry Pi — one front door for every model.
+#
+#   ~/litellm/.venv/bin/litellm --config deploy/pi/litellm.config.yaml --port 4000
+#
+# Why a proxy at all: lex-loom, lex-robot's llm_planner and the sidecar each
+# pick a provider their own way. Pointing all of them at localhost:4000 means
+# keys, routing, budgets and logging live in ONE place, and swapping a model
+# is a line here instead of an env var in three repos.
+#
+# lex-llm's `litellm()` provider already targets http://localhost:4000 by
+# default, and lex-loom checks LITELLM_BASE_URL second in its chain — so this
+# is the intended seam, not a bolt-on.
+#
+# ── THE SHAPE ────────────────────────────────────────────────────────────────
+#   planner / coder   -> OpenCode Go   (subscription, text)
+#   vision            -> Mac Studio    (local, DEFAULT for camera frames)
+#   vision-cloud      -> OpenCode Go   (fallback when the Mac is off)
+#
+# Vision IS included in the Go plan (deepseek-v4-flash-vision-exp), so the
+# cloud route is a real option, not a stub. Local is still the default: it is
+# faster (4.5s vs 6.2s) and camera frames never leave the LAN — a robot camera
+# sees your home, and that is a privacy call as much as a latency one. This
+# matches deploy/VISION_SPLIT.md's "the Pi drives, a GPU box sees".
+#
+# EVERY MODEL ID BELOW WAS VERIFIED AGAINST THE LIVE API on 2026-08-23, not
+# taken from marketing names. The catalogue rotates and entries lie: at the
+# time of writing /models still lists deepseek-v4-flash, deepseek-v4-pro and
+# mimo-v2-omni, all three of which fail — the deepseeks are "only available
+# hosted in China", mimo-v2-omni 404s as deprecated. Re-run
+# ~/litellm/list-opencode-models.sh and re-test when something starts failing;
+# being listed is not the same as being callable.
+#
+# Also rejected during testing: glm-5.3 refuses array-form content (text
+# only, fine as a planner), minimax-m3 leaks raw "<think>" into content,
+# grok-4.5 returns an endpoint error, gpt-5.6-luna 500s.
+
+model_list:
+  # ── OpenCode Go — text ─────────────────────────────────────────────────────
+  # glm-5.3: fastest clean responder of the working set (1.9s, 24 reasoning
+  # tokens, no preamble leakage). Newer than the glm-5.1 this file first used.
+  - model_name: planner
+    litellm_params:
+      model: openai/glm-5.3
+      api_base: https://opencode.ai/zen/go/v1
+      api_key: os.environ/OPENCODE_API_KEY
+
+  # A different family, for a second opinion when glm is being stubborn.
+  # (This slot used to be deepseek-v4-flash, which is now China-only.)
+  - model_name: planner-alt
+    litellm_params:
+      model: openai/qwen3.8-max
+      api_base: https://opencode.ai/zen/go/v1
+      api_key: os.environ/OPENCODE_API_KEY
+
+  - model_name: coder
+    litellm_params:
+      model: openai/kimi-k3
+      api_base: https://opencode.ai/zen/go/v1
+      api_key: os.environ/OPENCODE_API_KEY
+
+  # Vision IS included in the Go subscription — deepseek-v4-flash-vision-exp.
+  # Confirmed against /models and tested on real camera frames: 3/3 correct
+  # and appropriately cautious on a dark/obstructed frame, mean 6.2s.
+  #
+  # ⚠ max_tokens MUST be >= ~1000. It is a reasoning model and spends ~490
+  # reasoning tokens before emitting any content. Below that it returns an
+  # EMPTY content string with finish_reason "stop" and NO error — it looks
+  # broken rather than truncated. Measured: 500 -> empty, 600 -> fine.
+  #
+  # Two catalogue entries are traps: mimo-v2-omni is listed but 404s as
+  # "deprecated", and glm-5.3 rejects array content outright (text only).
+  #
+  # This is the FALLBACK, not the default, for two reasons: the local route
+  # is faster (4.5s vs 6.2s), and every frame sent here leaves the LAN. A
+  # robot camera sees your home; keeping those frames on the Mac Studio is a
+  # privacy decision, not just a latency one.
+  - model_name: vision-cloud
+    litellm_params:
+      model: openai/deepseek-v4-flash-vision-exp
+      api_base: https://opencode.ai/zen/go/v1
+      api_key: os.environ/OPENCODE_API_KEY
+
+  # ── Ollama on the Mac Studio — local vision, no cloud round trip ───────────
+  # ollama_chat/ (not ollama/) is the chat-completions path, which is the one
+  # that carries image parts.
+  #
+  # DEFAULT VISION MODEL: qwen3.8:27b-mlx. Chosen on SAFETY, not speed.
+  #
+  # All three installed models can see (verified with a synthetic red PNG).
+  # They were then given the same live head-camera frame — one taken after
+  # dark, measured mean brightness 9/255 with 96% of the floor region below
+  # 32, i.e. genuinely unassessable — and asked whether the floor was clear
+  # to drive forward. Three trials each:
+  #
+  #   qwen3.8:27b-mlx        3/3 declined to claim clearance    mean  4.5s
+  #   muse-glimmer:30b-mlx   3/3 declined to claim clearance    mean 30.5s
+  #   gemma4:latest          0/3 — claimed "clear to proceed"   mean  6.4s
+  #
+  # gemma4 is the fastest and the only unsafe one: on a black frame it
+  # reported the floor clear every single time. For a model whose output can
+  # move a robot, hallucinated clearance is the failure that matters, so
+  # gemma4 is demoted to `vision-fast` and must not back a driving decision.
+  # muse-glimmer reasons best ("the floor is not visible so it is not clear")
+  # but is ~4x slower. qwen3.8 is the safe one that is also quick, and it is
+  # the leanest (153 tokens vs gemma4's 427 for the same answer).
+  #
+  # NOTE a mismatch this exposes: sidecar/vision_service.py still defaults to
+  # LEX_VISION_MODEL=qwen2.5vl:7b, which is NOT installed on the Mac — so
+  # /vision/describe would fail today. Set LEX_VISION_MODEL=qwen3.8:27b-mlx.
+  #
+  # mDNS does not resolve between the Pi and the Mac in either direction, so
+  # OLLAMA_BASE_URL is an IP. That will drift on a DHCP lease renewal —
+  # a static reservation or the avahi fix (upstream #144) is the durable answer.
+  - model_name: vision
+    litellm_params:
+      model: ollama_chat/qwen3.8:27b-mlx
+      api_base: os.environ/OLLAMA_BASE_URL
+
+  # Best reasoning of the three, ~4x the latency. Worth it for a deliberate
+  # check where being right matters more than being quick.
+  - model_name: vision-careful
+    litellm_params:
+      model: ollama_chat/muse-glimmer:30b-mlx
+      api_base: os.environ/OLLAMA_BASE_URL
+
+  # Fastest, but see the note above: it hallucinated floor clearance 3/3 on a
+  # dark frame. Fine for "describe this", NOT for anything that gates motion.
+  - model_name: vision-fast
+    litellm_params:
+      model: ollama_chat/gemma4:latest
+      api_base: os.environ/OLLAMA_BASE_URL
+
+  # Plain text local fallback for when the OpenCode subscription is exhausted
+  # or the Pi is offline from it.
+  - model_name: local
+    litellm_params:
+      model: ollama_chat/qwen3.8:27b-mlx
+      api_base: os.environ/OLLAMA_BASE_URL
+
+litellm_settings:
+  # Never silently fall back to a different model: a robot planner quietly
+  # answered by the wrong model is worse than a failed call.
+  drop_params: false
+  # Keep request/response bodies out of the log — camera frames would
+  # otherwise be written to disk as base64 on every vision call.
+  turn_off_message_logging: true
+
+general_settings:
+  # Loopback only, same posture as the sidecar. Anything that can reach this
+  # port can spend the subscription.
+  master_key: os.environ/LITELLM_MASTER_KEY

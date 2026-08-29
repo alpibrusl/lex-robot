@@ -28,7 +28,7 @@ you already run:
 
 - **Ollama, natively** (default): `LEX_VISION_LLM_URL=http://127.0.0.1:11434/v1`
   ```sh
-  ollama pull qwen2.5vl:7b        # or llava, minicpm-v — any vision model tag
+  ollama pull qwen3.8:27b-mlx     # or gemma4, llava, minicpm-v — any vision tag
   ```
 - **Anything behind LiteLLM** (OpenAI, vLLM, opencode-served models, …):
   point `LEX_VISION_LLM_URL` at the proxy and set `LEX_VISION_API_KEY` if the
@@ -37,7 +37,7 @@ you already run:
   # litellm config.yaml route the service will call as "vision"
   model_list:
     - model_name: vision
-      litellm_params: { model: "ollama/qwen2.5vl:7b" }
+      litellm_params: { model: "ollama_chat/qwen3.8:27b-mlx" }
   ```
   ```sh
   LEX_VISION_LLM_URL=http://127.0.0.1:4000/v1 LEX_VISION_MODEL=vision ...
@@ -47,8 +47,8 @@ you already run:
 
 ```sh
 git clone https://github.com/alpibrusl/lex-robot && cd lex-robot
-ollama pull qwen2.5vl:7b
-LEX_VISION_MODEL=qwen2.5vl:7b make vision-serve     # http://0.0.0.0:8901
+ollama pull qwen3.8:27b-mlx
+LEX_VISION_MODEL=qwen3.8:27b-mlx make vision-serve  # http://0.0.0.0:8901
 ```
 
 Sanity checks from any machine on the LAN:

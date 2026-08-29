@@ -352,9 +352,43 @@ class _HwArm:
         self.side = side
         self.config = SO101FollowerConfig(**cfg_kwargs)
         self.follower = SO101Follower(self.config)
-        self.follower.connect(calibrate=False)
+        self._connect_without_snapping()
         self._kinematics = self._make_kinematics()
         self._ik = self._make_ik()
+
+    def _connect_without_snapping(self):
+        """`follower.connect(calibrate=False)`, but the arm cannot lunge as it
+        engages.
+
+        lerobot's connect() ends in configure(), and configure()'s
+        `with bus.torque_disabled():` re-enables torque on the way out. Nothing
+        in that path touches Goal_Position, so the servos engage against
+        whatever goal they already hold -- and a servo that has just been
+        powered up holds 0. Measured on this unit on the Pi after a fresh
+        power-up: every joint's Goal_Position read 0 while the arms rested
+        limp, the furthest 3046 ticks (~268 deg) away, and configure_motors()
+        sets Acceleration=254 immediately beforehand. Plain connect() would
+        therefore drive every joint to the bottom of its encoder at maximum
+        acceleration.
+
+        Syncing goal to present first -- while torque is still off, so the
+        write moves nothing -- makes engaging a no-op: the arm stiffens where
+        it stands. This is the same discipline tower.py's hold() already
+        applies to the tower servos, which share these buses.
+
+        Raw ticks on both sides (normalize=False): this is a hardware-frame
+        round trip and must not depend on the calibration being loaded.
+        """
+        bus = self.follower.bus
+        bus.connect()
+        bus.sync_write(
+            "Goal_Position",
+            bus.sync_read("Present_Position", normalize=False),
+            normalize=False,
+        )
+        for cam in self.follower.cameras.values():
+            cam.connect()
+        self.follower.configure()
 
     def _make_kinematics(self):
         """Best-effort: build lerobot's placo-based RobotKinematics for this
@@ -417,6 +451,44 @@ class _HwArm:
         positions = [float(obs.get(f"{j}.pos", 0.0)) for j in ARM_JOINTS]
         return {"names": [f"{self.side}_{j}" for j in ARM_JOINTS], "positions": positions,
                 "velocities": [0.0] * len(ARM_JOINTS)}
+
+    def read_health(self):
+        """Rail voltage and worst joint temperature for this arm.
+
+        The servos' Present_Voltage IS the battery telemetry on this build --
+        there is no separate fuel gauge, and the pack feeds the servo rail
+        directly. Every servo reports it and they agree closely, so the median
+        rejects a single bad read without needing all of them to answer.
+
+        Held under the port lock like any other bus traffic. On a marginal bus
+        some joints simply will not answer; that is reported as `joints`
+        (how many did) rather than being averaged away, because a falling
+        count is itself the interesting signal.
+
+        Read per-motor rather than via sync_read: a group sync read of these
+        one-byte status registers fails outright on this stack (ConnectionError
+        from the comm layer) even while position reads are fine, and a
+        per-motor loop also lets one silent joint be counted instead of
+        failing the whole strip.
+        """
+        volts, temps = {}, {}
+        with hold_port(self.config.port):
+            for motor in ARM_JOINTS:
+                for reg, sink in (("Present_Voltage", volts), ("Present_Temperature", temps)):
+                    try:
+                        sink[motor] = self.follower.bus.read(
+                            reg, motor, normalize=False, num_retry=2)
+                    except Exception:
+                        pass  # one quiet joint must not take the whole reading down
+        out = {"joints": len(volts), "of": len(ARM_JOINTS)}
+        if volts:
+            ordered = sorted(volts.values())
+            out["volts"] = round(ordered[len(ordered) // 2] / 10.0, 1)
+        if temps:
+            hottest = max(temps, key=lambda k: temps[k])
+            out["temp_c"] = int(temps[hottest])
+            out["hottest"] = hottest
+        return out
 
     def read_pose(self):
         try:
@@ -788,6 +860,40 @@ class _HwOmniBase:
             pass
 
 
+def _augment_frame(frame):
+    """Re-encode a read_camera() result with the bearing scale drawn on.
+
+    Best-effort by design: if OpenCV or the overlay module is missing the
+    ORIGINAL frame comes back untouched. A missing scale costs accuracy; a
+    raised exception here would cost the planner its eyes entirely.
+    """
+    jpeg = frame.get("jpeg_b64", "") if isinstance(frame, dict) else ""
+    if not jpeg:
+        return frame
+    try:
+        import base64
+
+        import cv2
+        import numpy as np
+
+        import camera_overlay as ov
+        buf = np.frombuffer(base64.b64decode(jpeg), np.uint8)
+        img = cv2.imdecode(buf, cv2.IMREAD_COLOR)
+        if img is None:
+            return frame
+        ov.draw_bearing_scale(img)
+        ok, enc = cv2.imencode(".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+        if not ok:
+            return frame
+        out = dict(frame)
+        out["jpeg_b64"] = base64.b64encode(enc.tobytes()).decode()
+        out["augmented"] = True
+        out["fov_deg"] = ov.DEFAULT_FOV_DEG
+        return out
+    except Exception:
+        return frame
+
+
 class _HwCamera:
     def __init__(self, index):
         try:
@@ -1100,8 +1206,24 @@ DISPLAY_PAGE_HTML = """<!doctype html>
                         touch-action:manipulation;-webkit-tap-highlight-color:transparent}
   #stage .prompt button:disabled{opacity:0.35}
   #stage .prompt button.chosen{background:#2e7d32;border-color:#66bb6a;opacity:1}
+  /* Always-on status strip. Sits over the bottom edge so it costs the content
+     no room, and stays quiet: dim grey until something is actually wrong. */
+  #status{position:fixed;left:0;right:0;bottom:0;display:flex;gap:2.4vw;
+          align-items:center;padding:1.1vh 2.4vw;
+          font:2.0vh/1 -apple-system,Helvetica,Arial,sans-serif;
+          color:#7c8496;background:rgba(0,0,0,0.55);
+          border-top:1px solid #1e2230;letter-spacing:.02em}
+  #status .dot{width:1.5vh;height:1.5vh;border-radius:50%;background:#4ade80;
+               flex:none;box-shadow:0 0 1.4vh rgba(74,222,128,.7)}
+  #status.bad .dot{background:#f87171;box-shadow:0 0 1.4vh rgba(248,113,113,.8)}
+  #status.bad{color:#f0a0a0}
+  #status .sp{margin-left:auto}
+  #status b{color:#c3cad8;font-weight:600}
+  #status .warn{color:#fbbf24}
 </style></head>
 <body><div id="stage"></div>
+<div id="status"><span class="dot"></span><span id="statustext">starting…</span
+   ><span id="statusup" class="sp"></span></div>
 <script>
 let lastVersion = -1;
 function render(s) {
@@ -1167,6 +1289,53 @@ async function poll() {
 }
 poll();
 setInterval(poll, 1000);
+
+// Status strip. Polled on its own, slower clock: the server caches this and
+// it reads the servo bus, so it must not ride the 1s content poll.
+function fmtUptime(s) {
+  if (s < 60) return s + 's';
+  if (s < 3600) return Math.floor(s / 60) + 'm';
+  return Math.floor(s / 3600) + 'h' + String(Math.floor((s % 3600) / 60)).padStart(2, '0');
+}
+async function pollStatus() {
+  const el = document.getElementById('status');
+  const txt = document.getElementById('statustext');
+  try {
+    const s = await (await fetch('/display/status', {cache: 'no-store'})).json();
+    const bits = [];
+    bits.push(s.mode === 'hardware' ? '<b>live</b>' : '<b>stub</b>');
+    (s.arms || []).forEach(a => {
+      const good = a.ok;
+      const detail = a.error ? a.error : (a.joints + '/' + a.of);
+      bits.push((good ? '' : '<span class="warn">') + a.side + ' ' + detail +
+                (good ? '' : '</span>'));
+    });
+    if ((s.cameras || []).length) bits.push(s.cameras.length + ' cam');
+    // Rail voltage, NOT a charge estimate -- this pack regulates its output.
+    if (s.rail_v != null) bits.push('<b>' + s.rail_v.toFixed(1) + 'V</b> rail');
+    if (s.battery && s.battery.available) bits.push('<b>' + s.battery.percent + '%</b> batt');
+    else bits.push('batt n/a');
+    if (s.servo_temp_c != null) {
+      const hot = s.servo_temp_c >= 60;
+      bits.push((hot ? '<span class="warn">' : '') + 'servo ' + s.servo_temp_c + '°C' +
+                (hot ? '</span>' : ''));
+    }
+    if (s.pi_temp_c != null) {
+      const hot = s.pi_temp_c >= 75;
+      bits.push((hot ? '<span class="warn">' : '') + 'pi ' + s.pi_temp_c.toFixed(0) + '°C' +
+                (hot ? '</span>' : ''));
+    }
+    txt.innerHTML = bits.join(' · ');
+    document.getElementById('statusup').textContent = fmtUptime(s.uptime_s || 0);
+    el.classList.toggle('bad', !s.ok);
+  } catch (e) {
+    txt.textContent = 'sidecar unreachable';
+    document.getElementById('statusup').textContent = '';
+    el.classList.add('bad');
+  }
+}
+pollStatus();
+setInterval(pollStatus, 5000);
 </script></body></html>"""
 
 TEACH_PAGE_HTML = """<!doctype html>
@@ -2577,13 +2746,61 @@ class XLeRobot:
             return result
         return dict(self.base, ok=True)
 
-    def read_camera(self, name):
+    def read_camera(self, name, augment=False):
+        """A frame, optionally with the bearing scale burned in.
+
+        `augment` is off by default so nothing that already consumes frames
+        (episode recording, QR scanning, the /control previews) suddenly gets
+        graphics drawn over its data. Only the paths that feed a language
+        model ask for it — see scan_ahead.
+        """
         if USE_HW:
             cam = self._hw_cameras.get(name)
             if cam is None:
                 return {"error": f"camera '{name}' not configured or unavailable"}
-            return cam.read()
+            frame = cam.read()
+            return _augment_frame(frame) if augment else frame
         return {"width": 640, "height": 480, "jpeg_b64": ""}
+
+    def scan_ahead(self, question=""):
+        """What is in front of the robot, and at what bearing.
+
+        The frame is annotated with a bearing scale BEFORE the model sees it
+        (sidecar/camera_overlay.py), which is what turns "a chair on the left"
+        into a number the base can be commanded with. Measured on this unit:
+        the scale halved mean bearing error, 3.8 deg -> 1.2 deg.
+
+        Judgment only. This returns a reading; it moves nothing, and the
+        grant still gates whatever the planner proposes afterwards.
+        """
+        vision_url = os.environ.get("LEX_XLE_VISION_URL", "").rstrip("/")
+        if not vision_url:
+            return {"obstacles": [], "clear_ahead": "unknown",
+                    "detail": "no LEX_XLE_VISION_URL configured — scan_ahead needs the"
+                              " split-compute vision service, see deploy/VISION_SPLIT.md"}
+        frame = self.read_camera("head", augment=True)
+        jpeg = frame.get("jpeg_b64", "") if isinstance(frame, dict) else ""
+        if not jpeg:
+            return {"obstacles": [], "clear_ahead": "unknown",
+                    "detail": "head camera produced no frame"}
+        timeout_s = float(os.environ.get("LEX_XLE_VISION_TIMEOUT_S", "60"))
+        body = json.dumps({"image_b64": jpeg, "question": question or ""}).encode()
+        req = urllib.request.Request(f"{vision_url}/vision/scan", data=body,
+                                     headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+                out = json.loads(resp.read())
+        except Exception as e:
+            # "unknown", never an implicit yes: a planner asking whether it can
+            # drive must not read a broken vision service as permission.
+            return {"obstacles": [], "clear_ahead": "unknown",
+                    "detail": f"vision service unreachable at {vision_url}: {e}"}
+        if not isinstance(out, dict):
+            return {"obstacles": [], "clear_ahead": "unknown",
+                    "detail": "vision service returned non-object JSON"}
+        out.setdefault("clear_ahead", "unknown")
+        out["augmented"] = True
+        return out
 
     def listen(self, seconds):
         if USE_HW:
@@ -3272,7 +3489,9 @@ def _handle_skill(name, args):
     if name == "read_base":
         return ROBOT.read_base()
     if name == "read_camera":
-        return ROBOT.read_camera(args.get("name", "head"))
+        return ROBOT.read_camera(args.get("name", "head"), bool(args.get("augment", False)))
+    if name == "scan_ahead":
+        return ROBOT.scan_ahead(args.get("question", ""))
     if name == "listen":
         return ROBOT.listen(int(args.get("seconds", 3)))
     if name == "speak":
@@ -3314,6 +3533,118 @@ def _handle_skill(name, args):
     if name == "transform_to_arm":
         return ROBOT.transform_to_arm(float(args.get("x", 0.0)), float(args.get("y", 0.0)), float(args.get("z", 0.0)))
     return {"error": f"unknown skill: {name}"}
+
+
+# ── display status strip ─────────────────────────────────────────────────────
+STATUS_TTL_S = float(os.environ.get("LEX_XLE_STATUS_TTL_S", "5"))
+_STATUS_CACHE = {"at": 0.0, "value": None}
+_STATUS_LOCK = threading.Lock()
+_STARTED_AT = time.time()
+
+
+def _pi_temp_c():
+    """Host SoC temperature. Free, and the first thing to look at when a Pi
+    starts dropping USB frames -- thermal throttling and bus trouble arrive
+    together."""
+    try:
+        with open("/sys/class/thermal/thermal_zone0/temp") as f:
+            return round(int(f.read().strip()) / 1000.0, 1)
+    except Exception:
+        return None
+
+
+def _battery_status():
+    """Whether this robot can actually report a state of charge.
+
+    On this build it cannot, and the display says so rather than implying a
+    number. Two independent reasons, either one sufficient:
+
+    1. Nothing on the host exposes a battery. /sys/class/power_supply is empty
+       and the pack presents no USB HID Power Device interface, so the OS has
+       no charge figure to report.
+    2. The pack (an Anker power station) REGULATES its DC output. Servo rail
+       voltage therefore sits flat near its nominal value regardless of state
+       of charge and falls off a cliff at cutoff -- so deriving a percentage
+       from it would read "full" until the robot died mid-task. Measured on
+       this unit: 12.1-12.2 V, unchanged across an hour and across all 16
+       servos.
+
+    Rail voltage is still worth showing, just as a rail-health signal (is the
+    supply present, is it sagging under load) rather than as a fuel gauge.
+
+    If a supply that DOES report charge is fitted later -- a UPS HID pack, or
+    an INA226 shunt on I2C -- this is the one place to teach the display about
+    it.
+    """
+    try:
+        supplies = [p for p in os.listdir("/sys/class/power_supply")
+                    if not p.startswith("_")]
+    except Exception:
+        supplies = []
+    for name in supplies:
+        try:
+            with open(f"/sys/class/power_supply/{name}/capacity") as f:
+                return {"available": True, "percent": int(f.read().strip()), "source": name}
+        except Exception:
+            continue
+    return {"available": False,
+            "reason": "no OS battery device; pack regulates its output, so rail "
+                      "voltage is not a state-of-charge signal"}
+
+
+def _build_status():
+    arms, notes = [], []
+    rail, temps = [], []
+    if USE_HW:
+        for side, arm in sorted(getattr(ROBOT, "_hw_arms", {}).items()):
+            entry = {"side": side}
+            try:
+                h = arm.read_health()
+                entry.update(h)
+                entry["ok"] = h.get("joints") == h.get("of")
+                if "volts" in h:
+                    rail.append(h["volts"])
+                if "temp_c" in h:
+                    temps.append(h["temp_c"])
+                if not entry["ok"]:
+                    notes.append(f"{side} arm: only {h.get('joints')}/{h.get('of')} joints answered")
+            except BusBusy as e:
+                entry.update({"ok": False, "error": "bus busy"})
+                notes.append(f"{side} arm: {e}")
+            except Exception as e:
+                entry.update({"ok": False, "error": type(e).__name__})
+                notes.append(f"{side} arm: {type(e).__name__}")
+            arms.append(entry)
+        for side in ("left", "right"):
+            if side not in getattr(ROBOT, "_hw_arms", {}):
+                notes.append(f"{side} arm not configured")
+    cams = sorted(getattr(ROBOT, "_hw_cameras", {})) if USE_HW else []
+    return {
+        "ok": all(a.get("ok") for a in arms) if arms else not USE_HW,
+        "mode": "hardware" if USE_HW else "stub",
+        "uptime_s": int(time.time() - _STARTED_AT),
+        "arms": arms,
+        "cameras": cams,
+        "rail_v": round(sum(rail) / len(rail), 1) if rail else None,
+        "servo_temp_c": max(temps) if temps else None,
+        "pi_temp_c": _pi_temp_c(),
+        "battery": _battery_status(),
+        "notes": notes,
+    }
+
+
+def status_snapshot():
+    """Cached so the kiosk page polling every second cannot flood the servo
+    bus -- the strip is ambient information, not telemetry."""
+    now = time.time()
+    with _STATUS_LOCK:
+        cached = _STATUS_CACHE["value"]
+        if cached is not None and (now - _STATUS_CACHE["at"]) < STATUS_TTL_S:
+            return cached
+    fresh = _build_status()
+    with _STATUS_LOCK:
+        _STATUS_CACHE["at"], _STATUS_CACHE["value"] = time.time(), fresh
+    return fresh
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -3390,6 +3721,8 @@ class Handler(BaseHTTPRequestHandler):
                                     LEDGER.chain.to_json().encode())
         if path == "/display/state":
             return self._send(200, ROBOT.display.to_json())
+        if path == "/display/status":
+            return self._send(200, status_snapshot())
         if path == "/display/content":
             return self._serve_display_content()
         return self._send(404, {"error": "not found"})
