@@ -43,11 +43,42 @@ Contraste independiente: la FOV por damero da 83,5 grados y la medida por
 correlacion de fase (`LEX_XLE_CAMERA_FOV`) dio 85,2. Dos metodos distintos, 2%
 de diferencia.
 
-**La incertidumbre real sigue sin medirse en este host.** En el Pi hicieron
-falta TRES tandas independientes para descubrir que la dispersion era del 4,6%
-mientras el RMS decia 0,365 px. Aqui solo hay una tanda, asi que 0,585 px es lo
-que explica *estas* vistas, no la incertidumbre. Para saberla: repetir la
-captura entera dos veces mas y mirar como se mueve `fx`.
+**La incertidumbre real, medida: 4,8%.** Tres tandas independientes el
+2026-08-29, y el resultado reproduce lo del Pi casi exacto (4,6%):
+
+| tanda | RMS | vistas al borde | fx norm | FOV |
+|---|---|---|---|---|
+| 1 | 0,585 px | **8/22** | 0,56062 | 83,5 |
+| 2 | **0,298 px** | 0/22 | 0,54646 | 84,9 |
+| 3 | 0,434 px | 0/22 | 0,53409 | 86,2 |
+
+**El RMS no predice nada de esto.** La tanda de menor RMS (0,298 px) es la peor
+calibracion de las tres: cero vistas al borde, rango de area estrechisimo
+(7,5-11,8%) y `k3` desbocado a +0,2482 frente a +0,04 de las otras. Menos
+restricciones -> ajuste mas comodo -> RMS mas bajo. Es sobreajuste, no calidad.
+
+### El ajuste conjunto
+
+`pool_intrinsics.py` funde las esquinas guardadas de las tres tandas en un solo
+ajuste de 66 vistas -> `head_intrinsics_mac_640x480.pooled.json`:
+
+```
+66 vistas, RMS 0.460 px, FOV 84.9 grados
+fx=0.54639 fy=0.72528 cx0=0.53258 cy0=0.52066
+k1=+0.0948 k2=-0.1311 p1=+0.00058 p2=-0.00319 k3=+0.0390
+```
+
+Cae a -0,1% de la media de las tres, con el area mas ancha (4,1-28,3%) y una
+distorsion sensata. **Es la que hay que usar.**
+
+**Pero fundir centra la estimacion, no la aprieta.** La desviacion tipica de
+las tres es 2,4%, asi que el error estandar de la media sale ~1,4%: unos 5,6 mm
+a 400 mm de alcance, frente a los 19 mm del peor caso individual. Y de las 66
+vistas solo 8 tocan el borde, todas de la tanda 1.
+
+**La palanca sigue siendo la misma:** una tanda dedicada ENTERA a bordes y
+esquinas, y volver a fundir. No hace falta recapturar lo demas — las esquinas
+estan guardadas.
 
 ### CameraModel no modela la distorsion, y aqui cuesta ~9 mm
 
