@@ -62,7 +62,17 @@ CENTRE_TICKS = 2048
 # default, because the failure mode out there is straining the head camera's
 # USB cable -- which no servo-side protection detects.
 TILT_HARD_STOP_MIN = 2483          # measured; do not command below this
-DEFAULT_PAN_LIMITS = (1000, 2100)          # traversed clean; true stops unknown
+DEFAULT_PAN_LIMITS = (347, 3747)           # MEASURED 2026-08-23, see below
+# The old value was (1000, 2100) — "traversed clean; true stops unknown", i.e.
+# a conservative guess, and it was wrong by 3x. Probed outward in 100-tick
+# steps comparing commanded against present position to detect a stall: none
+# occurred anywhere in 347..3747, which is 299 degrees. Those bounds are where
+# the PROBE stopped, not where the hardware does, so the true range is at
+# least this and possibly the full turn.
+#
+# This matters beyond tidiness: the narrow guess kept the head camera pointed
+# at a third of the room, which is why an earlier search for the arms came up
+# empty and was wrongly reported as "the camera cannot see them".
 DEFAULT_TILT_LIMITS = (TILT_HARD_STOP_MIN + 40, 3400)   # (2523, 3400)
 
 

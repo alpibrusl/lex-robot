@@ -1,0 +1,32 @@
+{
+  "shoulder_pan": {
+    "range_min": 784,
+    "range_max": 3065,
+    "wraps": 0
+  },
+  "shoulder_lift": {
+    "range_min": 1292,
+    "range_max": 2415,
+    "wraps": 0
+  },
+  "elbow_flex": {
+    "range_min": 1126,
+    "range_max": 1929,
+    "wraps": 0
+  },
+  "wrist_flex": {
+    "range_min": 1712,
+    "range_max": 2925,
+    "wraps": 0
+  },
+  "wrist_roll": {
+    "range_min": 448,
+    "range_max": 3648,
+    "wraps": 0
+  },
+  "gripper": {
+    "range_min": 2043,
+    "range_max": 3478,
+    "wraps": 0
+  }
+}

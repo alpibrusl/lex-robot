@@ -1,0 +1,20 @@
+{
+  "_comment": [
+    "Pose de la torre sujeta para calibrar la camara de cabeza, 2026-08-27.",
+    "La torre va SIN PAR de fabrica y deriva: medida moviendose 174 ticks (~15 deg)",
+    "sola en una noche. Sujetada con `tower.py --hold` antes de calibrar.",
+    "Si hay que restaurarla: tower.py --pan 1484 --tilt 3361 y luego --hold.",
+    "El limite blando del driver es tilt 3400 y NO es un tope medido, solo",
+    "recorrido en banco: mas alla fuerza el cable USB de la camara, que ningun",
+    "servo detecta."
+  ],
+  "bus": "/dev/serial/by-id/usb-1a86_USB_Single_Serial_5B3D043715-if00",
+  "camera": "/dev/video0",
+  "tower": {
+    "pan_id": 7,
+    "tilt_id": 8,
+    "pan_ticks": 1484,
+    "tilt_ticks": 3361,
+    "tolerance_ticks": 8
+  }
+}

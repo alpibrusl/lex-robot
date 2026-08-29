@@ -364,6 +364,99 @@ def test_hw_diff_base_rejects_both_port_and_shared_bus():
         _HwDiffBase(1, 2, 0.05, 0.30, port="/dev/ttyACM0", shared_bus=object())
 
 
+# ---- wheel mounting polarity (LEX_XLE_BASE_LEFT_SIGN / _RIGHT_SIGN) ---------
+#
+# diff_drive_wheel_speeds returns BODY-frame wheel speeds, so a pure forward
+# command gives both wheels the same sign. Whether that turns the two motors
+# the same way round is a property of how they are physically mounted, and on a
+# mirror-mounted pair it does not: the robot pivots instead of driving.
+# Measured on the Mac unit 2026-08-29 — left(9)=-90, right(10)=+90 drives
+# forward — so that build sets LEX_XLE_BASE_LEFT_SIGN=-1.
+#
+# _set_wheel_velocity is exercised directly on an un-__init__'d instance so
+# these need no lerobot install and no bus, matching the rest of this file.
+
+class _RecordingBus:
+    def __init__(self):
+        self.writes = {}
+
+    def _sync_write(self, addr, length, ids_values):
+        self.writes = dict(ids_values)
+
+
+def _diff_base(left_sign=1, right_sign=1, left_id=9, right_id=10):
+    """A _HwDiffBase with only what _set_wheel_velocity touches."""
+    b = object.__new__(_HwDiffBase)
+    b.bus = _RecordingBus()
+    b.wheel_radius_m, b.track_width_m = 0.05, 0.30
+    b.left_id, b.right_id = left_id, right_id
+    b.left_sign, b.right_sign = left_sign, right_sign
+    b._goal_vel_addr, b._goal_vel_len = 0x2E, 2
+    b._encode_sign_magnitude = lambda v, bit: (abs(v) | (1 << bit)) if v < 0 else v
+    return b
+
+
+def _is_negative(raw, sign_bit=15):
+    return bool(raw & (1 << sign_bit))
+
+
+def test_wheel_signs_must_be_plus_or_minus_one():
+    with pytest.raises(ValueError, match="wheel signs must be"):
+        _HwDiffBase(1, 2, 0.05, 0.30, port="/dev/ttyACM0", left_sign=0)
+    with pytest.raises(ValueError, match="wheel signs must be"):
+        _HwDiffBase(1, 2, 0.05, 0.30, port="/dev/ttyACM0", right_sign=-2)
+
+
+def test_by_default_a_forward_command_drives_both_wheels_the_same_way():
+    # The kinematic truth, and the thing that pivots a mirror-mounted robot.
+    b = _diff_base()
+    b._set_wheel_velocity(0.3, 0.0)
+    left, right = b.bus.writes[9], b.bus.writes[10]
+    assert not _is_negative(left) and not _is_negative(right)
+    assert left == right
+
+
+def test_inverting_the_left_wheel_makes_forward_drive_forward():
+    # This unit: forward is left NEGATIVE, right POSITIVE.
+    b = _diff_base(left_sign=-1)
+    b._set_wheel_velocity(0.3, 0.0)
+    assert _is_negative(b.bus.writes[9]), "left wheel should be commanded negative"
+    assert not _is_negative(b.bus.writes[10]), "right wheel should be commanded positive"
+    # same magnitude — an inverted sign must not change the speed
+    assert (b.bus.writes[9] & ~(1 << 15)) == b.bus.writes[10]
+
+
+def test_swapping_the_ids_cannot_fix_a_forward_command_that_pivots():
+    """The regression this whole knob exists for.
+
+    Both env files used to advise "if a forward command turns the robot, swap
+    LEX_XLE_BASE_LEFT_ID and _RIGHT_ID". That advice is wrong and this pins it:
+    a forward command sends both wheels an IDENTICAL value, so swapping which
+    id is called 'left' produces byte-for-byte the same bus write. Only a sign
+    changes the behaviour.
+    """
+    normal = _diff_base(left_id=9, right_id=10)
+    normal._set_wheel_velocity(0.3, 0.0)
+    swapped = _diff_base(left_id=10, right_id=9)
+    swapped._set_wheel_velocity(0.3, 0.0)
+    assert normal.bus.writes == swapped.bus.writes, "swapping ids changed nothing, as expected"
+
+    inverted = _diff_base(left_sign=-1)
+    inverted._set_wheel_velocity(0.3, 0.0)
+    assert inverted.bus.writes != normal.bus.writes, "only a sign change alters the command"
+
+
+def test_a_sign_inversion_still_lets_the_robot_turn():
+    # The inversion is mounting polarity, applied at the output stage, so it
+    # must not break rotation: an in-place turn still drives the wheels in
+    # opposite BODY directions, which on this build means the same raw sign.
+    b = _diff_base(left_sign=-1)
+    b._set_wheel_velocity(0.0, 1.0)
+    left, right = b.bus.writes[9], b.bus.writes[10]
+    assert _is_negative(left) == _is_negative(right), "mirror-mounted: a turn drives both the same raw way"
+    assert (left & ~(1 << 15)) == (right & ~(1 << 15)), "equal and opposite in the body frame"
+
+
 # ---- grant enforcement (taught trajectories) -------------------------------
 #
 # Replay and go-to-home drive the arm through *joint-space* poses, so the

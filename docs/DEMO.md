@@ -26,7 +26,7 @@ that builds from "it moves" to "it refuses, verifiably."
 
 **Off the robot (the GPU box):**
 - Mac Studio (or any GPU host) on the same LAN: Ollama with a vision model
-  pulled (`ollama pull qwen2.5vl:7b`), the vision service running
+  pulled (`ollama pull qwen3.8:27b-mlx`), the vision service running
   (`make vision-serve`, or the launchd/systemd units in `deploy/`).
 - Solid LAN — wired if possible; Wi-Fi jitter is where remote judgment
   stutters.

@@ -1,0 +1,39 @@
+{
+  "_nota": "Extrinsecos de la camara de cabeza por mano-ojo con la camara de muneca. La punta no interviene: el brazo se movio SOLO a 13 poses y la correspondencia sale de ver el tablero, no de tocarlo. Dispersion 5.3 mm frente a los 13.4 mm del metodo de tocar a mano, que estaba limitado por la repetibilidad del gesto humano (13.2 mm medidos).",
+  "metodo": "mano-ojo (AX=ZB), 13 vistas, brazo movido por sus propios servos",
+  "dispersion_media_mm": 5.335269400651985,
+  "dispersion_max_mm": 8.858875423430371,
+  "error_pnp_cabeza_px": 1.211,
+  "pos": [
+    0.12327,
+    -0.11971,
+    0.34443
+  ],
+  "right": [
+    -0.00157,
+    -0.99993,
+    0.01199
+  ],
+  "down": [
+    -0.81685,
+    -0.00563,
+    -0.57682
+  ],
+  "forward": [
+    0.57685,
+    -0.0107,
+    -0.81678
+  ],
+  "fx": 0.47313,
+  "fy": 0.62956,
+  "cx0": 0.5353,
+  "cy0": 0.5111,
+  "verificacion_poses_nuevas": {
+    "poses": 5,
+    "error_pos_medio_mm": 7.2,
+    "error_pos_max_mm": 9.2,
+    "error_ang_medio_deg": 0.99,
+    "reproyeccion_media_px": 17.3,
+    "nota": "Poses distintas de las 13 de calibracion. Este es el error real; la dispersion de 5.3 mm es consistencia interna y sale optimista."
+  }
+}
