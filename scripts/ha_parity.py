@@ -56,6 +56,34 @@ CASES = [
     ("POST", "/skill/no_such_skill", b"{}"),
 ]
 
+# Real-mode cases, run against a shared sidecar/mock_ha.py (PARITY_CASES=real).
+# The stub house never dispatches a service at all, so CASES above cannot reach
+# the domain-keyed service map from #198 — these are the only parity coverage
+# that logic has.
+#
+# Both servers are pointed at the SAME mock house and each case is sent to both,
+# so every mutation is applied twice. That is fine because it is applied
+# identically: the read-backs compare two servers that agreed on what to do.
+REAL_CASES = [
+    ("POST", "/skill/read_state", b'{"entity":"vacuum.xiaomi_s10"}'),
+    ("POST", "/skill/read_state", b'{"entity":"vacuum.nope"}'),
+    # Derived from the entity's domain, with no env var set either side.
+    ("POST", "/skill/appliance_start", b'{"entity":"vacuum.xiaomi_s10"}'),
+    ("POST", "/skill/read_state", b'{"entity":"vacuum.xiaomi_s10"}'),
+    ("POST", "/skill/appliance_stop", b'{"entity":"vacuum.xiaomi_s10"}'),
+    ("POST", "/skill/read_state", b'{"entity":"vacuum.xiaomi_s10"}'),
+    # A different domain, same sidecar, same run — the thing one global
+    # service name could never do.
+    ("POST", "/skill/appliance_start", b'{"entity":"switch.washer"}'),
+    ("POST", "/skill/read_state", b'{"entity":"switch.washer"}'),
+    # Unknown domain: guessed at switch.*, then refused rather than sent.
+    ("POST", "/skill/appliance_start", b'{"entity":"sensor.pvpc"}'),
+    ("POST", "/skill/read_state", b'{"entity":"sensor.pvpc"}'),
+    # No tariff entity configured: both must decline the same way.
+    ("POST", "/skill/read_tariff", b"{}"),
+    ("POST", "/skill/read_tariff", b'{"at":"03:00"}'),
+]
+
 
 def call(port, method, path, body):
     req = urllib.request.Request(
@@ -78,8 +106,10 @@ def parsed(text):
 
 
 def main():
+    mode = os.environ.get("PARITY_CASES", "stub")
+    cases = REAL_CASES if mode == "real" else CASES
     bad = []
-    for method, path, body in CASES:
+    for method, path, body in cases:
         ls, lt = call(LEX, method, path, body)
         ps, pt = call(PY, method, path, body)
         if ls == 0 or ps == 0:
@@ -89,13 +119,14 @@ def main():
         if ls != ps or parsed(lt) != parsed(pt):
             bad.append((method, path, body, ls, parsed(lt), ps, parsed(pt)))
     if bad:
-        print(f"DIVERGENCES ({len(bad)} of {len(CASES)}):")
+        print(f"DIVERGENCES ({len(bad)} of {len(cases)}) in {mode} mode:")
         for method, path, body, ls, lb, ps, pb in bad:
             print(f" - {method} {path} {body!r}")
             print(f"     lex[{ls}]: {lb}")
             print(f"     py [{ps}]: {pb}")
         return 1
-    print(f"OK: {len(CASES)} requests answered identically by .lex and .py")
+    print(f"OK: {len(cases)} {mode}-mode requests answered identically "
+          f"by .lex and .py")
     return 0
 
 

@@ -23,8 +23,6 @@ import time
 import urllib.error
 import urllib.request
 
-import pytest
-
 from mock_ha import TOKEN, MockHA
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -137,24 +135,54 @@ def test_unreachable_ha_stalls_and_says_why():
         assert out["detail"]
 
 
-@pytest.mark.xfail(reason="issue #198: HTTP 200 is read as evidence the entity "
-                          "was touched; a cross-domain service call is a no-op "
-                          "that reports 'reached'", strict=True)
-def test_cross_domain_call_is_never_reported_as_reached():
-    """The bug. `switch.turn_on` on a `vacuum.*` entity is well-formed, so HA
-    answers 200 and does nothing. `_call_service` has no exception to catch and
-    calls it `reached` — a fabricated success, which is precisely what
-    RealHouse's docstring promises never to produce.
+def test_the_service_is_derived_from_the_entity_with_no_env_vars():
+    """#198: the fix. No LEX_HA_*_SERVICE anywhere — the vacuum is driven by
+    vacuum.start because it is a vacuum, not because someone configured it."""
+    with MockHA() as ha, Sidecar(ha.url) as sc:
+        assert sc.skill("appliance_start", entity=VACUUM)["outcome"] == "reached"
+        assert ha.state_of(VACUUM) == "cleaning"
+        assert ha.calls[-1]["service"] == "vacuum.start"
 
-    Asserted in both directions, because the single global service map breaks
-    whichever appliance the env vars are not pointing at.
+
+def test_one_sidecar_drives_a_vacuum_and_a_washer_at_once():
+    """The acceptance criterion from #198. Previously impossible: a single
+    global service map is only ever right for one of the two."""
+    with MockHA() as ha, Sidecar(ha.url) as sc:
+        assert sc.skill("appliance_start", entity=VACUUM)["outcome"] == "reached"
+        assert sc.skill("appliance_start", entity=WASHER)["outcome"] == "reached"
+        assert ha.state_of(VACUUM) == "cleaning"
+        assert ha.state_of(WASHER) == "running"
+        assert {c["service"] for c in ha.calls} == {"vacuum.start", "switch.turn_on"}
+
+
+def test_a_cross_domain_override_is_refused_before_it_is_sent():
+    """The bug this pinned as xfail until #198 was fixed. An override that
+    cannot work is refused rather than sent and misread as success — and
+    nothing reaches HA at all, which is the part worth asserting: a refusal
+    that still made the call would be a different bug wearing this one's face.
     """
-    with MockHA() as ha, Sidecar(ha.url) as sc:  # defaults: switch.turn_on
+    with MockHA() as ha, Sidecar(ha.url, LEX_HA_START_SERVICE="switch.turn_on") as sc:
         out = sc.skill("appliance_start", entity=VACUUM)
-        assert ha.state_of(VACUUM) == "docked", "the vacuum did not move"
-        assert out["outcome"] != "reached", out
+        assert out["outcome"] == "stalled", out
+        assert "does not reach" in out["detail"]
+        assert ha.state_of(VACUUM) == "docked"
+        assert ha.calls == []
 
-    with MockHA() as ha, Sidecar(ha.url, LEX_HA_START_SERVICE="vacuum.start") as sc:
-        out = sc.skill("appliance_start", entity=WASHER)
-        assert ha.state_of(WASHER) == "off", "the washer did not start"
-        assert out["outcome"] != "reached", out
+
+def test_a_homeassistant_domain_service_is_allowed_through():
+    """`homeassistant.*` deliberately acts on any domain, so the guard must not
+    refuse it. Without this the fix would trade one wrong answer for another."""
+    with MockHA() as ha, Sidecar(
+            ha.url, LEX_HA_START_SERVICE="homeassistant.turn_on") as sc:
+        sc.skill("appliance_start", entity=VACUUM)
+        assert ha.calls[-1]["service"] == "homeassistant.turn_on"
+
+
+def test_an_unknown_domain_is_not_silently_guessed_at():
+    """A domain DOMAIN_SERVICES does not know falls back to switch.turn_on —
+    which the guard then refuses, because a sensor is not a switch. The guess
+    is made, but it is never sent."""
+    with MockHA() as ha, Sidecar(ha.url) as sc:
+        out = sc.skill("appliance_start", entity="sensor.pvpc")
+        assert out["outcome"] == "stalled", out
+        assert ha.calls == []
