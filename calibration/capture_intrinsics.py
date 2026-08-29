@@ -164,14 +164,27 @@ if abs(k[0])>0.8: bad.append(f"k1={k[0]:+.2f} enorme")
 if abs(k[4])>5:   bad.append(f"k3={k[4]:+.1f} enorme")
 if abs(cx-W/2)/W>0.08 or abs(cy-H/2)/H>0.08: bad.append("punto principal muy descentrado")
 if rms>1.0:       bad.append(f"RMS {rms:.2f} px por encima de 1.0")
-if bad:
-    print("\n*** RECHAZADA (un RMS bajo no basta): ***")
-    for b in bad: print(f"      {b}")
-    sys.exit(2)
-json.dump({"rms_px":float(rms),"width":W,"height":H,"K":K.tolist(),"dist":k.tolist(),
+payload = {"rms_px":float(rms),"width":W,"height":H,"K":K.tolist(),"dist":k.tolist(),
            "views":len(kept),"board":f"{COLS}x{ROWS}","square_mm":a.square_mm,
            "camera":(f"/dev/video{a.camera}" if sys.platform.startswith("linux") else f"index {a.camera} ({sys.platform})"),"diversity":kept,
-           "normalized":{"fx":fx/W,"fy":fy/H,"cx0":cx/W,"cy0":cy/H}},
-          open(a.out,"w"), indent=2)
+           "normalized":{"fx":fx/W,"fy":fy/H,"cx0":cx/W,"cy0":cy/H}}
+
+# Las ESQUINAS se guardan pase lo que pase, tambien si el ajuste se rechaza.
+# Una tanda dedicada a bordes y esquinas puede muy bien no sostener un ajuste
+# propio -- poca variacion de distancia -- y ser exactamente lo que le falta al
+# ajuste CONJUNTO (pool_intrinsics.py). Tirarlas obligaria a repetir la captura
+# entera, que son minutos de una persona delante del robot. El codigo de salida
+# sigue siendo 2 para que quien llame se entere del rechazo.
+if bad:
+    alt = a.out + ".rejected.json"
+    payload["rejected_for"] = bad
+    json.dump(payload, open(alt, "w"), indent=2)
+    print("\n*** RECHAZADA COMO AJUSTE PROPIO (un RMS bajo no basta): ***")
+    for b in bad: print(f"      {b}")
+    print(f"\n  Las {len(kept)} vistas SI se guardan -> {alt}")
+    print("  Sirven igual para pool_intrinsics.py: no hay que recapturar.")
+    sys.exit(2)
+
+json.dump(payload, open(a.out,"w"), indent=2)
 print(f"\nACEPTADA -> {a.out}")
 print(f"  normalizado: fx={fx/W:.5f} fy={fy/H:.5f} cx0={cx/W:.5f} cy0={cy/H:.5f}")

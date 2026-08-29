@@ -43,42 +43,54 @@ Contraste independiente: la FOV por damero da 83,5 grados y la medida por
 correlacion de fase (`LEX_XLE_CAMERA_FOV`) dio 85,2. Dos metodos distintos, 2%
 de diferencia.
 
-**La incertidumbre real, medida: 4,8%.** Tres tandas independientes el
-2026-08-29, y el resultado reproduce lo del Pi casi exacto (4,6%):
+**Cuatro tandas independientes, 2026-08-29.** Las tandas SUELTAS no son
+fiables, y eso no se arregla capturando mejor:
 
-| tanda | RMS | vistas al borde | fx norm | FOV |
-|---|---|---|---|---|
-| 1 | 0,585 px | **8/22** | 0,56062 | 83,5 |
-| 2 | **0,298 px** | 0/22 | 0,54646 | 84,9 |
-| 3 | 0,434 px | 0/22 | 0,53409 | 86,2 |
+| tanda | RMS | vistas al borde | area | fx norm | FOV |
+|---|---|---|---|---|---|
+| 1 | 0,585 px | 8/22 | 9,6-28,3% | 0,56062 | 83,5 |
+| 2 | **0,298 px** | 0/22 | 7,5-11,8% | 0,54646 | 84,9 |
+| 3 | 0,434 px | 0/22 | 4,1-18,8% | 0,53409 | 86,2 |
+| 4 (solo bordes) | 0,456 px | **13/22** | 5,6-22,0% | 0,51524 | 88,3 |
 
-**El RMS no predice nada de esto.** La tanda de menor RMS (0,298 px) es la peor
-calibracion de las tres: cero vistas al borde, rango de area estrechisimo
-(7,5-11,8%) y `k3` desbocado a +0,2482 frente a +0,04 de las otras. Menos
-restricciones -> ajuste mas comodo -> RMS mas bajo. Es sobreajuste, no calidad.
+**El RMS no predice nada.** La tanda de menor RMS (0,298) es la peor: cero
+vistas al borde y `k3` desbocado a +0,2482 frente a +0,04 de las demas. Menos
+restricciones -> ajuste mas comodo -> RMS mas bajo. Sobreajuste, no calidad.
 
-### El ajuste conjunto
+**Y una tanda dedicada a bordes NO aprieta la dispersion.** Se hizo justo para
+eso, con 13/22 vistas al borde y los rangos x/y mas anchos de las cuatro, y la
+dispersion entre tandas sueltas SUBIO del 4,8% (tres tandas) al 8,4% (cuatro).
+La `fx` suelta baja monotonamente tanda tras tanda -- 0,56062, 0,54646, 0,53409,
+0,51524 -- que es una deriva sistematica, no ruido. Con 22 vistas el ajuste
+compensa focal contra distorsion de forma distinta cada vez, y no hay tecnica
+de captura que lo evite.
 
-`pool_intrinsics.py` funde las esquinas guardadas de las tres tandas en un solo
-ajuste de 66 vistas -> `head_intrinsics_mac_640x480.pooled.json`:
+### El ajuste conjunto es lo que hay que usar, y esta medido
+
+`pool_intrinsics.py` funde las esquinas guardadas de todas las tandas ->
+`head_intrinsics_mac_640x480.pooled.json`:
 
 ```
-66 vistas, RMS 0.460 px, FOV 84.9 grados
-fx=0.54639 fy=0.72528 cx0=0.53258 cy0=0.52066
-k1=+0.0948 k2=-0.1311 p1=+0.00058 p2=-0.00319 k3=+0.0390
+88 vistas, RMS 0.467 px, FOV 85.1 grados
+fx=0.54508 fy=0.72329 cx0=0.53544 cy0=0.51793
+k1=+0.0954 k2=-0.1334 p1=-0.00117 p2=-0.00051 k3=+0.0369
 ```
 
-Cae a -0,1% de la media de las tres, con el area mas ancha (4,1-28,3%) y una
-distorsion sensata. **Es la que hay que usar.**
+**Estabilidad medida por jackknife** (quitar una tanda entera y reajustar):
 
-**Pero fundir centra la estimacion, no la aprieta.** La desviacion tipica de
-las tres es 2,4%, asi que el error estandar de la media sale ~1,4%: unos 5,6 mm
-a 400 mm de alcance, frente a los 19 mm del peor caso individual. Y de las 66
-vistas solo 8 tocan el borde, todas de la tanda 1.
+| | dispersion | a 400 mm |
+|---|---|---|
+| tandas sueltas | 8,4% (std 3,6%) | ~34 mm |
+| conjunto, jackknife | **1,8%** | ~7 mm |
 
-**La palanca sigue siendo la misma:** una tanda dedicada ENTERA a bordes y
-esquinas, y volver a fundir. No hace falta recapturar lo demas — las esquinas
-estan guardadas.
+Error estandar jackknife del conjunto: **~1,3%**, unos 5 mm a 400 mm. Y meter
+las 22 vistas de la tanda 4 -- cuyo ajuste propio daba 0,51524, un 5% por
+debajo -- movio el conjunto solo un 0,24%. Esa es la razon para fundir: no es
+que las capturas sean mejores, es que 88 vistas sujetan el ajuste y 22 no.
+
+**Corolario practico: no busques la tanda perfecta, acumula tandas.** Las
+esquinas se guardan siempre (tambien si el ajuste propio se rechaza), asi que
+cada tanda nueva se suma al conjunto sin recapturar nada.
 
 ### CameraModel no modela la distorsion, y aqui cuesta ~9 mm
 

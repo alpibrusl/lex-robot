@@ -1,7 +1,9 @@
 """Ajuste conjunto de las tres tandas. El JSON guarda las esquinas detectadas
 justo para esto: 66 vistas juntas sujetan la distorsion mucho mejor que 22."""
 import json, math, sys, numpy as np, cv2
-FILES = [f"calibration/head_intrinsics_mac_640x480{s}.json" for s in ("", ".run2", ".run3")]
+import glob as _glob
+FILES = sys.argv[1:] or sorted(_glob.glob("calibration/head_intrinsics_mac_640x480*.json"))
+FILES = [f for f in FILES if ".pooled." not in f]
 runs = [json.load(open(f)) for f in FILES]
 W, H = runs[0]["width"], runs[0]["height"]
 COLS, ROWS = 9, 6
