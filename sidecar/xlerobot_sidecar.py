@@ -132,6 +132,9 @@ Base — LEX_XLE_BASE=diff (default, XLeRobot 0.4.0) or =omni (0.3.0-era LeKiwi 
            own bus instead — mutually exclusive with LEX_XLE_BASE_PORT; see
            SIDECAR.md's servo-bus-layout note for when this applies),
            LEX_XLE_BASE_LEFT_ID / _RIGHT_ID (default 1/2),
+           LEX_XLE_BASE_LEFT_SIGN / _RIGHT_SIGN (+1 or -1, default +1) — wheel
+           mounting polarity; set one to -1 when a forward command pivots the
+           robot instead of driving it (mirror-mounted wheels),
            LEX_XLE_WHEEL_RADIUS_M (default 0.05), LEX_XLE_TRACK_WIDTH_M (default 0.30)
     omni:  LEX_XLE_BASE_PORT (required), LEX_XLE_BASE_ID (default xle_base) — drives
            the real LeKiwi 3-omni-wheel base via lerobot.robots.lekiwi
@@ -707,9 +710,12 @@ class _HwDiffBase:
     _VELOCITY_SIGN_BIT = 15  # STS3215 Goal_Velocity is sign-magnitude, not two's complement
     _STEPS_PER_DEG = 4096.0 / 360.0  # same convention as lekiwi's _degps_to_raw
 
-    def __init__(self, left_id, right_id, wheel_radius_m, track_width_m, port=None, shared_bus=None):
+    def __init__(self, left_id, right_id, wheel_radius_m, track_width_m, port=None, shared_bus=None,
+                 left_sign=1, right_sign=1):
         if (port is None) == (shared_bus is None):
             raise ValueError("_HwDiffBase needs exactly one of port or shared_bus")
+        if left_sign not in (1, -1) or right_sign not in (1, -1):
+            raise ValueError(f"wheel signs must be +1 or -1, got {left_sign!r}/{right_sign!r}")
         try:
             from lerobot.motors.encoding_utils import decode_sign_magnitude, encode_sign_magnitude
             from lerobot.motors.feetech import FeetechMotorsBus
@@ -725,12 +731,38 @@ class _HwDiffBase:
         self.track_width_m = track_width_m
         self.left_id = left_id
         self.right_id = right_id
+        # Mounting polarity, NOT a kinematic quantity. diff_drive_wheel_speeds
+        # returns body-frame wheel speeds, and a forward command therefore gives
+        # BOTH wheels the same sign; whether that spins the two motors the same
+        # way round depends on how they are physically mounted. On a mirror-
+        # mounted pair it does not, and the robot pivots instead of driving.
+        # Measured on the Mac unit 2026-08-29: left(9)=-90 right(10)=+90 drives
+        # forward, so that build needs left_sign=-1.
+        #
+        # This is why "swap LEX_XLE_BASE_LEFT_ID and _RIGHT_ID" cannot fix a
+        # robot that turns on a forward command, though the env files used to
+        # advise exactly that: a forward command sends both wheels an IDENTICAL
+        # value, so swapping which id is called 'left' changes nothing at all.
+        # Swapping the ids fixes a TURN that goes the wrong way; only a sign
+        # fixes a forward that pivots.
+        self.left_sign = left_sign
+        self.right_sign = right_sign
         self._owns_bus = shared_bus is None
         if shared_bus is not None:
             self.bus = shared_bus
         else:
             self.bus = FeetechMotorsBus(port=port, motors={})
-            self.bus.connect()
+            # handshake=False, exactly as tower.py does on its own dedicated
+            # port. This bus is deliberately built with motors={} — the wheels
+            # are addressed by raw id through _write/_sync_write and never go
+            # through .motors — and lerobot's handshake cannot cope with that:
+            # _assert_same_firmware() on an empty motors dict raises
+            #   RuntimeError: Some Motors use different firmware versions: {}
+            # which is both false and unactionable. Measured on lerobot 0.6.1
+            # 2026-08-29: it made the LEX_XLE_BASE_PORT path fail at startup
+            # every time. The shared-bus path above never hit it because that
+            # bus is the arm's, already connected and already handshaken.
+            self.bus.connect(handshake=False)
         self._op_mode_addr, self._op_mode_len = get_address(self.bus.model_ctrl_table, self._MODEL, "Operating_Mode")
         self._goal_vel_addr, self._goal_vel_len = get_address(self.bus.model_ctrl_table, self._MODEL, "Goal_Velocity")
         self._temp_addr, self._temp_len = get_address(self.bus.model_ctrl_table, self._MODEL, "Present_Temperature")
@@ -754,8 +786,10 @@ class _HwDiffBase:
         # deg/s, matching the STS3215 velocity-mode convention used elsewhere
         # in lerobot (see lekiwi's _body_to_wheel_raw for the same unit choice).
         ids_values = {
-            self.left_id: self._encode_sign_magnitude(self._degps_to_raw(math.degrees(left_w)), self._VELOCITY_SIGN_BIT),
-            self.right_id: self._encode_sign_magnitude(self._degps_to_raw(math.degrees(right_w)), self._VELOCITY_SIGN_BIT),
+            self.left_id: self._encode_sign_magnitude(
+                self._degps_to_raw(self.left_sign * math.degrees(left_w)), self._VELOCITY_SIGN_BIT),
+            self.right_id: self._encode_sign_magnitude(
+                self._degps_to_raw(self.right_sign * math.degrees(right_w)), self._VELOCITY_SIGN_BIT),
         }
         self.bus._sync_write(self._goal_vel_addr, self._goal_vel_len, ids_values)
 
@@ -2613,6 +2647,8 @@ class XLeRobot:
                         float(os.environ.get("LEX_XLE_TRACK_WIDTH_M", "0.30")),
                         port=base_port if base_port else None,
                         shared_bus=self._hw_arms[base_shared_arm].follower.bus if base_shared_arm else None,
+                        left_sign=int(os.environ.get("LEX_XLE_BASE_LEFT_SIGN", "1")),
+                        right_sign=int(os.environ.get("LEX_XLE_BASE_RIGHT_SIGN", "1")),
                     )
         except HardwareError as e:
             self._disconnect_partial()
