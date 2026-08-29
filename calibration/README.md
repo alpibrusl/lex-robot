@@ -18,6 +18,57 @@ tiene sentido el motor de datos de #153: todo el bucle de auto-reset es
 visión → `project_to_plane` → xyz → IK, y `project_to_plane` rechaza
 imposibles geométricos pero **no** números equivocados (#150 riesgo 3).
 
+## El Mac Studio: paso 1 hecho tambien, a 640x480
+
+Medido 2026-08-29. **Es una calibracion distinta, no una copia de la del Pi**:
+otra unidad fisica de camara y otra resolucion, y una calibracion solo vale a
+su propia resolucion.
+
+```
+22 vistas, RMS 0.585 px, 640x480, cuadro 20.15 mm, indice 0
+fx=358.8  fy=357.3  (fx/fy=1.00413)   FOV 83.5 grados
+cx=339.7 (+3.1%)  cy=255.7 (+3.3%)
+k1=+0.0981 k2=-0.1357 p1=+0.00170 p2=-0.00400 k3=+0.0415
+
+normalizado (lo que guarda CameraModel):
+  fx=0.56062  fy=0.74442  cx0=0.53074  cy0=0.53267
+```
+-> `head_intrinsics_mac_640x480.json`
+
+**8 de 22 vistas pegadas al borde**, frente a 3 de 21 en la tanda del Pi. Esa
+era exactamente la palanca que el apartado de abajo pedia apretar. Area entre
+9,6% y 28,3%, o sea un factor ~1,7 en distancia.
+
+Contraste independiente: la FOV por damero da 83,5 grados y la medida por
+correlacion de fase (`LEX_XLE_CAMERA_FOV`) dio 85,2. Dos metodos distintos, 2%
+de diferencia.
+
+**La incertidumbre real sigue sin medirse en este host.** En el Pi hicieron
+falta TRES tandas independientes para descubrir que la dispersion era del 4,6%
+mientras el RMS decia 0,365 px. Aqui solo hay una tanda, asi que 0,585 px es lo
+que explica *estas* vistas, no la incertidumbre. Para saberla: repetir la
+captura entera dos veces mas y mirar como se mueve `fx`.
+
+### CameraModel no modela la distorsion, y aqui cuesta ~9 mm
+
+`src/camera.lex` es un pinhole puro: no tiene k1/k2/k3/p1/p2, asi que los
+coeficientes medidos arriba **no los usa nadie**. Cuanto cuesta, medido sobre
+esta calibracion:
+
+| radio normalizado | desplazamiento medio | maximo |
+|---|---|---|
+| 0,0-0,3 (centro) | 0,34 px | 1,22 px |
+| 0,3-0,6 | 2,54 px | 5,62 px |
+| 0,6-0,9 | 4,88 px | 8,20 px |
+| 0,9+ (esquinas) | 4,76 px | 8,41 px |
+
+Mediana 3,0 px sobre el encuadre, maximo 8,4 px (1,31% del ancho). Con
+fx=358,8 eso son 1,34 grados de error de direccion, y **a 400 mm de alcance,
+~9 mm** — del mismo orden que los 5,3-7,2 mm que logro el mano-ojo, asi que no
+se pierde en el ruido. Es despreciable en el centro y crece hacia los bordes,
+que es justo donde `project_to_plane` acaba mirando cuando el objeto no esta
+centrado.
+
 ## El resultado del paso 1
 
 ```

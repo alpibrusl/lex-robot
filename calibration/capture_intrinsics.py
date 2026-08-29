@@ -24,6 +24,12 @@ ap.add_argument("--camera", type=int, default=0)
 ap.add_argument("--width", type=int, default=1280)
 ap.add_argument("--height", type=int, default=960)
 ap.add_argument("--max-view-err", type=float, default=1.5)
+ap.add_argument("--lead-in", type=float, default=0.0,
+                help="segundos antes de empezar, para llegar hasta el tablero")
+ap.add_argument("--slack", type=float, default=240.0,
+                help="margen sobre views*settle antes de rendirse")
+ap.add_argument("--backend", choices=["auto","v4l2","avfoundation"], default="auto",
+                help="captura: auto elige por plataforma (v4l2 en Linux)")
 ap.add_argument("--out", required=True)
 a = ap.parse_args()
 
@@ -32,14 +38,60 @@ FLAGS = cv2.CALIB_CB_ADAPTIVE_THRESH | cv2.CALIB_CB_NORMALIZE_IMAGE
 objp = np.array([[c*a.square_mm/1000, r*a.square_mm/1000, 0]
                  for r in range(ROWS) for c in range(COLS)], np.float32)
 
-cap = cv2.VideoCapture(a.camera, cv2.CAP_V4L2)
+# CAP_V4L2 is Linux-only: on macOS it fails to open and every read returns
+# nothing, so the script would sit until its deadline and exit with "solo 0
+# vistas". Pick the backend from the platform and let --backend override.
+BACKENDS = {"auto": cv2.CAP_ANY, "v4l2": getattr(cv2, "CAP_V4L2", cv2.CAP_ANY),
+            "avfoundation": getattr(cv2, "CAP_AVFOUNDATION", cv2.CAP_ANY)}
+if a.backend != "auto":
+    backend = BACKENDS[a.backend]
+elif sys.platform.startswith("linux"):
+    backend = BACKENDS["v4l2"]
+else:
+    backend = cv2.CAP_ANY
+cap = cv2.VideoCapture(a.camera, backend)
+if not cap.isOpened():
+    print(f"no pude abrir la camara {a.camera} (backend={a.backend})", file=sys.stderr)
+    if sys.platform == "darwin":
+        print("macOS: el permiso de camara va por PROCESO RESPONSABLE. Una sesion\n"
+              "de Claude Code dentro de la app Claude no puede abrirla y no aparece\n"
+              "en Ajustes > Privacidad. Lanzalo desde Terminal.app, que si tiene\n"
+              "el permiso:\n"
+              "  osascript -e 'tell application \"Terminal\" to do script \"...\"'",
+              file=sys.stderr)
+    sys.exit(1)
+# MJPG is what gives the Pi headroom for two cameras at once. The Mac cannot
+# set it at all (lerobot logs "failed to set fourcc=MJPG" and carries on), so
+# this is a request, not a requirement — never gate the capture on it.
 cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, W); cap.set(cv2.CAP_PROP_FRAME_HEIGHT, H)
 time.sleep(1.5)
 
+# The camera may not honour the requested size. A calibration is only valid at
+# the resolution it was taken at, so a silent substitution would poison the
+# result — refuse instead of writing a mislabelled file.
+ok, probe = cap.read()
+if not ok or probe is None:
+    print("la camara abrio pero no entrega fotogramas", file=sys.stderr); sys.exit(1)
+if (probe.shape[1], probe.shape[0]) != (W, H):
+    print(f"pedi {W}x{H} y la camara entrega {probe.shape[1]}x{probe.shape[0]}; "
+          f"una calibracion solo vale a su propia resolucion", file=sys.stderr)
+    sys.exit(1)
+
 corners, meta, last = [], [], None
-print(f"{a.views} vistas, {a.settle}s entre cada una — MUEVE entre capturas", flush=True)
-deadline = time.monotonic() + a.views*a.settle + 240
+# Sin esto la captura empieza en el instante en que arranca el proceso, con la
+# persona todavia en el teclado leyendo instrucciones: el tablero no se mueve,
+# cada fotograma es un casi-duplicado, se descarta, y a los 5 minutos sale
+# "solo 1 vistas". Medido tal cual en el Mac 2026-08-29.
+if a.lead_in > 0:
+    print(f"empiezo en {a.lead_in:.0f}s — VE HASTA EL TABLERO Y COGELO", flush=True)
+    for left in range(int(a.lead_in), 0, -5):
+        print(f"   {left}s...", flush=True); time.sleep(min(5, left))
+print(f"{a.views} vistas, {a.settle}s entre cada una — MUEVE entre capturas.", flush=True)
+print("Varia DISTANCIA, INCLINACION (30-40 grados) y POSICION, y llega a los\n"
+      "BORDES Y ESQUINAS del encuadre: sin esas vistas la distorsion queda\n"
+      "suelta y la focal se mueve un 4,6% entre tandas.", flush=True)
+deadline = time.monotonic() + a.views*a.settle + a.slack
 while len(corners) < a.views and time.monotonic() < deadline:
     ok, frame = cap.read()
     if not ok: continue
@@ -118,7 +170,7 @@ if bad:
     sys.exit(2)
 json.dump({"rms_px":float(rms),"width":W,"height":H,"K":K.tolist(),"dist":k.tolist(),
            "views":len(kept),"board":f"{COLS}x{ROWS}","square_mm":a.square_mm,
-           "camera":f"/dev/video{a.camera}","diversity":kept,
+           "camera":(f"/dev/video{a.camera}" if sys.platform.startswith("linux") else f"index {a.camera} ({sys.platform})"),"diversity":kept,
            "normalized":{"fx":fx/W,"fy":fy/H,"cx0":cx/W,"cy0":cy/H}},
           open(a.out,"w"), indent=2)
 print(f"\nACEPTADA -> {a.out}")
