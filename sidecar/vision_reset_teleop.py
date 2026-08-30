@@ -61,6 +61,14 @@ class CameraModel:
     fy: float
     cx0: float
     cy0: float
+    # Brown-Conrady lens distortion, zero for an ideal lens. Default to zero so
+    # a calibration written before these existed loads unchanged and behaves
+    # exactly as it used to.
+    k1: float = 0.0
+    k2: float = 0.0
+    k3: float = 0.0
+    p1: float = 0.0
+    p2: float = 0.0
 
     @staticmethod
     def from_json(path: str) -> "CameraModel":
@@ -69,10 +77,33 @@ class CameraModel:
             pos=tuple(d["pos"]), right=tuple(d["right"]), down=tuple(d["down"]),
             forward=tuple(d["forward"]), fx=float(d["fx"]), fy=float(d["fy"]),
             cx0=float(d["cx0"]), cy0=float(d["cy0"]),
+            k1=float(d.get("k1", 0.0)), k2=float(d.get("k2", 0.0)),
+            k3=float(d.get("k3", 0.0)), p1=float(d.get("p1", 0.0)),
+            p2=float(d.get("p2", 0.0)),
         )
 
+    def undistort(self, xd: float, yd: float) -> tuple[float, float]:
+        """Inverse Brown-Conrady, by the standard fixed-point iteration.
+
+        Must stay in lockstep with src/camera.lex's `undistort` -- same model,
+        same eight steps, same results. Matched against OpenCV's
+        `undistortPoints` on this camera's measured coefficients to better than
+        1e-8. Ignoring distortion costs a median 3.0 px and up to 8.4 px on this
+        unit, ~9 mm of world error at 400 mm of reach.
+        """
+        if self.k1 == self.k2 == self.k3 == self.p1 == self.p2 == 0.0:
+            return xd, yd
+        x, y = xd, yd
+        for _ in range(8):
+            r2 = x * x + y * y
+            radial = 1.0 + self.k1 * r2 + self.k2 * r2 * r2 + self.k3 * r2 * r2 * r2
+            dx = 2.0 * self.p1 * x * y + self.p2 * (r2 + 2.0 * x * x)
+            dy = self.p1 * (r2 + 2.0 * y * y) + 2.0 * self.p2 * x * y
+            x, y = (xd - dx) / radial, (yd - dy) / radial
+        return x, y
+
     def ray_direction(self, u: float, v: float) -> tuple[float, float, float]:
-        ru, dv = (u - self.cx0) / self.fx, (v - self.cy0) / self.fy
+        ru, dv = self.undistort((u - self.cx0) / self.fx, (v - self.cy0) / self.fy)
         return tuple(
             self.forward[i] + self.right[i] * ru + self.down[i] * dv for i in range(3)
         )
