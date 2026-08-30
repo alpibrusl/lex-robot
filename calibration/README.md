@@ -65,15 +65,52 @@ La `fx` suelta baja monotonamente tanda tras tanda -- 0,56062, 0,54646, 0,53409,
 compensa focal contra distorsion de forma distinta cada vez, y no hay tecnica
 de captura que lo evite.
 
+### LA VARIABLE QUE MANDABA ERA EL TAMANO DEL TABLERO (2026-08-30)
+
+Las cuatro primeras tandas se hicieron todas con las esquinas a **21-24 px**, y
+de ahi salia el 8,4% de dispersion. Con el tablero **de pie y a ~24 cm**,
+encarado por la torre con `aim_tower_at_board.py`, las esquinas pasan a **32 px**
+y cambia todo:
+
+| tanda | esquinas | fx propia | desvio del conjunto |
+|---|---|---|---|
+| 1-4 (lejos, 22 vistas c/u) | 21-24 px | 0,51524 - 0,56062 | hasta 5,6% |
+| barrido de torre (7 vistas) | 32 px | 0,53994 | 1,1% |
+| **5, a mano de cerca (22 vistas)** | **32 px** | **0,54632** | **0,05%** |
+
+**Una sola tanda de cerca reproduce el conjunto de 117 vistas**, y con solo
+4/22 vistas al borde -- que el propio script marca como "POCAS", despues de
+haber gastado dos tandas enteras persiguiendo bordes sin ganar nada. **No era la
+tecnica de captura ni la cobertura de bordes: era la localizacion de esquinas**,
+que es justo lo que necesita la ventana 11x11 de `cornerSubPix`.
+
+Es el mismo consejo que dan en el hilo de OpenCV sobre eye-to-hand con LeRobot
+("el tablero deberia ocupar >50% de la imagen"), enunciado alli como cobertura
+cuando la causa real es esta.
+
+**No hay sesgo entre poblaciones**, asi que se funde todo:
+
+| | vistas | fx | esquinas |
+|---|---|---|---|
+| solo lejos | 88 | 0,54508 | 27,4 px |
+| solo cerca | 29 | 0,54651 | 31,5 px |
+| **todas** | **117** | **0,54517** | 28,0 px |
+
+0,26% entre cerca y lejos, 1,0 mm a 400 mm. Las tandas de lejos bailaban 8,4%
+una a una pero su CONJUNTO acierta: era ruido, no sesgo, y fundir las rescata.
+
+**Regla practica: o capturas de cerca, y con una tanda basta, o capturas de
+lejos y necesitas fundir varias.**
+
 ### El ajuste conjunto es lo que hay que usar, y esta medido
 
 `pool_intrinsics.py` funde las esquinas guardadas de todas las tandas ->
 `head_intrinsics_mac_640x480.pooled.json`:
 
 ```
-88 vistas, RMS 0.467 px, FOV 85.1 grados
-fx=0.54508 fy=0.72329 cx0=0.53544 cy0=0.51793
-k1=+0.0954 k2=-0.1334 p1=-0.00117 p2=-0.00051 k3=+0.0369
+117 vistas, RMS 0.454 px, FOV 85.1 grados
+fx=0.54517 fy=0.72347 cx0=0.53400 cy0=0.52051
+k1=+0.0919 k2=-0.1347 p1=+0.00024 p2=-0.00114 k3=+0.0435
 ```
 
 **Estabilidad medida por jackknife** (quitar una tanda entera y reajustar):
@@ -81,9 +118,13 @@ k1=+0.0954 k2=-0.1334 p1=-0.00117 p2=-0.00051 k3=+0.0369
 | | dispersion | a 400 mm |
 |---|---|---|
 | tandas sueltas | 8,4% (std 3,6%) | ~34 mm |
-| conjunto, jackknife | **1,8%** | ~7 mm |
+| conjunto de 4 tandas de lejos | 1,8% | ~7 mm |
+| **conjunto de las 6** | **0,75%** | **~2,3 mm** |
 
-Error estandar jackknife del conjunto: **~1,3%**, unos 5 mm a 400 mm. Y meter
+Error estandar jackknife del conjunto: **0,56%**, unos 2,3 mm a 400 mm, desde
+1,28% (5,1 mm) cuando solo estaban las cuatro tandas de lejos. Parte de ese
+estrechamiento es mecanico -- quitar una de seis tandas retira menos datos que
+una de cuatro -- pero el grueso viene de las esquinas a 32 px. Y meter
 las 22 vistas de la tanda 4 -- cuyo ajuste propio daba 0,51524, un 5% por
 debajo -- movio el conjunto solo un 0,24%. Esa es la razon para fundir: no es
 que las capturas sean mejores, es que 88 vistas sujetan el ajuste y 22 no.
