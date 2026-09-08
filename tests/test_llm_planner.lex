@@ -90,7 +90,7 @@ fn mock_provider() -> prov.Provider {
       }
     }
     iter.from_list(deltas)
-  } }
+  }, stream: None }
 }
 
 # ── Assertions ─────────────────────────────────────────────────────────────
@@ -149,7 +149,7 @@ fn mock_replan_provider() -> prov.Provider {
       }
     }
     iter.from_list(deltas)
-  } }
+  }, stream: None }
 }
 
 fn test_denial_teaches_and_replan_succeeds() -> [net, crypto, llm, io, proc, approval] Result[Unit, Str] {
