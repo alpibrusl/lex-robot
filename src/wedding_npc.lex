@@ -130,7 +130,7 @@ fn line_for(id :: Str, request :: Str, transcript_so_far :: Str, regard :: Int, 
     } else {
       str.join(["So far, this has been said:\n", transcript_so_far, "\n\nWhat do you say? Respond: SAY:<your line>"], "")
     }
-    let provider := if use_opencode { oai.make_provider({ api_key: token, base_url: opencode_zen_url() }) } else { if use_local { providers.litellm_at(base_url) } else { vtx.make_provider(vtx.config_at(token, project, location)) } }
+    let provider := if use_opencode { oai.make_provider(oai.config_at(token, opencode_zen_url())) } else { if use_local { providers.litellm_at(base_url) } else { vtx.make_provider(vtx.config_at(token, project, location)) } }
     let model    := if use_opencode { prov.make_model_ref("opencode-go", model_name) } else { if use_local { prov.make_model_ref("litellm", model_name) } else { vtx.gemini_35_flash() } }
     let opts     := { temperature: Some(0.9), top_p: None, max_steps: Some(1), max_tokens: if use_opencode { Some(2500) } else { Some(128) } }
     let agent    := llm_agent.make_agent(str.concat("wedding-", id), system_msg, model, provider, [], opts)

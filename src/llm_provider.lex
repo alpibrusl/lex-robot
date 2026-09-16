@@ -100,16 +100,16 @@ fn default_model_name(name :: Str) -> Str
 fn select(name :: Str, url :: Str, model_name :: Str, api_key :: Str) -> Result[Selected, Str] {
   let label := str.join([name, "/", model_name, " @ ", url], "")
   if name == "ollama" {
-    Ok({ provider: oll.make_provider({ base_url: url }), model: prov.make_model_ref("ollama", model_name), label: label })
+    Ok({ provider: oll.make_provider(oll.config_at(url)), model: prov.make_model_ref("ollama", model_name), label: label })
   } else {
     if name == "openai" {
-      Ok({ provider: oai.make_provider({ api_key: api_key, base_url: url }), model: prov.make_model_ref("openai", model_name), label: label })
+      Ok({ provider: oai.make_provider(oai.config_at(api_key, url)), model: prov.make_model_ref("openai", model_name), label: label })
     } else {
       if name == "opencode" {
         if str.is_empty(api_key) {
           Err("opencode needs an API key — set LEX_LLM_API_KEY or OPENCODE_API_KEY (opencode.ai/zen)")
         } else {
-          Ok({ provider: oai.make_provider({ api_key: api_key, base_url: url }), model: prov.make_model_ref("opencode-go", model_name), label: label })
+          Ok({ provider: oai.make_provider(oai.config_at(api_key, url)), model: prov.make_model_ref("opencode-go", model_name), label: label })
         }
       } else {
         Err(str.join(["unknown LEX_LLM_PROVIDER '", name, "' — use ollama | openai | opencode"], ""))
