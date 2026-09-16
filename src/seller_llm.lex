@@ -103,7 +103,7 @@ fn quote_price(stall :: Str, item_id :: Str, item_name :: Str, base_price :: Int
       "What is your asking price? (Must be ≥ 1. If above the buyer's ceiling they won't buy.)\n",
       "Respond: PRICE:<integer>"
     ], "")
-    let provider := if use_opencode { oai.make_provider({ api_key: token, base_url: opencode_zen_url() }) } else { if use_local { providers.litellm_at(base_url) } else { vtx.make_provider(vtx.config_at(token, project, location)) } }
+    let provider := if use_opencode { oai.make_provider(oai.config_at(token, opencode_zen_url())) } else { if use_local { providers.litellm_at(base_url) } else { vtx.make_provider(vtx.config_at(token, project, location)) } }
     let model    := if use_opencode { prov.make_model_ref("opencode-go", model_name) } else { if use_local { prov.make_model_ref("litellm", model_name) } else { vtx.gemini_35_flash() } }
     # GO models are often reasoning models — give them room or content comes back empty.
     let opts     := { temperature: Some(0.7), top_p: None, max_steps: Some(1), max_tokens: if use_opencode { Some(2500) } else { Some(128) } }
@@ -165,7 +165,7 @@ fn haggle_reply(stall :: Str, item_name :: Str, base :: Int, offer :: Int, token
       "Move your ASK down toward the offer to close; ACCEPT once the offer clears your cost."], "")
     let user_msg := str.join(["Item: \"", item_name, "\". Your base cost: ", int.to_str(base),
       ". The buyer offers ", int.to_str(offer), ". Respond ASK:<int> / ACCEPT / WALK."], "")
-    let provider := if use_opencode { oai.make_provider({ api_key: token, base_url: opencode_zen_url() }) } else { if use_local { providers.litellm_at(base_url) } else { vtx.make_provider(vtx.config_at(token, project, location)) } }
+    let provider := if use_opencode { oai.make_provider(oai.config_at(token, opencode_zen_url())) } else { if use_local { providers.litellm_at(base_url) } else { vtx.make_provider(vtx.config_at(token, project, location)) } }
     let model    := if use_opencode { prov.make_model_ref("opencode-go", model_name) } else { if use_local { prov.make_model_ref("litellm", model_name) } else { vtx.gemini_35_flash() } }
     let opts     := { temperature: Some(0.6), top_p: None, max_steps: Some(1), max_tokens: if use_opencode { Some(2500) } else { Some(64) } }
     let agent    := llm_agent.make_agent(stall, system_msg, model, provider, [], opts)

@@ -120,7 +120,7 @@ fn default_model() -> Str {
 }
 
 fn opencode_provider(api_key :: Str) -> prov.Provider {
-  oai.make_provider({ api_key: api_key, base_url: opencode_zen_url() })
+  oai.make_provider(oai.config_at(api_key, opencode_zen_url()))
 }
 
 fn opencode_model(model_name :: Str) -> prov.ModelRef {

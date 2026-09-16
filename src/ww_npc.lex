@@ -70,7 +70,7 @@ fn provider_configured(token :: Str, project :: Str, base_url :: Str) -> Bool {
     or (str.is_empty(base_url) and not str.is_empty(token) and not str.is_empty(project))
 }
 fn make_prov(token :: Str, project :: Str, location :: Str, base_url :: Str) -> prov.Provider {
-  if base_url == "opencode" { oai.make_provider({ api_key: token, base_url: opencode_zen_url() }) }
+  if base_url == "opencode" { oai.make_provider(oai.config_at(token, opencode_zen_url())) }
   else { if not str.is_empty(base_url) { providers.litellm_at(base_url) } else { vtx.make_provider(vtx.config_at(token, project, location)) } }
 }
 fn make_model(base_url :: Str, model_name :: Str) -> prov.ModelRef {
