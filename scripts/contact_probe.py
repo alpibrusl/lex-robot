@@ -117,7 +117,22 @@ class Termostato:
         if t >= self.blando:
             self.pausas += 1
             log(f"    termostato: {t} C, pauso hasta {self.reanudar}")
+            # Pausar SOSTENIENDO el brazo no enfria: la corriente de mantener la
+            # postura es justo lo que calienta. Se suelta el par mientras se
+            # espera -- el brazo se apoyara, y quien llama lo recoloca al seguir.
+            soltado = []
+            for j in ("shoulder_lift", "elbow_flex"):
+                try:
+                    self.bus.write("Torque_Enable", j, 0, normalize=False)
+                    soltado.append(j)
+                except Exception:
+                    pass
             while self.temp(forzar=True) > self.reanudar:
                 time.sleep(15)
+            for j in soltado:
+                try:
+                    self.bus.write("Torque_Enable", j, 1, normalize=False)
+                except Exception:
+                    pass
             log(f"    reanudo a {self.temp()} C")
         return True
