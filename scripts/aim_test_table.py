@@ -7,7 +7,9 @@ tocar, mirar donde se ve la pinza, y recorrer el camino pixel->3D. La diferencia
 contra la cinematica es el error de punteria real, en milimetros, y no necesita
 mover nada de sitio.
 """
-import json, os, sys, time, numpy as np, cv2
+import json, os, sys, time, numpy as np, cv2, pathlib
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from contact_probe import LimitePar, bajar_hasta_tocar
 from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
 from lerobot.model.kinematics import RobotKinematics
 ARM=["shoulder_pan","shoulder_lift","elbow_flex","wrist_flex","wrist_roll","gripper"]
@@ -80,22 +82,13 @@ try:
                       normalize=False); time.sleep(0.8)
         sgn=+1 if fk()[2]<z0 else -1
         rob.bus.write("Goal_Position","shoulder_lift",lift,normalize=False); time.sleep(0.8)
+        # Antes se bajaba empujando hasta que la carga subia, y eso sobrecargo
+        # el servo del hombro dos veces. Con el limite de par bajo el servo se
+        # rinde al tocar y el contacto se nota porque no llega a la orden.
         toc=None
-        hist=[]
-        for _ in range(70):
-            lift=int(np.clip(lift+sgn*14,lo+30,hi-30))
-            rob.bus.write("Goal_Position","shoulder_lift",lift,normalize=False); time.sleep(0.33)
-            cc=carga(); hist.append(cc)
-            # Un umbral absoluto no distingue contacto de GRAVEDAD: cerca de la
-            # extension maxima el par sobre shoulder_lift ya es alto y sube al
-            # bajar, asi que cruza el umbral sin tocar nada (salieron 3 falsos
-            # contactos seguidos, todos 2 cm por encima de la mesa). Un contacto
-            # real SALTA; la gravedad sube poco a poco.
-            salto=cc-min(hist[-4:-1]) if len(hist)>=4 else 0.0
-            if cc>UMB and salto>250:
+        with LimitePar(rob.bus,("shoulder_lift","elbow_flex")):
+            if bajar_hasta_tocar(rob.bus,"shoulder_lift",sgn,(lo,hi)):
                 toc=fk().copy()
-                print(f"    contacto: carga {cc:.0f}, salto {salto:.0f} en 3 pasos",flush=True)
-                break
         if toc is None: print(f"  punto {k+1}: sin contacto",flush=True); continue
         # Si el contacto no esta a la altura de la mesa, NO es la mesa. Los tres
         # primeros contactos salieron a -0.090..-0.100 con la mesa en -0.064: la

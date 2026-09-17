@@ -17,7 +17,12 @@ from lerobot.model.kinematics import RobotKinematics
 PORT=os.environ.get("PROBE_PORT","/dev/cu.usbmodem5B610332201")
 PID=os.environ.get("PROBE_ID","xle_right")
 ARM=["shoulder_pan","shoulder_lift","elbow_flex","wrist_flex","wrist_roll","gripper"]
-PAN_OFFSETS=(0,-140,+140,-280,+280)      # ticks: el arco lateral
+# shoulder_pan barre casi solo en y: con solo pan los contactos salen alineados
+# (3.4 cm en x contra 20.6 en y) y la normal del plano queda mal determinada --
+# 6.3 mm de residuo, frente a 0.5 cuando hubo reparto en ambas direcciones. Para
+# separar en x hay que variar el ALCANCE, o sea el codo.
+PAN_OFFSETS=(0,-160,+160,-300,+300)      # ticks: el arco lateral (mueve en y)
+CODO_OFFSETS=(0,-170,+170)               # ticks: el alcance (mueve en x)
 PASO=18                                   # ticks de bajada por paso
 MAX_PASOS=70
 kin=RobotKinematics(urdf_path=os.environ["LEX_XLE_URDF_PATH"],joint_names=ARM,
@@ -51,11 +56,16 @@ try:
     print(f"  +40 ticks de shoulder_lift mueve z {sube*100:+.1f} cm "
           f"-> para bajar uso {SENTIDO:+d}",flush=True)
     puntos=[]
-    for k,off in enumerate(PAN_OFFSETS):
+    combina=[(p_,c_) for i_,p_ in enumerate(PAN_OFFSETS)
+             for c_ in (CODO_OFFSETS if i_ < 3 else (0,))]
+    for k,(off,coff) in enumerate(combina):
         for j in ARM: ir(j,inicio[j])
         time.sleep(1.0)
         pan=int(np.clip(inicio["shoulder_pan"]+off,*lim["shoulder_pan"]))
-        ir("shoulder_pan",pan); time.sleep(1.2)
+        ir("shoulder_pan",pan)
+        if coff:
+            ir("elbow_flex",int(np.clip(inicio["elbow_flex"]+coff,*lim["elbow_flex"])))
+        time.sleep(1.4)
         lift=inicio["shoulder_lift"]; tocado=None
         for _ in range(MAX_PASOS):
             lift=int(np.clip(lift+SENTIDO*PASO,lim["shoulder_lift"][0]+30,
@@ -64,19 +74,21 @@ try:
             c=carga()
             if c>UMBRAL:
                 q=fk(); tocado=(float(q[0]),float(q[1]),float(q[2]))
-                print(f"  pan {off:+5d}: CONTACTO en ({q[0]:+.3f},{q[1]:+.3f},"
+                print(f"  pan {off:+5d} codo {coff:+5d}: CONTACTO en ({q[0]:+.3f},{q[1]:+.3f},"
                       f"{q[2]:+.3f}) carga {c:.0f}",flush=True)
                 puntos.append(tocado); break
             if lift in (lim["shoulder_lift"][0]+30,lim["shoulder_lift"][1]-30): break
-        if tocado is None: print(f"  pan {off:+5d}: sin contacto",flush=True)
+        if tocado is None: print(f"  pan {off:+5d} codo {coff:+5d}: sin contacto",flush=True)
         ir("shoulder_lift",inicio["shoulder_lift"]); time.sleep(1.0)
+        ir("elbow_flex",inicio["elbow_flex"]); time.sleep(0.6)
     for j in ARM: ir(j,inicio[j])
     time.sleep(1.2)
     if len(puntos)>=3:
         P=np.array(puntos); ext=P.max(0)-P.min(0)
         print(f"\n{len(puntos)} contactos, extension {ext[0]*100:.1f} x {ext[1]*100:.1f} cm")
-        if min(ext[0],ext[1])<0.03:
-            print("demasiado alineados para un plano; no escribo nada"); sys.exit(3)
+        if min(ext[0],ext[1])<0.06:
+            print(f"demasiado alineados ({ext[0]*100:.1f} x {ext[1]*100:.1f} cm, "
+                  "hacen falta 6 en ambas); no escribo nada"); sys.exit(3)
         # Un contacto sobre un objeto (el nivel son 2 cm) es un atipico que
         # inclina el plano entero sin delatarse: el residuo sube un poco y el
         # ajuste sigue pareciendo razonable. Se ajusta, se mira quien se sale, y
