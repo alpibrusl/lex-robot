@@ -230,7 +230,11 @@ def segundos_base(plan: dict) -> float:
 
 
 def frase(plan: dict, resultado: str) -> str | None:
-    """Que decir en voz alta. Corta: hablar tapa la siguiente orden."""
+    """Que decir en voz alta. CORTA, y por un motivo medido: el tiempo de `say`
+    es el tiempo de PRONUNCIAR la frase, no de generarla -- 5 caracteres son
+    1.12 s, 19 son 1.98 s y 51 son 3.91 s. Como hablar bloquea la escucha, cada
+    palabra de mas es latencia. Cambiar de motor TTS no arregla esto: nadie dice
+    "pinza derecho abrir" mas rapido de lo que se tarda en decirlo."""
     accion = (plan or {}).get("accion")
     if "que brazo" in resultado:
         return "que brazo?"
@@ -240,12 +244,8 @@ def frase(plan: dict, resultado: str) -> str | None:
         return None
     if accion == "parar":
         return "parado"
-    if accion == "pinza":
-        return f"pinza {plan.get('brazo','')} {plan.get('estado','')}"
-    if accion == "mover":
-        return f"{str(plan.get('articulacion','')).replace('_',' ')} {plan.get('brazo','')}, hecho"
-    if accion == "base":
-        return f"{plan.get('direccion','')}, hecho"
+    if accion in ("pinza", "mover", "base"):
+        return "hecho"
     return None
 
 
@@ -403,7 +403,12 @@ def main() -> None:
     import argparse
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--modelo", default=os.environ.get("LEX_VOZ_MODELO", "qwen3.8:27b-mlx"))
-    ap.add_argument("--asr", default=os.environ.get("LEX_VOZ_ASR", "small"))
+    ap.add_argument("--asr", default=os.environ.get("LEX_VOZ_ASR",
+                                                    "mlx-community/whisper-large-v3-turbo"),
+                    help="repo de mlx-whisper, o un nombre de faster-whisper con --motor faster")
+    ap.add_argument("--motor", choices=["mlx", "faster"],
+                    default=os.environ.get("LEX_VOZ_MOTOR", "mlx"),
+                    help="mlx: 5.6x mas rapido en Apple Silicon (medido)")
     ap.add_argument("--voz", default=os.environ.get("LEX_VOZ_TTS", "Paulina"),
                     help="voz de `say`; vacio = sin respuesta hablada")
     ap.add_argument("--segundos", type=float, default=6.0)
@@ -439,9 +444,31 @@ def main() -> None:
             return
         import numpy as np
         import sounddevice as sd
-        from faster_whisper import WhisperModel
-        print(f"cargando whisper '{a.asr}'...", flush=True)
-        asr = WhisperModel(a.asr, device="cpu", compute_type="int8")
+        print(f"cargando {a.motor} '{a.asr}'...", flush=True)
+        if a.motor == "mlx":
+            # Medido sobre la MISMA grabacion en este Mac: mlx-whisper tarda
+            # 0.78 s donde faster-whisper tarda 4.39 s con el mismo modelo
+            # `small`, y large-v3-turbo en mlx tarda lo mismo que small (0.80 s)
+            # siendo mucho mejor. Mismo patron que con el LLM: en Apple Silicon
+            # manda el RUNTIME, no el tamano del modelo.
+            import mlx_whisper
+            import soundfile as sf
+
+            def transcribe(audio):
+                sf.write("/tmp/lex_voz.wav", audio, 16000)
+                return mlx_whisper.transcribe(
+                    "/tmp/lex_voz.wav", path_or_hf_repo=a.asr,
+                    language="es", initial_prompt=PROMPT_ASR)["text"].strip()
+        else:
+            from faster_whisper import WhisperModel
+            modelo_asr = WhisperModel(a.asr, device="cpu", compute_type="int8")
+
+            def transcribe(audio):
+                segs, _ = modelo_asr.transcribe(
+                    audio, language="es", beam_size=1, initial_prompt=PROMPT_ASR,
+                    vad_filter=True, vad_parameters={"min_silence_duration_ms": 300},
+                    condition_on_previous_text=False, no_speech_threshold=0.5)
+                return " ".join(s.text for s in segs).strip()
         print(f"\n*** LISTO — di \"{a.clave} ...\" cuando veas ESCUCHANDO. Ctrl-C para salir ***", flush=True)
         while True:
             print(f"\nESCUCHANDO ({a.segundos:.0f}s)...", flush=True)
@@ -453,17 +480,7 @@ def main() -> None:
             if rms < RMS_MINIMO:
                 print(f"  (silencio, rms={rms:.5f})", flush=True)
                 continue
-            # vad_filter: quita los tramos sin habla ANTES de transcribir. Es
-            # el arreglo de las alucinaciones -- whisper sobre silencio inventa
-            # ("!Suscribete!", "Just in time"), y aqui el micro es un PowerConf
-            # con supresion de ruido del que no se puede subir mas la ganancia.
-            # condition_on_previous_text=False corta los bucles en los que una
-            # alucinacion alimenta la siguiente.
-            segs, info = asr.transcribe(
-                audio, language="es", beam_size=1, initial_prompt=PROMPT_ASR,
-                vad_filter=True, vad_parameters={"min_silence_duration_ms": 300},
-                condition_on_previous_text=False, no_speech_threshold=0.5)
-            texto = " ".join(s.text for s in segs).strip()
+            texto = transcribe(audio)
             if not texto:
                 print("  (sin texto)", flush=True)
                 continue

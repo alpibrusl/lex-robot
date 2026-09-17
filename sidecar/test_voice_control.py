@@ -326,3 +326,13 @@ def test_las_ruedas_siempre_se_paran_aunque_algo_falle():
     finally:
         voice_control.time.sleep = original
     assert ordenes[-2:] == [(9, 0.0), (10, 0.0)], f"no se pararon: {ordenes}"
+
+
+def test_las_frases_habladas_son_cortas():
+    """El tiempo de `say` es el de PRONUNCIAR: 5 caracteres 1.12 s, 51 caracteres
+    3.91 s. Como hablar bloquea la escucha, cada palabra de mas es latencia."""
+    from voice_control import frase
+    for plan in ({"accion": "pinza", "brazo": "derecho", "estado": "abrir"},
+                 {"accion": "mover", "brazo": "izquierdo", "articulacion": "hombro"},
+                 {"accion": "base", "direccion": "adelante"}):
+        assert len(frase(plan, "ok")) <= 12, frase(plan, "ok")
