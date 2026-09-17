@@ -180,11 +180,10 @@ los 833 ticks disponibles) o recolocar el tope del tilt.
 FICHERO. Sin eso el conjunto salia identico con y sin el barrido y parecia que
 sumaba, cuando lo que pasaba es que el filtro lo tiraba entero en silencio.
 
-### CameraModel no modela la distorsion, y aqui cuesta ~9 mm
+### La distorsion: cuanto costaba ignorarla, y por que ya no se ignora
 
-`src/camera.lex` es un pinhole puro: no tiene k1/k2/k3/p1/p2, asi que los
-coeficientes medidos arriba **no los usa nadie**. Cuanto cuesta, medido sobre
-esta calibracion:
+`src/camera.lex` **era** un pinhole puro y los coeficientes medidos arriba no
+los usaba nadie. Esto es lo que costaba, medido sobre esta calibracion:
 
 | radio normalizado | desplazamiento medio | maximo |
 |---|---|---|
@@ -193,12 +192,23 @@ esta calibracion:
 | 0,6-0,9 | 4,88 px | 8,20 px |
 | 0,9+ (esquinas) | 4,76 px | 8,41 px |
 
-Mediana 3,0 px sobre el encuadre, maximo 8,4 px (1,31% del ancho). Con
-fx=358,8 eso son 1,34 grados de error de direccion, y **a 400 mm de alcance,
-~9 mm** — del mismo orden que los 5,3-7,2 mm que logro el mano-ojo, asi que no
-se pierde en el ruido. Es despreciable en el centro y crece hacia los bordes,
-que es justo donde `project_to_plane` acaba mirando cuando el objeto no esta
-centrado.
+Mediana 3,0 px sobre el encuadre, maximo 8,4 px (1,31% del ancho). Eso son
+~1,3 grados de error de direccion y **a 400 mm de alcance, ~9 mm** — del mismo
+orden que los 5,3-7,2 mm del mano-ojo, y **mayor que los ~2,3 mm de la focal**.
+Es despreciable en el centro y crece hacia los bordes, que es justo donde
+`project_to_plane` acaba mirando cuando el objeto no esta centrado.
+
+**Corregido 2026-08-30.** `CameraModel` lleva ya `k1`/`k2`/`k3`/`p1`/`p2` y
+`ray_direction` desdistorsiona antes de construir el rayo, por iteracion de
+punto fijo (la inversa de Brown-Conrady no tiene forma cerrada). Cero en los
+cinco = comportamiento identico al de antes, asi que una calibracion vieja
+carga igual. Hay tres implementaciones de esta proyeccion en el repo —
+`src/camera.lex`, `vision_reset_teleop.CameraModel` y la forma directa de
+`camera_calibrate.project_world_to_pixel` — y `sidecar/test_camera_distortion.py`
+las ata entre si y contra `cv2.undistortPoints`, con los coeficientes medidos
+de esta unidad. La directa tambien la aplica: la usa `verify` para preguntar si
+la calibracion predice la realidad, y sin distorsion mediria el pinhole contra
+una lente distorsionada y reportaria un error que seria suyo.
 
 ## El resultado del paso 1
 

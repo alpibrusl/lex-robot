@@ -76,15 +76,34 @@ _SUBPIX_WIN = (11, 11)
 
 # ── pure geometry (no camera, no hardware — all of this is unit-tested) ───────
 
-def intrinsics_to_normalized(K, width: int, height: int) -> dict:
+def intrinsics_to_normalized(K, width: int, height: int, dist=None) -> dict:
     """OpenCV pixel intrinsics -> the normalized form `CameraModel` wants.
 
     `camera.lex` documents fx/fy as "in image-width/-height units" and the
     principal point in 0..1, with detection coordinates normalized the same
     way. So a pixel focal length divides by the corresponding image dimension.
+
+    The distortion coefficients need no such rescaling: they act on normalized
+    coordinates, which are dimensionless either way. OpenCV orders them
+    (k1, k2, p1, p2, k3) -- k3 comes LAST, after the tangential pair, and
+    getting that wrong silently swaps a large radial term for a tiny tangential
+    one. Omitting `dist` means an ideal lens, which is what a caller written
+    before these coefficients existed meant.
     """
-    return {"fx": float(K[0][0]) / width, "fy": float(K[1][1]) / height,
-            "cx0": float(K[0][2]) / width, "cy0": float(K[1][2]) / height}
+    out = {"fx": float(K[0][0]) / width, "fy": float(K[1][1]) / height,
+           "cx0": float(K[0][2]) / width, "cy0": float(K[1][2]) / height}
+    if dist is None:
+        return out
+    flat: list[float] = []
+    for item in dist:
+        if isinstance(item, (list, tuple)) or hasattr(item, "__len__"):
+            flat.extend(float(x) for x in item)
+        else:
+            flat.append(float(item))
+    flat = (flat + [0.0] * 5)[:5]
+    out.update({"k1": flat[0], "k2": flat[1], "p1": flat[2],
+                "p2": flat[3], "k3": flat[4]})
+    return out
 
 
 def pose_to_camera_axes(R, tvec):
@@ -143,6 +162,18 @@ def project_world_to_pixel(model: dict, point):
         raise ValueError("point is behind the camera")
     ru = sum(d[i] * right[i] for i in range(3)) / depth
     dv = sum(d[i] * down[i] for i in range(3)) / depth
+    # Forward Brown-Conrady. This one is direct -- it is the INVERSE that needs
+    # iterating -- but it must be applied, because `verify` uses this function
+    # to ask whether the calibration predicts reality. Leave it out and verify
+    # measures the pinhole model against a distorted lens and reports an error
+    # that is really its own.
+    k1, k2 = model.get("k1", 0.0), model.get("k2", 0.0)
+    k3, p1, p2 = model.get("k3", 0.0), model.get("p1", 0.0), model.get("p2", 0.0)
+    if k1 or k2 or k3 or p1 or p2:
+        r2 = ru * ru + dv * dv
+        radial = 1.0 + k1 * r2 + k2 * r2 * r2 + k3 * r2 * r2 * r2
+        ru, dv = (ru * radial + 2.0 * p1 * ru * dv + p2 * (r2 + 2.0 * ru * ru),
+                  dv * radial + p1 * (r2 + 2.0 * dv * dv) + 2.0 * p2 * ru * dv)
     return (model["cx0"] + model["fx"] * ru, model["cy0"] + model["fy"] * dv)
 
 
@@ -357,7 +388,7 @@ def cmd_extrinsics(a) -> int:
             "--tower-calib checks it before an unattended run.",
         ],
         "pos": pos, "right": right, "down": down, "forward": forward,
-        **intrinsics_to_normalized(intr["K"], intr["width"], intr["height"]),
+        **intrinsics_to_normalized(intr["K"], intr["width"], intr["height"], intr.get("dist")),
         "calibration": {
             "intrinsics_rms_px": intr["rms_px"],
             "extrinsic_reprojection_px": err,
