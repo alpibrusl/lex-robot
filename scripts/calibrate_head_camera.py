@@ -51,7 +51,16 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "sidecar
 
 ARM_JOINTS = ["shoulder_pan", "shoulder_lift", "elbow_flex",
               "wrist_flex", "wrist_roll", "gripper"]
-LEFT_PORT = "/dev/serial/by-id/usb-1a86_USB_Single_Serial_5B3D043715-if00"
+# El puerto del BRAZO y el de la TORRE se leen del entorno, porque no siempre
+# comparten bus. En el Pi la torre cuelga del bus de este mismo brazo; en el Mac
+# el brazo con el perfil xle_left es 5B3D0437151 y la torre vive en el OTRO
+# adaptador (5B610332201), asi que `shared_bus=rob.bus` no la encuentra.
+# Por defecto queda el valor del Pi, para no cambiar el comportamiento alli.
+ARM_PORT = os.environ.get("LEX_XLE_CALIB_ARM_PORT",
+                          "/dev/serial/by-id/usb-1a86_USB_Single_Serial_5B3D043715-if00")
+ARM_ID = os.environ.get("LEX_XLE_CALIB_ARM_ID", "xle_left")
+TOWER_PORT = os.environ.get("LEX_XLE_CALIB_TOWER_PORT")   # None = mismo bus que el brazo
+LEFT_PORT = ARM_PORT
 GRIP_CLOSED, GRIP_OPEN = 2100, 2900
 MAX_STEP_TICKS = 380                  # per joint, per pose — bounded, but big
 LIMIT_MARGIN = 60                     # stay this far inside the calibrated range
@@ -154,9 +163,10 @@ def main():
     for _ in range(8):
         cap.read()
 
-    rob = SO101Follower(SO101FollowerConfig(port=LEFT_PORT, id="xle_left"))
+    rob = SO101Follower(SO101FollowerConfig(port=ARM_PORT, id=ARM_ID))
     rob.bus.connect()
-    twr = tower.TowerDriver(shared_bus=rob.bus, pan_limits=(347, 3747),
+    twr = tower.TowerDriver(**({"port": TOWER_PORT} if TOWER_PORT else {"shared_bus": rob.bus}),
+                            pan_limits=(347, 3747),
                             tilt_limits=(2523, 3400))
     home = rob.bus.sync_read("Present_Position", normalize=False, num_retry=3)
     t0 = twr.read()
