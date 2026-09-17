@@ -69,3 +69,55 @@ def bajar_hasta_tocar(bus, joint, sentido, limites, paso=PASO,
         if meta in (lo + 30, hi - 30):
             return False
     return False
+
+
+class Termostato:
+    """Gobierno termico: pausar en el umbral blando, ABORTAR en el duro.
+
+    Esperar a que salte la proteccion del servo es reaccionar tarde: para cuando
+    se dispara, ya se llego a 56 C. Y comprobar entre poses tampoco basta, porque
+    el calor se genera DURANTE el descenso -- por eso una vigilancia cada 4 poses
+    no vio nada mientras el servo se cocia.
+
+    Aqui se consulta con frecuencia (tambien dentro del bucle de bajada), con
+    cache corta para no saturar el bus:
+      - blando: pausar hasta que enfrie de verdad
+      - duro:   abortar, que el protocolo guarde lo medido y se acabe
+
+    Un limite propio por debajo del del fabricante convierte un fallo en una
+    decision.
+    """
+
+    def __init__(self, bus, joint="shoulder_lift", blando=45, duro=50,
+                 reanudar=40, cada_s=2.0):
+        self.bus, self.joint = bus, joint
+        self.blando, self.duro, self.reanudar = blando, duro, reanudar
+        self.cada_s, self._t, self._cuando = cada_s, None, -1e9
+        self.pausas, self.pico = 0, 0
+
+    def temp(self, forzar=False):
+        ahora = time.monotonic()
+        if forzar or self._t is None or ahora - self._cuando > self.cada_s:
+            try:
+                self._t = int(self.bus.read("Present_Temperature", self.joint,
+                                            normalize=False))
+                self._cuando = ahora
+                self.pico = max(self.pico, self._t)
+            except Exception:
+                pass                      # una lectura perdida no para nada
+        return self._t if self._t is not None else 0
+
+    def comprobar(self, log=print):
+        """Devuelve False si hay que ABORTAR. Pausa sola si toca."""
+        t = self.temp()
+        if t >= self.duro:
+            log(f"    TERMOSTATO: {t} C >= {self.duro}, ABORTO "
+                "(se guarda lo medido hasta aqui)")
+            return False
+        if t >= self.blando:
+            self.pausas += 1
+            log(f"    termostato: {t} C, pauso hasta {self.reanudar}")
+            while self.temp(forzar=True) > self.reanudar:
+                time.sleep(15)
+            log(f"    reanudo a {self.temp()} C")
+        return True

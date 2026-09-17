@@ -27,7 +27,7 @@ import time
 import numpy as np
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from contact_probe import LimitePar  # noqa: E402
+from contact_probe import LimitePar, Termostato  # noqa: E402
 
 ARM = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll",
        "gripper"]
@@ -97,6 +97,9 @@ def main():
         # colocacion previa fallo (p.ej. por un choque de puertos), el protocolo
         # arranca desde donde sea y la primera pose baja TODO su recorrido
         # forzando -- que es como se disparo una sobrecarga con 0 contactos.
+        termo = Termostato(rob.bus, blando=45, duro=50, reanudar=40)
+        print(f"  termostato: pausa a 45 C, aborta a 50 C (hombro a "
+              f"{termo.temp(forzar=True)} C)", flush=True)
         T_ini = pose()
         radio = float(np.linalg.norm(T_ini[:2, 3]))
         print(f"  partida: ({T_ini[0,3]:+.3f},{T_ini[1,3]:+.3f},{T_ini[2,3]:+.3f}) m, "
@@ -129,10 +132,8 @@ def main():
             confs.append((+180, +170, wf, wr))
 
         for k, (pan, codo, wf, wr) in enumerate(confs):
-            if temp() > TEMP_MAX:
-                print(f"  hombro a {temp()} C; espero", flush=True)
-                while temp() > TEMP_MAX - 4:
-                    time.sleep(10)
+            if not termo.comprobar():
+                break
             for j in ARM:
                 rob.bus.write("Goal_Position", j, ini[j], normalize=False)
             time.sleep(1.1)
@@ -191,6 +192,10 @@ def main():
                 rob.bus.write("Goal_Position", "shoulder_lift", lift,
                               normalize=False)
                 time.sleep(0.3)
+                if termo.temp() >= termo.duro:
+                    print(f"    TERMOSTATO durante el descenso: {termo.temp()} C, "
+                          "corto la bajada", flush=True)
+                    break
                 c = carga()
                 hist.append(c)
                 salto = c - min(hist[-4:-1]) if len(hist) >= 4 else 0.0
@@ -217,10 +222,7 @@ def main():
             time.sleep(1.1)
             # Pausa real entre poses: el hombro es el que calienta, y 39 poses
             # seguidas lo llevaron a proteccion termica tres veces.
-            if (k + 1) % 4 == 0 and temp() > 44:
-                print(f"    pausa: hombro a {temp()} C", flush=True)
-                while temp() > 41:
-                    time.sleep(15)
+
         for j in ARM:
             rob.bus.write("Goal_Position", j, ini[j], normalize=False)
         time.sleep(1.2)
@@ -232,6 +234,10 @@ def main():
         except Exception:
             pass
 
+    try:
+        print(f"\n  termico: pico {termo.pico} C, {termo.pausas} pausas", flush=True)
+    except Exception:
+        pass
     if a.obs_out and obs:
         pathlib.Path(a.obs_out).write_text(json.dumps(
             {"obs": [{"R": o[0], "p": o[1]} for o in obs]}, indent=2) + "\n")
