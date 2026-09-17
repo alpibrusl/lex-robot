@@ -46,6 +46,12 @@
       "fit_mean": 5.14,
       "leave_one_out_mean": 7.86,
       "leave_one_out_max": 24.06
-    }
-  }
+    },
+    "tower_note": "pose de torre a la que se midio; la camara va sobre una torre orientable, asi que estos extrinsecos SOLO valen a este angulo. El brazo contrario se calibra en pan 486 (180 grados) porque el campo de 85 grados no cubre bien los dos."
+  },
+  "tower_ticks": {
+    "pan": 2527,
+    "tilt": 3331
+  },
+  "arm_id": "xle_left"
 }

@@ -67,8 +67,8 @@ def main():
         d = json.loads(pathlib.Path(f).read_text())
         got = d if isinstance(d, list) else d.get("samples", [])
         got = [x for x in got if "joints_deg" in x]
-        if isinstance(d, dict) and "tower" in d:
-            towers.add(json.dumps(d["tower"], sort_keys=True))
+        if isinstance(d, dict) and "tower_reference" in d:
+            towers.add(json.dumps(d["tower_reference"], sort_keys=True))
         print(f"  {f}: {len(got)} muestras con angulos")
         samples += got
     if len(towers) > 1:
