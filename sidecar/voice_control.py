@@ -72,6 +72,7 @@ Formatos:
   {"accion":"pinza","brazo":"derecho"|"izquierdo"|null,"estado":"abrir"|"cerrar"}
   {"accion":"base","direccion":"adelante"|"atras"|"izquierda"|"derecha","segundos":<0.2-1.5>}
   {"accion":"parar"}
+  {"accion":"mirar","direccion":"frente"|"derecha"|"izquierda"|"cerca","pregunta":"<lo que preguntan>"}
   {"accion":"nada"}
 
 "+" = base a la derecha, hombro arriba, codo estira, muneca arriba, giro horario.
@@ -79,6 +80,10 @@ Si no dicen cuanto, usa 15 grados.
 "base" mueve el ROBOT ENTERO sobre sus ruedas ("avanza", "ve hacia atras",
 "gira a la izquierda"); si no dicen cuanto, usa 0.5 segundos.
 "articulacion":"base" es otra cosa: el giro del hombro de un brazo.
+"mirar" es para PREGUNTAS sobre lo que ve, no ordenes de movimiento: "que ves",
+"donde estas", "que hay a la derecha", "hay alguien". Copia la pregunta tal cual
+en "pregunta". "direccion" es hacia donde mirar: "frente" por defecto, y "cerca"
+si piden mirar de cerca lo que tiene en la pinza.
 La transcripcion puede traer erratas ("pinta" por "pinza"): interpreta la intencion."""
 
 # El reconocedor se sesga hacia este vocabulario. Sin el, "hombro" se
@@ -376,11 +381,24 @@ class Brazo:
         return False, self.pos(j)
 
 
+def mirar(plan: dict) -> str:
+    """Responder una pregunta sobre lo que se ve.
+
+    Va aparte de los movimientos a proposito: no toca el bus de servos de los
+    brazos, y su modo de fallar es distinto -- una camara a oscuras no da un
+    error, da una descripcion inventada. Eso se filtra en vision.captura.
+    """
+    import vision
+    return vision.mira(plan.get("direccion") or "frente", plan.get("pregunta"))
+
+
 def ejecuta(plan: dict, brazos: dict) -> str:
     ok, motivo = valida(plan, brazos)
     if not ok:
         return motivo
     accion = plan["accion"]
+    if accion == "mirar":
+        return mirar(plan)
     if accion == "parar":
         for b in brazos.values():
             b.suelta()
