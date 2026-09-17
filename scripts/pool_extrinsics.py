@@ -46,6 +46,18 @@ def main():
     p.add_argument("--max-reproj-px", type=float, default=4.0,
                    help="listón sobre la validacion; 4.0 asume una cinematica "
                         "mejor de la que tiene este brazo (~8 px = ~7 mm)")
+    p.add_argument("--board-plane", default="",
+                   help="JSON del MISMO plano visto por la camara (tablero)")
+    p.add_argument("--table-plane", default="",
+                   help="JSON del plano medido POR TACTO (5+ contactos). Se anade "
+                        "como restriccion al ajuste. Sin el, la pose de camara y "
+                        "el desfase de pinza se compensan mutuamente: el error de "
+                        "reproyeccion sale precioso y la camara acaba 22 cm fuera "
+                        "de sitio, cosa que la reproyeccion NO puede ver porque "
+                        "mide FK->pixel y ahi los dos errores se cancelan.")
+    p.add_argument("--plane-weight", type=float, default=200.0,
+                   help="px equivalentes por metro de error de plano (200 = 1 cm "
+                        "de mesa pesa como 2 px)")
     p.add_argument("--out", default="")
     a = p.parse_args()
 
@@ -90,7 +102,21 @@ def main():
     ok, r0, t0 = cv2.solvePnP(obj, img, K, dist, flags=cv2.SOLVEPNP_SQPNP)
     if not ok:
         sys.exit("el PnP de arranque no converge")
-    x, keep, e, loo = solve_with_tool_offset(obj_T, img, K, dist, r0, t0)
+    plano = None
+    if a.table_plane:
+        import cv2 as _cv
+        tc = json.loads(pathlib.Path(a.table_plane).read_text())
+        pl = json.loads(pathlib.Path(a.board_plane).read_text()) if a.board_plane else None
+        if pl is None:
+            sys.exit("--table-plane necesita tambien --board-plane (el mismo plano "
+                     "visto por la camara)")
+        Rb, _ = _cv.Rodrigues(np.array(pl["rvec"], np.float64))
+        plano = {"n_cam": Rb[:, 2], "p_cam": np.array(pl["tvec"], np.float64).ravel(),
+                 "n_arm": np.array(tc["normal"], np.float64),
+                 "c_arm": np.array(tc["centroid"], np.float64),
+                 "w": a.plane_weight}
+        print(f"  restriccion de plano activa (peso {a.plane_weight:.0f} px/m)")
+    x, keep, e, loo = solve_with_tool_offset(obj_T, img, K, dist, r0, t0, plane=plano)
     tool = x[6:9]
     print(f"  ajuste: {keep.sum()}/{len(samples)} poses, media {e[keep].mean():.2f} px")
     print(f"  desfase de la pinza ({tool[0]*100:+.1f},{tool[1]*100:+.1f},"

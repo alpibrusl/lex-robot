@@ -172,7 +172,7 @@ def motion_pixel(cap, set_gripper, blur=5, thresh=None, expect_area=None,
 
 
 
-def solve_with_tool_offset(obj_T, img, K, dist, rvec0, tvec0):
+def solve_with_tool_offset(obj_T, img, K, dist, rvec0, tvec0, plane=None):
     """PnP que estima TAMBIEN donde estan los dedos respecto al marco de la pinza.
 
     El PnP normal supone que el punto 3D observado es el origen de
@@ -193,9 +193,32 @@ def solve_with_tool_offset(obj_T, img, K, dist, rvec0, tvec0):
     def pts(tool):
         return np.array([T[:3, :3] @ tool + T[:3, 3] for T in obj_T])
 
-    def resid(p):
+    def resid_px(p):
+        """Solo los residuos de PIXEL, en pares (x,y): el filtro de atipicos
+        trabaja por pose, asi que necesita esta forma sin los del plano."""
         proj, _ = cv2.projectPoints(pts(p[6:9]), p[:3], p[3:6], K, dist)
-        return (proj.reshape(-1, 2) - img).ravel()
+        return (proj.reshape(-1, 2) - img)
+
+    def resid_plano(p):
+        if plane is None:
+            return np.zeros(0)
+        # La reproyeccion sola no puede ver un error de pose de camara que el
+        # desfase de pinza compense: mide FK->pixel y ahi ambos se cancelan.
+        # Este termino compara el MISMO plano fisico medido de dos formas
+        # independientes -- por camara (el tablero) y por tacto (contactos del
+        # brazo) -- y eso si distingue las dos cosas.
+        R, _ = cv2.Rodrigues(p[:3])
+        C = (-R.T @ p[3:6].reshape(3, 1)).ravel()
+        n_a = R.T @ plane["n_cam"]
+        if float(n_a @ plane["n_arm"]) < 0:
+            n_a = -n_a
+        p_a = R.T @ plane["p_cam"] + C
+        d_alt = float((p_a - plane["c_arm"]) @ plane["n_arm"])
+        return np.concatenate([plane["w"] * (n_a - plane["n_arm"]),
+                               [plane["w"] * d_alt]])
+
+    def resid(p):
+        return np.concatenate([resid_px(p).ravel(), resid_plano(p)])
 
     # Sin acotar el desfase el ajuste se escapa a kilometros: una pinza lejisimos
     # y una camara igual de lejos reproyectan casi igual. El limite es fisico.
@@ -206,7 +229,8 @@ def solve_with_tool_offset(obj_T, img, K, dist, rvec0, tvec0):
                  lo + 1e-9, hi - 1e-9)
 
     def fit(keep):
-        r = least_squares(lambda p: resid(p).reshape(-1, 2)[keep].ravel(), p0,
+        r = least_squares(lambda p: np.concatenate(
+                              [resid_px(p)[keep].ravel(), resid_plano(p)]), p0,
                           method="trf", bounds=(lo, hi), loss="soft_l1",
                           f_scale=8.0, max_nfev=20000)
         return r.x
@@ -214,14 +238,14 @@ def solve_with_tool_offset(obj_T, img, K, dist, rvec0, tvec0):
     keep = np.ones(len(img), bool)
     x = fit(keep)
     for _ in range(3):
-        e = np.linalg.norm(resid(x).reshape(-1, 2), axis=1)
+        e = np.linalg.norm(resid_px(x), axis=1)
         cut = max(3.0 * float(np.median(e[keep])), 10.0)
         nk = keep & (e < cut)
         if nk.sum() < 6 or nk.sum() == keep.sum():
             break
         keep = nk
         x = fit(keep)
-    e = np.linalg.norm(resid(x).reshape(-1, 2), axis=1)
+    e = np.linalg.norm(resid_px(x), axis=1)
 
     # Dejando uno fuera: 9 parametros contra pocos puntos se memorizan. El error
     # sobre un punto que el ajuste NO ha visto es el unico honesto.
@@ -230,8 +254,7 @@ def solve_with_tool_offset(obj_T, img, K, dist, rvec0, tvec0):
         k = keep.copy()
         k[h] = False
         try:
-            loo.append(float(np.linalg.norm(
-                resid(fit(k)).reshape(-1, 2)[h])))
+            loo.append(float(np.linalg.norm(resid_px(fit(k))[h])))
         except Exception:
             pass
     return x, keep, e, (np.array(loo) if loo else None)
@@ -256,6 +279,21 @@ def main():
     p.add_argument("--band", type=float, default=2.2,
                    help="cuanto puede desviarse el area de la mediana; bajar si la "
                         "mancha se come el antebrazo ademas de los dedos")
+    p.add_argument("--hold", action="store_true",
+                   help="dejar el par PUESTO al terminar. Por defecto se suelta, y "
+                        "un brazo extendido sobre una mesa se desploma por su propio "
+                        "peso: la tanda siguiente arranca con la pinza apoyada y sus "
+                        "poses salen inservibles. Con esto se encadenan tandas sin "
+                        "recolocar el brazo a mano entre medias.")
+    p.add_argument("--min-z-m", type=float, default=None,
+                   help="altura minima de la pinza (metros, marco del brazo) para "
+                        "aceptar una muestra. NO evita el contacto -- se comprueba "
+                        "tras llegar -- pero evita lo caro: que una pose que APOYA "
+                        "la pinza en la mesa entre en el ajuste. Apoyada, el brazo "
+                        "queda deformado respecto a la pose que cree tener, la "
+                        "cinematica miente, y el ajuste intenta absorberlo con un "
+                        "desfase de pinza imposible (se reconoce porque topa contra "
+                        "sus limites).")
     p.add_argument("--max-step", type=int, default=380,
                    help="ticks maximos por articulacion y pose; subir da mas "
                         "recorrido (y mejor condicionamiento) a costa de alcance")
@@ -372,6 +410,9 @@ def main():
                {"shoulder_pan": step("shoulder_pan", -1, 0.7),
                 "elbow_flex": step("elbow_flex", -1, 0.5)}]
     deltas = [d for d in deltas if not d or any(abs(v) >= 90 for v in d.values())]
+    if a.min_z_m is not None:
+        print(f"  suelo de seguridad: se descartan muestras por debajo de "
+              f"{a.min_z_m*100:.0f} cm")
     print(f"  {len(deltas)} candidate poses, sized to each joint's remaining travel")
     # Asumir cx=cy=centro y distorsion cero es caro en una lente de 85 grados.
     # Las detecciones llegan a x=222 y x=560 -- a +-170 px del centro, justo donde
@@ -464,6 +505,14 @@ def main():
                     e = compute_forward_kinematics_joints_to_ee(
                         {f"{j}.pos": float(deg[j]) for j in ARM_JOINTS}, kin, ARM_JOINTS)
                     ee = [float(e[k]) for k in ("ee.x", "ee.y", "ee.z")]
+                    if a.min_z_m is not None and ee[2] < a.min_z_m:
+                        print(f"    pose {n}: pinza a {ee[2]*100:.1f} cm, por debajo "
+                              f"del suelo {a.min_z_m*100:.0f} cm -- descartada "
+                              "(probable apoyo en la mesa)")
+                        for j in dl:
+                            set_joint(j, home[j])
+                        time.sleep(0.6)
+                        continue
                     # Guardar tambien los angulos: el origen de gripper_frame_link
                     # NO es donde esta la mancha de los dedos, y ese desfase vive en
                     # el marco de la PINZA, asi que rota con la muneca. Con los
@@ -497,14 +546,16 @@ def main():
                 set_joint(j, home[j])
             time.sleep(0.6)
     finally:
-        print("  returning to the start pose and releasing")
+        print("  returning to the start pose and "
+              + ("HOLDING (--hold)" if a.hold else "releasing"))
         rob.bus.sync_write("Goal_Position", home, normalize=False, num_retry=3)
         time.sleep(1.2)
-        for j in ARM_JOINTS:
-            try:
-                rob.bus.write("Torque_Enable", j, 0, normalize=False, num_retry=3)
-            except Exception:
-                pass
+        if not a.hold:
+            for j in ARM_JOINTS:
+                try:
+                    rob.bus.write("Torque_Enable", j, 0, normalize=False, num_retry=3)
+                except Exception:
+                    pass
         rob.bus.disconnect()
         cap.release()
 

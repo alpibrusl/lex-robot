@@ -1,0 +1,49 @@
+{
+  "pos": [
+    0.04965,
+    -0.11957,
+    0.30058
+  ],
+  "right": [
+    -0.39348,
+    -0.919319,
+    0.005172
+  ],
+  "down": [
+    -0.769088,
+    0.326087,
+    -0.549701
+  ],
+  "forward": [
+    0.503664,
+    -0.220274,
+    -0.835345
+  ],
+  "fx": 0.545165,
+  "fy": 0.723465,
+  "cx0": 0.534004,
+  "cy0": 0.520507,
+  "k1": 0.09193752,
+  "k2": -0.13465565,
+  "p1": 0.00024248,
+  "p2": -0.00114248,
+  "k3": 0.04346174,
+  "gripper_tool_offset_m": [
+    0.08674,
+    -0.11669,
+    -0.11482
+  ],
+  "_provenance": {
+    "method": "eye-to-hand PnP agrupado sobre 1 tandas, estimando tambien el desfase de los dedos respecto a gripper_frame_link",
+    "pooled_from": [
+      "/tmp/mt_a.json"
+    ],
+    "poses_used": 11,
+    "poses_total": 12,
+    "reprojection_px": {
+      "fit_mean": 3.69,
+      "leave_one_out_mean": 5.81,
+      "leave_one_out_max": 13.9
+    }
+  }
+}
