@@ -93,6 +93,20 @@ def main():
         print("  limite de par SOLO durante el descenso", flush=True)
         ini = {j: int(rob.bus.read("Present_Position", j, normalize=False))
                for j in ARM}
+        # COMPROBAR LA POSE DE PARTIDA antes de bajar nada. Sin esto, si la
+        # colocacion previa fallo (p.ej. por un choque de puertos), el protocolo
+        # arranca desde donde sea y la primera pose baja TODO su recorrido
+        # forzando -- que es como se disparo una sobrecarga con 0 contactos.
+        T_ini = pose()
+        radio = float(np.linalg.norm(T_ini[:2, 3]))
+        print(f"  partida: ({T_ini[0,3]:+.3f},{T_ini[1,3]:+.3f},{T_ini[2,3]:+.3f}) m, "
+              f"radio {radio*100:.0f} cm", flush=True)
+        if not (0.20 < radio < 0.36):
+            sys.exit(f"  radio {radio*100:.0f} cm fuera de lo util (20-36): el brazo "
+                     "no esta colocado sobre la mesa. No sondeo.")
+        if T_ini[2, 3] < -0.02:
+            sys.exit(f"  la pinza esta a z={T_ini[2,3]:+.3f}, demasiado baja para "
+                     "sondear con seguridad. No sondeo.")
         L = {j: (int(rob.bus.read("Min_Position_Limit", j, normalize=False)),
                  int(rob.bus.read("Max_Position_Limit", j, normalize=False)))
              for j in ARM}
@@ -146,11 +160,18 @@ def main():
             if k == 0:
                 orient0 = Tv[:3, :3].copy()
             elif wf == 0 and wr == 0:
-                da = np.degrees(np.arccos(np.clip(
-                    (np.trace(orient0.T @ Tv[:3, :3]) - 1) / 2, -1, 1)))
+                # Comparar la orientacion COMPLETA es demasiado estricto:
+                # shoulder_pan gira el brazo sobre el eje VERTICAL, lo que no
+                # cambia que parte de la pinza mira a la mesa. Se descartaban
+                # poses validas por exactamente 16 grados, que son los 180 ticks
+                # de pan. Lo que importa es hacia donde apunta la pinza, o sea su
+                # eje de aproximacion.
+                eje0 = orient0[:, 2]
+                ejek = Tv[:3, 2]
+                da = np.degrees(np.arccos(np.clip(float(eje0 @ ejek), -1, 1)))
                 if da > 8:
-                    print(f"  {k+1}/{len(confs)}: la pinza quedo {da:.0f} grados "
-                          "girada pese a compensar; descarto esta pose", flush=True)
+                    print(f"  {k+1}/{len(confs)}: el eje de la pinza quedo {da:.0f} "
+                          "grados inclinado pese a compensar; descarto", flush=True)
                     continue
             base = max(carga() for _ in range(4))
             lift = int(rob.bus.read("Present_Position", "shoulder_lift",
@@ -196,9 +217,9 @@ def main():
             time.sleep(1.1)
             # Pausa real entre poses: el hombro es el que calienta, y 39 poses
             # seguidas lo llevaron a proteccion termica tres veces.
-            if (k + 1) % 8 == 0 and temp() > 46:
+            if (k + 1) % 4 == 0 and temp() > 44:
                 print(f"    pausa: hombro a {temp()} C", flush=True)
-                while temp() > 43:
+                while temp() > 41:
                     time.sleep(15)
         for j in ARM:
             rob.bus.write("Goal_Position", j, ini[j], normalize=False)
