@@ -1,0 +1,228 @@
+{
+  "tower_reference": [
+    2527,
+    3331
+  ],
+  "samples": [
+    {
+      "ee_xyz_m": [
+        0.13176,
+        0.03928,
+        0.29238
+      ],
+      "joints_deg": {
+        "shoulder_pan": -19.5165,
+        "shoulder_lift": -89.3187,
+        "elbow_flex": 93.8901,
+        "wrist_flex": -75.3846,
+        "wrist_roll": -127.6044,
+        "gripper": 60.2249
+      },
+      "pixel": [
+        390.79,
+        230.25
+      ],
+      "blob_area": 13321
+    },
+    {
+      "ee_xyz_m": [
+        0.13814,
+        -0.01776,
+        0.29238
+      ],
+      "joints_deg": {
+        "shoulder_pan": 13.5385,
+        "shoulder_lift": -89.3187,
+        "elbow_flex": 93.8901,
+        "wrist_flex": -75.3846,
+        "wrist_roll": -127.6044,
+        "gripper": 60.2249
+      },
+      "pixel": [
+        427.36,
+        231.98
+      ],
+      "blob_area": 9414
+    },
+    {
+      "ee_xyz_m": [
+        0.13935,
+        0.00861,
+        0.29238
+      ],
+      "joints_deg": {
+        "shoulder_pan": -1.4945,
+        "shoulder_lift": -89.3187,
+        "elbow_flex": 93.8901,
+        "wrist_flex": -75.3846,
+        "wrist_roll": -127.6044,
+        "gripper": 60.2249
+      },
+      "pixel": [
+        596.59,
+        410.94
+      ],
+      "blob_area": 12820
+    },
+    {
+      "ee_xyz_m": [
+        0.09542,
+        0.08352,
+        0.29238
+      ],
+      "joints_deg": {
+        "shoulder_pan": -52.4835,
+        "shoulder_lift": -89.3187,
+        "elbow_flex": 93.8901,
+        "wrist_flex": -75.3846,
+        "wrist_roll": -127.6044,
+        "gripper": 60.2249
+      },
+      "pixel": [
+        353.99,
+        237.39
+      ],
+      "blob_area": 15041
+    },
+    {
+      "ee_xyz_m": [
+        0.11515,
+        0.06598,
+        0.29238
+      ],
+      "joints_deg": {
+        "shoulder_pan": -37.4505,
+        "shoulder_lift": -89.3187,
+        "elbow_flex": 93.8901,
+        "wrist_flex": -75.3846,
+        "wrist_roll": -127.6044,
+        "gripper": 60.2249
+      },
+      "pixel": [
+        371.45,
+        232.37
+      ],
+      "blob_area": 15270
+    },
+    {
+      "ee_xyz_m": [
+        0.21121,
+        0.06925,
+        0.22481
+      ],
+      "joints_deg": {
+        "shoulder_pan": -20.044,
+        "shoulder_lift": -56.5275,
+        "elbow_flex": 93.978,
+        "wrist_flex": -74.8571,
+        "wrist_roll": -127.6923,
+        "gripper": 60.2249
+      },
+      "pixel": [
+        220.17,
+        245.07
+      ],
+      "blob_area": 11600
+    },
+    {
+      "ee_xyz_m": [
+        0.02954,
+        0.00304,
+        0.36773
+      ],
+      "joints_deg": {
+        "shoulder_pan": -19.6044,
+        "shoulder_lift": -89.4066,
+        "elbow_flex": 61.1868,
+        "wrist_flex": -75.3846,
+        "wrist_roll": -127.6044,
+        "gripper": 60.1546
+      },
+      "pixel": [
+        559.29,
+        187.91
+      ],
+      "blob_area": 9690
+    },
+    {
+      "ee_xyz_m": [
+        0.08367,
+        0.02232,
+        0.33947
+      ],
+      "joints_deg": {
+        "shoulder_pan": -19.6044,
+        "shoulder_lift": -89.3187,
+        "elbow_flex": 76.8352,
+        "wrist_flex": -75.3846,
+        "wrist_roll": -127.6044,
+        "gripper": 60.2249
+      },
+      "pixel": [
+        502.86,
+        198.64
+      ],
+      "blob_area": 15311
+    },
+    {
+      "ee_xyz_m": [
+        0.20242,
+        0.06547,
+        0.24156
+      ],
+      "joints_deg": {
+        "shoulder_pan": -19.8681,
+        "shoulder_lift": -89.2308,
+        "elbow_flex": 93.8901,
+        "wrist_flex": -42.3297,
+        "wrist_roll": -127.6044,
+        "gripper": 60.2249
+      },
+      "pixel": [
+        257.13,
+        212.45
+      ],
+      "blob_area": 8739
+    },
+    {
+      "ee_xyz_m": [
+        0.17302,
+        0.05485,
+        0.27057
+      ],
+      "joints_deg": {
+        "shoulder_pan": -19.8681,
+        "shoulder_lift": -89.2308,
+        "elbow_flex": 93.8901,
+        "wrist_flex": -57.7143,
+        "wrist_roll": -127.6044,
+        "gripper": 60.2249
+      },
+      "pixel": [
+        309.35,
+        212.38
+      ],
+      "blob_area": 6719
+    },
+    {
+      "ee_xyz_m": [
+        0.07545,
+        0.0415,
+        0.33577
+      ],
+      "joints_deg": {
+        "shoulder_pan": -42.3736,
+        "shoulder_lift": -89.3187,
+        "elbow_flex": 78.4176,
+        "wrist_flex": -75.3846,
+        "wrist_roll": -127.6044,
+        "gripper": 60.2249
+      },
+      "pixel": [
+        439.96,
+        182.61
+      ],
+      "blob_area": 12669
+    }
+  ]
+}
