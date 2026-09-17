@@ -107,6 +107,6 @@ try:
         print("  guardado /tmp/table_touch.json")
     else: print(f"\nsolo {len(puntos)} contactos")
 finally:
-    try: rob.bus.disconnect()
+    try: rob.bus.disconnect(disable_torque=False)  # si no, el brazo se cae al salir
     except Exception: pass
 sys.stdout.flush()

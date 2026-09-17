@@ -61,7 +61,7 @@ try:
     plo=int(rob.bus.read("Min_Position_Limit","shoulder_pan",normalize=False))
     phi=int(rob.bus.read("Max_Position_Limit","shoulder_pan",normalize=False))
     errs=[]
-    for k,off in enumerate((0,-160,+160)):
+    for k,off in enumerate((0,-110,+110)):
         rob.bus.write("Goal_Position","shoulder_pan",int(np.clip(pan0+off,plo+30,phi-30)),
                       normalize=False); time.sleep(1.5)
         base=max(carga() for _ in range(4)); UMB=base+150
@@ -72,10 +72,21 @@ try:
         sgn=+1 if fk()[2]<z0 else -1
         rob.bus.write("Goal_Position","shoulder_lift",lift,normalize=False); time.sleep(0.8)
         toc=None
+        hist=[]
         for _ in range(70):
             lift=int(np.clip(lift+sgn*14,lo+30,hi-30))
             rob.bus.write("Goal_Position","shoulder_lift",lift,normalize=False); time.sleep(0.33)
-            if carga()>UMB: toc=fk().copy(); break
+            cc=carga(); hist.append(cc)
+            # Un umbral absoluto no distingue contacto de GRAVEDAD: cerca de la
+            # extension maxima el par sobre shoulder_lift ya es alto y sube al
+            # bajar, asi que cruza el umbral sin tocar nada (salieron 3 falsos
+            # contactos seguidos, todos 2 cm por encima de la mesa). Un contacto
+            # real SALTA; la gravedad sube poco a poco.
+            salto=cc-min(hist[-4:-1]) if len(hist)>=4 else 0.0
+            if cc>UMB and salto>250:
+                toc=fk().copy()
+                print(f"    contacto: carga {cc:.0f}, salto {salto:.0f} en 3 pasos",flush=True)
+                break
         if toc is None: print(f"  punto {k+1}: sin contacto",flush=True); continue
         # Si el contacto no esta a la altura de la mesa, NO es la mesa. Los tres
         # primeros contactos salieron a -0.090..-0.100 con la mesa en -0.064: la
@@ -107,7 +118,7 @@ try:
         print("-> " + ("SIRVE para agarrar (la pinza abre 3.5 cm)" if a_.mean()<0.025
               else "todavia no: supera media apertura de pinza"),flush=True)
 finally:
-    try: rob.bus.disconnect()
+    try: rob.bus.disconnect(disable_torque=False)  # si no, el brazo se cae al salir
     except Exception: pass
     cap.release()
 sys.stdout.flush()
