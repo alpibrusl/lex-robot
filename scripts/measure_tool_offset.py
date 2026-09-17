@@ -27,6 +27,9 @@ import time
 
 import numpy as np
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from contact_probe import LimitePar, bajar_hasta_tocar  # noqa: E402
+
 ARM = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll",
        "gripper"]
 PASO = 14                # paso normal, lejos del contacto
@@ -124,26 +127,24 @@ def main():
                 while temp("shoulder_lift") > TEMP_MAX - 3:
                     time.sleep(10)
                 print(f"    enfriado a {temp('shoulder_lift')} C", flush=True)
-            hist, T = [], None
-            for _ in range(MAX_PASOS):
-                cerca = len(hist) >= 3 and (hist[-1] - min(hist[-3:])) > 40
-                paso = PASO_FINO if cerca else PASO
-                lift = int(np.clip(lift + sgn * paso, L["shoulder_lift"][0] + 30,
-                                   L["shoulder_lift"][1] - 30))
-                rob.bus.write("Goal_Position", "shoulder_lift", lift, normalize=False)
-                time.sleep(0.33)
-                c = carga()
-                hist.append(c)
-                salto = c - min(hist[-4:-1]) if len(hist) >= 4 else 0.0
-                if c > base + 120 and salto > SALTO_MIN:
+            lift = int(rob.bus.read("Present_Position", "shoulder_lift",
+                                    normalize=False))
+            z0 = pose()[2, 3]
+            rob.bus.write("Goal_Position", "shoulder_lift",
+                          int(np.clip(lift + 30, L["shoulder_lift"][0] + 30,
+                                      L["shoulder_lift"][1] - 30)), normalize=False)
+            time.sleep(0.8)
+            sgn = +1 if pose()[2, 3] < z0 else -1
+            rob.bus.write("Goal_Position", "shoulder_lift", lift, normalize=False)
+            time.sleep(0.8)
+            # Con el limite de par bajo, el servo se rinde en vez de forzar: el
+            # contacto se nota porque no llega, no porque la carga suba. Es lo
+            # que evita las dos sobrecargas que provoco la deteccion por carga.
+            T = None
+            with LimitePar(rob.bus, ("shoulder_lift", "elbow_flex")):
+                if bajar_hasta_tocar(rob.bus, "shoulder_lift", sgn,
+                                     L["shoulder_lift"]):
                     T = pose()
-                    # aflojar YA: cada decima apretando es calor en el servo
-                    rob.bus.write("Goal_Position", "shoulder_lift",
-                                  int(np.clip(lift - sgn * 3 * paso,
-                                              L["shoulder_lift"][0] + 30,
-                                              L["shoulder_lift"][1] - 30)),
-                                  normalize=False)
-                    break
             if T is None:
                 print(f"  conf {k+1}: sin contacto", flush=True)
             else:
