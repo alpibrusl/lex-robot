@@ -28,11 +28,18 @@
   "p1": 0.00024248,
   "p2": -0.00114248,
   "k3": 0.04346174,
-  "gripper_tool_offset_m": [
+  "blob_offset_m": [
     0.08674,
     -0.11669,
     -0.11482
   ],
+  "blob_offset_note": "centroide de la mancha de movimiento de los dedos, estimado en el ajuste. Parametro molesto, NO sirve para agarrar.",
+  "contact_offset_m": [
+    -0.03619,
+    0.02678,
+    0.02612
+  ],
+  "contact_offset_note": "el punto que TOCA, medido por tacto sin camara. Este es el que sirve para agarrar.",
   "_provenance": {
     "method": "eye-to-hand PnP agrupado sobre 1 tandas, estimando tambien el desfase de los dedos respecto a gripper_frame_link",
     "pooled_from": [

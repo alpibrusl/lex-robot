@@ -15,6 +15,12 @@ ex=json.load(open("calibration/head_extrinsics_mesa.json"))
 R=np.array([ex["right"],ex["down"],ex["forward"]],float); C=np.array(ex["pos"],float)
 ins=json.load(open("calibration/head_intrinsics_mac_640x480.pooled.json"))
 K=np.array(ins["K"],float); dist=np.array(ins["dist"],float).reshape(-1,1)
+# Dos desfases DISTINTOS, y confundirlos era el error de la version anterior:
+# la camara ve el centroide de la mancha de los dedos, y lo que toca la mesa es
+# la punta. Comparar la retroproyeccion de la mancha contra el origen del marco
+# mezclaba ambos y daba 13 cm de "error" que era en realidad el desfase.
+BLOB=np.array(ex.get("blob_offset_m",[0,0,0]),float)
+CONT=np.array(ex.get("contact_offset_m",[0,0,0]),float)
 tc=json.load(open("calibration/table_plane_touch.json"))
 n_pl=np.array(tc["normal"],float); c_pl=np.array(tc["centroid"],float)
 def pixel_a_mesa(u,v):
@@ -32,9 +38,12 @@ cap=cv2.VideoCapture(0); cap.set(3,640); cap.set(4,480); [cap.read() for _ in ra
 def gris():
     for _ in range(4): cap.read()
     ok,f=cap.read(); return cv2.cvtColor(f,cv2.COLOR_BGR2GRAY).astype(np.float32) if ok else None
-def fk():
+def fk_T():
     deg=rob.bus.sync_read("Present_Position",num_retry=3)
-    return np.asarray(kin.forward_kinematics(np.array([float(deg[j]) for j in ARM])),float)[:3,3]
+    return np.asarray(kin.forward_kinematics(np.array([float(deg[j]) for j in ARM])),float)
+def fk(): return fk_T()[:3,3]
+def punto(off):
+    T=fk_T(); return T[:3,:3]@off+T[:3,3]
 def carga():
     return float(max(int(rob.bus.read("Present_Load",j,normalize=False))&0x3FF
                      for j in ("shoulder_lift","elbow_flex")))
@@ -92,7 +101,9 @@ try:
         # primeros contactos salieron a -0.090..-0.100 con la mesa en -0.064: la
         # pinza estaba dentro de la cesta del carrito, 3 cm mas abajo, y el
         # "error de punteria" de 9.5 cm medido asi no significaba nada.
-        fuera=float((toc-c_pl)@n_pl)
+        # el que debe estar en el plano es el punto de CONTACTO, no el origen
+        toc_c=punto(CONT)
+        fuera=float((toc_c-c_pl)@n_pl)
         if abs(fuera)>0.015:
             print(f"  punto {k+1}: contacto {fuera*100:+.1f} cm respecto al plano de "
                   "la mesa -> NO es la mesa (cesta? objeto?). Descartado.",flush=True)
@@ -103,9 +114,14 @@ try:
         if px is None: print(f"  punto {k+1}: no veo la pinza apoyada",flush=True); continue
         vis=pixel_a_mesa(px[0],px[1])
         if vis is None: print(f"  punto {k+1}: el rayo no corta la mesa",flush=True); continue
-        e=vis-toc; lat=float(np.linalg.norm(e-n_pl*float(e@n_pl)))
+        # la mancha esta en el aire aunque la punta toque, asi que su rayo NO
+        # corta la mesa donde ella esta: se compara contra donde la cinematica
+        # dice que esta la mancha, proyectado al plano por el mismo rayo.
+        blob3=punto(BLOB)
+        e=vis-blob3; lat=float(np.linalg.norm(e-n_pl*float(e@n_pl)))
         errs.append(float(np.linalg.norm(e)))
-        print(f"  punto {k+1}: pinza toca en ({toc[0]:+.3f},{toc[1]:+.3f},{toc[2]:+.3f})",flush=True)
+        print(f"  punto {k+1}: contacto a {fuera*100:+.1f} cm del plano; "
+              f"mancha (cinematica) en ({blob3[0]:+.3f},{blob3[1]:+.3f},{blob3[2]:+.3f})",flush=True)
         print(f"            la camara la situa en ({vis[0]:+.3f},{vis[1]:+.3f},{vis[2]:+.3f})",flush=True)
         print(f"            ERROR {np.linalg.norm(e)*100:.1f} cm ({lat*100:.1f} lateral)",flush=True)
         # subir antes de girar

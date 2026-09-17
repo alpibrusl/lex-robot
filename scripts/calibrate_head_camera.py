@@ -172,7 +172,8 @@ def motion_pixel(cap, set_gripper, blur=5, thresh=None, expect_area=None,
 
 
 
-def solve_with_tool_offset(obj_T, img, K, dist, rvec0, tvec0, plane=None):
+def solve_with_tool_offset(obj_T, img, K, dist, rvec0, tvec0, plane=None,
+                           tool_fijo=None):
     """PnP que estima TAMBIEN donde estan los dedos respecto al marco de la pinza.
 
     El PnP normal supone que el punto 3D observado es el origen de
@@ -222,11 +223,22 @@ def solve_with_tool_offset(obj_T, img, K, dist, rvec0, tvec0, plane=None):
 
     # Sin acotar el desfase el ajuste se escapa a kilometros: una pinza lejisimos
     # y una camara igual de lejos reproyectan casi igual. El limite es fisico.
+    # Con el desfase MEDIDO (por tacto, sin camara) se fija en vez de estimarse:
+    # es la unica forma de romper el intercambio con la pose de camara, que aqui
+    # dentro lo llevaba a ~13-20 cm contra sus limites cuando de verdad son 5.2.
     LIM = 0.15
-    lo = np.concatenate([np.full(3, -4 * np.pi), np.full(3, -5.0), np.full(3, -LIM)])
-    hi = np.concatenate([np.full(3, 4 * np.pi), np.full(3, 5.0), np.full(3, LIM)])
-    p0 = np.clip(np.concatenate([np.ravel(rvec0), np.ravel(tvec0), np.zeros(3)]),
-                 lo + 1e-9, hi - 1e-9)
+    if tool_fijo is not None:
+        lo = np.concatenate([np.full(3, -4 * np.pi), np.full(3, -5.0),
+                             np.asarray(tool_fijo, np.float64) - 1e-9])
+        hi = np.concatenate([np.full(3, 4 * np.pi), np.full(3, 5.0),
+                             np.asarray(tool_fijo, np.float64) + 1e-9])
+    else:
+        lo = np.concatenate([np.full(3, -4 * np.pi), np.full(3, -5.0), np.full(3, -LIM)])
+        hi = np.concatenate([np.full(3, 4 * np.pi), np.full(3, 5.0), np.full(3, LIM)])
+    semilla = (np.zeros(3) if tool_fijo is None
+               else np.asarray(tool_fijo, np.float64))
+    p0 = np.clip(np.concatenate([np.ravel(rvec0), np.ravel(tvec0), semilla]),
+                 np.minimum(lo, hi), np.maximum(lo, hi))
 
     def fit(keep):
         r = least_squares(lambda p: np.concatenate(
