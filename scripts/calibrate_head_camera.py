@@ -108,7 +108,8 @@ THRESH, MIN_AREA, QUIET, DEBUG, BAND = 25, 400, 2.0, False, 2.2
 FRACS = (1.0, 0.55)        # con --verify se cambian, ver abajo
 
 
-def motion_pixel(cap, set_gripper, blur=5, thresh=None, expect_area=None, min_area=None):
+def motion_pixel(cap, set_gripper, blur=5, thresh=None, expect_area=None,
+                 min_area=None, read_gripper=None):
     """Pixel of the gripper, found by differencing closed against open."""
     import cv2
     import numpy as np
@@ -130,15 +131,23 @@ def motion_pixel(cap, set_gripper, blur=5, thresh=None, expect_area=None, min_ar
         why("la escena nunca se queda quieta (sube --quiet)")
         return None                    # never settled; a diff here would be noise
     a = grab()
+    ga = read_gripper() if read_gripper else None
     set_gripper(GRIP_OPEN)
     if not _wait_until_still(grab):
         why("no se queda quieta tras abrir la pinza (sube --quiet)")
         return None
     b = grab()
+    gb = read_gripper() if read_gripper else None
+    if DEBUG and ga is not None:
+        why(f"pinza al capturar: cerrada={ga} abierta={gb} (movio {abs(gb-ga)} ticks)")
     if a is None or b is None:
         why("la camara no devolvio fotograma")
         return None
     d = cv2.GaussianBlur(np.abs(b - a).astype(np.uint8), (blur, blur), 0)
+    if DEBUG:
+        th = THRESH if thresh is None else thresh
+        why(f"diferencia cerrado/abierto: max {int(d.max())} media {d.mean():.2f} "
+            f"| {int((d > th).sum())} px por encima de {th}")
     # El umbral depende del CONTRASTE de la escena, no del robot. En el Pi 25
     # daba manchas de 924..21552 px; medido en el Mac con esta luz y distancia,
     # 25 da 227 px (rechazada) y 10 da 551. Por eso es parametro y no constante.
@@ -332,7 +341,10 @@ def main():
     # the solve came back 20 px and 41 cm off. Spread is not a nicety here, it
     # is the difference between a calibration and a number.
     cal_path = (pathlib.Path.home() / ".cache/huggingface/lerobot/calibration"
-                / "robots/so_follower/xle_left.json")
+                # Atado a ARM_ID, no fijo: con el otro brazo esto cargaba los
+                # limites articulares del brazo equivocado, y el sintoma habria
+                # sido poses recortadas o fuera de rango, no un error claro.
+                / "robots/so_follower" / f"{ARM_ID}.json")
     cal = json.loads(cal_path.read_text()) if cal_path.is_file() else {}
 
     def room(j, sign):
@@ -441,7 +453,10 @@ def main():
                              "refers to a camera pose that no longer exists. Aborting.")
                 median = (sorted(x["blob_area"] for x in samples)[len(samples)//2]
                           if len(samples) >= 3 else None)
-                hit = motion_pixel(cap, set_gripper, expect_area=median)
+                hit = motion_pixel(cap, set_gripper, expect_area=median,
+                                   read_gripper=lambda: int(rob.bus.read(
+                                       'Present_Position', 'gripper',
+                                       normalize=False)))
                 if hit is None:
                     print(f"    pose {n}: gripper not visible / no motion blob")
                 else:
@@ -505,6 +520,9 @@ def main():
         print(f"  equivale a ~{c.mean()*0.3/K[0, 0]*1000:.0f} mm a 0.3 m de distancia")
         return 0
     if a.samples_out:
+        # La camara va sobre una torre ORIENTABLE: unos extrinsecos solo valen
+        # para el angulo al que se midieron. Sin esto es facil agrupar tandas de
+        # dos apuntados distintos y obtener algo peor que cualquiera de las dos.
         pathlib.Path(a.samples_out).write_text(json.dumps(
             {"tower_reference": list(tower_ref), "samples": samples}, indent=2) + "\n")
     if len(samples) < 4:
@@ -584,6 +602,8 @@ def main():
            **({} if dist is None else dict(zip(
                ("k1", "k2", "p1", "p2", "k3"),
                [round(float(v), 8) for v in dist.ravel()[:5]]))),
+           "tower_ticks": {"pan": int(tower_ref[0]), "tilt": int(tower_ref[1])},
+           "arm_id": ARM_ID,
            "_provenance": {
                "method": f"eye-to-hand PnP ({name}) over {len(samples)} arm poses; "
                          "gripper located by open/close motion differencing "
