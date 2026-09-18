@@ -9,6 +9,7 @@ alto es dejarlo caer.
 """
 
 import sys
+import time
 
 from lerobot.motors import Motor, MotorNormMode
 from lerobot.motors.feetech import FeetechMotorsBus
@@ -22,13 +23,34 @@ BRAZOS = {
 EJES = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"]
 
 
+INTENTOS = 3
+
+
 def soltar(nombre: str, puerto: str) -> bool:
+    """Reintenta: este bus suelta SerialException de vez en cuando.
+
+    Visto tres veces hoy en el puerto del brazo izquierdo, el que comparte
+    linea con la torre: "device reports readiness to read but returned no
+    data". Al reintentar funciona. Dejar el brazo con par por un fallo
+    pasajero de lectura no es aceptable en el guion que sirve justo para
+    dejarlo seguro.
+    """
+    for intento in range(1, INTENTOS + 1):
+        if _soltar_una_vez(nombre, puerto, intento):
+            return True
+        if intento < INTENTOS:
+            time.sleep(1.0)
+    print(f"  {nombre}: NO SE PUDO SOLTAR en {INTENTOS} intentos -- revisalo a mano")
+    return False
+
+
+def _soltar_una_vez(nombre: str, puerto: str, intento: int) -> bool:
     motores = {n: Motor(i + 1, "sts3215", MotorNormMode.RANGE_M100_100) for i, n in enumerate(EJES)}
     bus = FeetechMotorsBus(port=puerto, motors=motores)
     try:
         bus.connect()
     except Exception as e:
-        print(f"  {nombre}: no responde ({type(e).__name__}); lo dejo como esta")
+        print(f"  {nombre}: no responde ({type(e).__name__}), intento {intento}")
         return False
 
     try:
@@ -39,12 +61,20 @@ def soltar(nombre: str, puerto: str) -> bool:
                 print(f"    {eje:14s} pos={pos:5d}  {tmp:2d} C")
             except Exception:
                 print(f"    {eje:14s} (sin lectura)")
-        # disable_torque=True es justo lo que queremos aqui, por una vez.
+        # Soltar explicitamente y RELEER. Fiarse del indicador de disconnect
+        # no basta: en una prueba dijo "soltado" y los seis ejes seguian con
+        # par puesto. Un guion cuyo unico trabajo es soltar no puede cantar
+        # victoria sin mirar.
+        bus.disable_torque()
+        quedan = [e for e in EJES if int(bus.read("Torque_Enable", e, normalize=False))]
         bus.disconnect(disable_torque=True)
-        print(f"  {nombre}: par SOLTADO")
+        if quedan:
+            print(f"  {nombre}: SIGUEN CON PAR: {', '.join(quedan)} -- no te fies, revisalo")
+            return False
+        print(f"  {nombre}: par soltado y COMPROBADO (0 de {len(EJES)} ejes con par)")
         return True
     except Exception as e:
-        print(f"  {nombre}: fallo al soltar ({type(e).__name__}: {e})")
+        print(f"  {nombre}: fallo al soltar en el intento {intento} ({type(e).__name__})")
         try:
             bus.disconnect(disable_torque=True)
         except Exception:
