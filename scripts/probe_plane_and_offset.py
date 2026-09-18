@@ -128,11 +128,21 @@ def main():
         for pan in (0, -180, +180, -320, +320):
             for codo in (0, -170, +170):
                 confs.append((pan, codo, 0, 0))
-        for wf, wr in ((-240, 0), (+240, 0), (0, -280), (0, +280), (-170, +200),
-                       (+170, -200), (-240, +280), (+240, -280)):
-            confs.append((0, 0, wf, wr))
-            confs.append((-180, -170, wf, wr))
-            confs.append((+180, +170, wf, wr))
+        # wrist_flex inclina sobre el eje Y de la base, asi que expone las
+        # componentes x y z del desfase -- que salieron bien (+-8 y +-2 mm). La
+        # componente Y quedaba indeterminada (+-25 mm, y las mitades aleatorias
+        # discrepaban 9 cm) porque ninguna articulacion inclina sobre el eje X.
+        # shoulder_pan gira el brazo sobre la vertical: combinando un pan GRANDE
+        # con la inclinacion de muneca, el eje de inclinacion rota y la y queda
+        # expuesta. Antes las dos cosas se variaban casi siempre por separado.
+        for wf, wr in ((-240, 0), (+240, 0), (0, -280), (0, +280),
+                       (-170, +200), (+170, -200)):
+            for pan in (0, -600, +600):
+                confs.append((pan, 0, wf, wr))
+        # y algunas con inclinacion GRANDE, mas alla de los 34 grados alcanzados
+        for wf in (-380, +380):
+            for pan in (-600, 0, +600):
+                confs.append((pan, 0, wf, 0))
 
         for k, (pan, codo, wf, wr) in enumerate(confs):
           try:

@@ -90,6 +90,10 @@ class Termostato:
 
     def __init__(self, bus, joint="shoulder_lift", blando=45, duro=50,
                  reanudar=40, cada_s=2.0):
+        # Los avisos van con flush: sin el, una pausa de varios minutos no
+        # imprime nada hasta que termina (la salida va por una tuberia y Python
+        # la almacena), y desde fuera es indistinguible de un cuelgue. Alfonso
+        # pregunto por que el brazo no se movia y era exactamente esto.
         self.bus, self.joint = bus, joint
         self.blando, self.duro, self.reanudar = blando, duro, reanudar
         self.cada_s, self._t, self._cuando = cada_s, None, -1e9
@@ -114,7 +118,10 @@ class Termostato:
                 self.pico = max(self.pico, self._t)
         return self._t if self._t is not None else 0
 
-    def comprobar(self, log=print):
+    def comprobar(self, log=None):
+        if log is None:
+            def log(m):
+                print(m, flush=True)
         """Devuelve False si hay que ABORTAR. Pausa sola si toca."""
         t = self.temp()
         if t >= self.duro:
