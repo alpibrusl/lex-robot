@@ -104,7 +104,10 @@ def main():
         radio = float(np.linalg.norm(T_ini[:2, 3]))
         print(f"  partida: ({T_ini[0,3]:+.3f},{T_ini[1,3]:+.3f},{T_ini[2,3]:+.3f}) m, "
               f"radio {radio*100:.0f} cm", flush=True)
-        if not (0.20 < radio < 0.36):
+        # 0.36 era demasiado: a radio 0.35 el hombro se sobrecargo con el
+        # motor a 33 C, o sea por PAR DE GRAVEDAD, no por calor. Los sondeos
+        # que funcionaron trabajaron a 0.28-0.31.
+        if not (0.20 < radio < 0.325):
             sys.exit(f"  radio {radio*100:.0f} cm fuera de lo util (20-36): el brazo "
                      "no esta colocado sobre la mesa. No sondeo.")
         if T_ini[2, 3] < -0.02:
