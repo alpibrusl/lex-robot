@@ -20,7 +20,7 @@ MUJOCO_LOG.TXT
 .effwall_neg.lex
 taught/
 
-# Fotogramas de las camaras: el repo es PUBLICO y lo que ve el robot es la
-# casa de Alfonso. Se ignora el destino de las capturas, no las imagenes de
-# documentacion (media/, examples/) que si deben versionarse.
+# Camera frames: this repo is PUBLIC and what the robot sees is Alfonso's
+# home. Only the capture destination is ignored, not the documentation images
+# (media/, examples/), which should stay versioned.
 outputs/
