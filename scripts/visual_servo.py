@@ -34,6 +34,7 @@ TOL_PX = 12.0
 GANANCIA = 0.45                         # fraccion del paso que corrige el error
 AMORTIGUA = 0.08                        # Levenberg: frena cuando el jacobiano es malo
 SALTO_MAX_PX = 140                      # una deteccion que salta mas que esto miente
+OSCURO_MAX = 70                         # la pinza es negra; la sombra sobre madera no
 
 
 def main():
@@ -107,7 +108,13 @@ def main():
             return None
         d = np.abs(b0 - a0)
         d[d < 12] = 0
-        m = cv2.morphologyEx((d > 0).astype(np.uint8), cv2.MORPH_OPEN,
+        # La pinza es NEGRA; la sombra que proyecta cae sobre madera clara y tiene
+        # MAS contraste que ella, asi que la mancha de movimiento se extendia por
+        # la mesa y arrastraba el centroide. Se exige que el pixel sea oscuro en
+        # alguno de los dos fotogramas: donde estuvo la pinza lo es, y la madera
+        # sombreada sigue siendo gris medio.
+        oscuro = np.minimum(a0, b0) < OSCURO_MAX
+        m = cv2.morphologyEx(((d > 0) & oscuro).astype(np.uint8), cv2.MORPH_OPEN,
                              np.ones((5, 5), np.uint8))
         nn, _l, st, ce = cv2.connectedComponentsWithStats(m, 8)
         if nn < 2:
