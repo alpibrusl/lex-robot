@@ -19,3 +19,8 @@ MUJOCO_LOG.TXT
 # transient negative-test file written by scripts/smoke.sh
 .effwall_neg.lex
 taught/
+
+# Fotogramas de las camaras: el repo es PUBLICO y lo que ve el robot es la
+# casa de Alfonso. Se ignora el destino de las capturas, no las imagenes de
+# documentacion (media/, examples/) que si deben versionarse.
+outputs/
