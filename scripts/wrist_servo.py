@@ -128,10 +128,14 @@ def main():
     p.add_argument("--verificar", action="store_true",
                    help="solo mirar y guardar la imagen anotada, sin mover")
     p.add_argument("--fotos", default="/tmp/muneca")
+    p.add_argument("--altura-vuelo", type=float, default=0.045,
+                   help="metros que la PUNTA de la pinza debe mantener sobre la "
+                        "mesa mientras se alinea")
     a = p.parse_args()
 
     import cv2
     from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
+    from lerobot.model.kinematics import RobotKinematics
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
     from contact_probe import Termostato
 
@@ -168,6 +172,29 @@ def main():
     rob = SO101Follower(SO101FollowerConfig(port=a.port, id=a.id))
     rob.bus.connect()
     termo = Termostato(rob.bus, blando=48, duro=50, reanudar=45)
+
+    # Mantener la ALTURA mientras se alinea. Alinear mueve el codo, y mover el
+    # codo BAJA la pinza: el lazo acabo con la punta apoyada en la mesa (z=-0.029
+    # mas los +3.5 cm de desfase vertical dan justo la altura de la mesa), el
+    # codo empujando contra ella, y el error estancado en 54 px. De las tres
+    # componentes del desfase, la vertical fue la unica que quedo determinada
+    # ayer (+3.5 cm, +-3 mm) -- y es justo la que hace falta aqui.
+    plano = json.loads(pathlib.Path("calibration/table_plane_touch.json").read_text())
+    n_pl = np.array(plano["normal"], np.float64)
+    c_pl = np.array(plano["centroid"], np.float64)
+    parcial = json.loads(
+        pathlib.Path("calibration/tool_offset_left_partial.json").read_text())
+    dz_punta = float(parcial["z_m"])
+    kin = RobotKinematics(
+        urdf_path=os.environ.get("LEX_XLE_URDF_PATH", ""), joint_names=ARM,
+        target_frame_name=os.environ.get("LEX_XLE_URDF_TARGET_FRAME",
+                                         "gripper_frame_link"))
+
+    def altura_punta():
+        deg = rob.bus.sync_read("Present_Position", num_retry=3)
+        T = np.asarray(kin.forward_kinematics(
+            np.array([float(deg[j]) for j in ARM])), np.float64)
+        return float((T[:3, 3] - c_pl) @ n_pl) - dz_punta
     try:
         for j in ARM:
             rob.bus.write("Torque_Enable", j, 1, normalize=False)
@@ -224,14 +251,49 @@ def main():
             if abs(np.linalg.det(Jm)) < 1e-9:
                 print("  jacobiano degenerado; paro", flush=True)
                 break
+            # OJO AL SIGNO. Aqui la camara va en el brazo, asi que quien se mueve
+            # en la imagen es el OBJETO, y hay que llevarlo a una mira fija: el
+            # desplazamiento pedido es (mira - objeto) = -err. En el servocontrol
+            # desde la torre era al reves -- se movia la pinza hacia un objetivo
+            # fijo -- y copiar aquella estructura sin invertir el signo hacia que
+            # el lazo se alejara: 157 -> 204 -> 245 -> 292 px.
             JtJ = Jm.T @ Jm
             d = np.linalg.solve(JtJ + AMORTIGUA * np.trace(JtJ) * np.eye(2),
-                                Jm.T @ err) * GANANCIA
+                                Jm.T @ (-err)) * GANANCIA
             esc = min(1.0, PASO_MAX / max(abs(d).max(), 1e-9))
             for k, j in enumerate(JS):
                 cur[j] = int(np.clip(cur[j] + d[k] * esc, L[j][0] + 30, L[j][1] - 30))
                 rob.bus.write("Goal_Position", j, cur[j], normalize=False)
             time.sleep(1.2)
+            # Recuperar la altura que el movimiento del codo se ha llevado
+            h = altura_punta()
+            if abs(h - a.altura_vuelo) > 0.012:
+                lo_l, hi_l = (int(rob.bus.read("Min_Position_Limit", "shoulder_lift",
+                                               normalize=False)),
+                              int(rob.bus.read("Max_Position_Limit", "shoulder_lift",
+                                               normalize=False)))
+                lift = int(rob.bus.read("Present_Position", "shoulder_lift",
+                                        normalize=False))
+                h0 = h
+                rob.bus.write("Goal_Position", "shoulder_lift",
+                              int(np.clip(lift + 30, lo_l + 30, hi_l - 30)),
+                              normalize=False)
+                time.sleep(0.7)
+                sgn = +1 if altura_punta() > h0 else -1
+                rob.bus.write("Goal_Position", "shoulder_lift", lift,
+                              normalize=False)
+                time.sleep(0.5)
+                for _ in range(14):
+                    h = altura_punta()
+                    if abs(h - a.altura_vuelo) < 0.008:
+                        break
+                    paso = 18 if h < a.altura_vuelo else -18
+                    lift = int(np.clip(lift + sgn * paso, lo_l + 30, hi_l - 30))
+                    rob.bus.write("Goal_Position", "shoulder_lift", lift,
+                                  normalize=False)
+                    time.sleep(0.35)
+                print(f"    altura recuperada: {h*100:+.1f} cm sobre la mesa",
+                      flush=True)
             ahora = foto()
             ro, mo = encuentra_azul(ahora, cerca_de=obj_px)
             if ro is None:
