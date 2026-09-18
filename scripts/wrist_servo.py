@@ -41,6 +41,10 @@ PASO_MAX = 60
 GANANCIA = 0.45
 AMORTIGUA = 0.08
 TOL_PX = 18.0
+# Para resolver imagen y altura A LA VEZ hay que pesarlas en la misma unidad.
+# 900 px/m significa que 1 cm de altura pesa como 9 px de imagen: comparable al
+# error de punteria tipico, asi que ninguna de las dos domina a la otra.
+PX_POR_METRO = 900.0
 # La pegatina: rosa saturado. Medido en la escena real, H=155 S=135 V=181.
 # SIN banda de tono baja: incluir 0-8 para "captar rojos" metia la MADERA CALIDA,
 # que en esta luz cae justo ahi y es mucho mas extensa, asi que el centroide se
@@ -253,15 +257,18 @@ def main():
         for it in range(a.iteraciones):
             if not termo.comprobar():
                 break
-            err = obj_px - mira
+            h_ahora = altura_punta()
+            err = np.array([(obj_px - mira)[0], (obj_px - mira)[1],
+                            (h_ahora - a.altura_vuelo) * PX_POR_METRO])
             print(f"  {it}: objeto en ({obj_px[0]:.0f},{obj_px[1]:.0f}), error "
                   f"{np.linalg.norm(err):5.1f} px", flush=True)
-            if np.linalg.norm(err) < a.tol_px:
+            if np.linalg.norm(err[:2]) < a.tol_px and abs(err[2]) < 25:
                 print(f"  LLEGADA en {it} iteraciones", flush=True)
                 break
             # jacobiano: cuanto se mueve el OBJETO en la imagen por tick
-            Jm = np.zeros((2, len(JS)))
+            Jm = np.zeros((3, len(JS)))
             base = foto()
+            h1 = altura_punta()
             for k, j in enumerate(JS):
                 v = int(np.clip(cur[j] + SONDA, L[j][0] + 30, L[j][1] - 30))
                 if v == cur[j]:
@@ -269,6 +276,7 @@ def main():
                 rob.bus.write("Goal_Position", j, v, normalize=False)
                 time.sleep(1.0)
                 f2 = foto()
+                h2 = altura_punta()
                 rob.bus.write("Goal_Position", j, cur[j], normalize=False)
                 time.sleep(1.0)
                 if base is None or f2 is None:
@@ -283,11 +291,20 @@ def main():
                 if r1 is None or r2 is None:
                     print(f"  perdi el objeto midiendo {j}; paro", flush=True)
                     return 1
-                Jm[:, k] = (r2[0] - r1[0]) / (v - cur[j])
+                # Tercera fila: cuanto cambia la ALTURA. Antes esto lo llevaba un
+                # controlador aparte que movia shoulder_lift DESPUES del lazo, o
+                # sea deshaciendo parte de lo que el lazo acababa de hacer con esa
+                # misma articulacion. Dos controladores peleandose por la misma
+                # salida: el error oscilaba entre 49 y 65 px sin converger, y el
+                # brazo solo se movia en vertical porque la correccion lateral se
+                # cancelaba. Mismo error que resolver el plano y el desfase por
+                # separado, o la altura y el radio en la colocacion.
+                Jm[:, k] = np.array([(r2[0] - r1[0])[0], (r2[0] - r1[0])[1],
+                                     (h2 - h1)]) / (v - cur[j])
             print("    jacobiano: " + "  ".join(
                 f"{j[:4]} ({Jm[0,k]*100:+.0f},{Jm[1,k]*100:+.0f})"
                 for k, j in enumerate(JS)) + " px/100 ticks", flush=True)
-            if np.linalg.matrix_rank(Jm, tol=1e-6) < 2:
+            if np.linalg.matrix_rank(Jm, tol=1e-9) < 3:
                 print("  jacobiano degenerado; paro", flush=True)
                 break
             # OJO AL SIGNO. Aqui la camara va en el brazo, asi que quien se mueve
@@ -304,35 +321,7 @@ def main():
                 cur[j] = int(np.clip(cur[j] + d[k] * esc, L[j][0] + 30, L[j][1] - 30))
                 rob.bus.write("Goal_Position", j, cur[j], normalize=False)
             time.sleep(1.2)
-            # Recuperar la altura que el movimiento del codo se ha llevado
-            h = altura_punta()
-            if abs(h - a.altura_vuelo) > 0.012:
-                lo_l, hi_l = (int(rob.bus.read("Min_Position_Limit", "shoulder_lift",
-                                               normalize=False)),
-                              int(rob.bus.read("Max_Position_Limit", "shoulder_lift",
-                                               normalize=False)))
-                lift = int(rob.bus.read("Present_Position", "shoulder_lift",
-                                        normalize=False))
-                h0 = h
-                rob.bus.write("Goal_Position", "shoulder_lift",
-                              int(np.clip(lift + 30, lo_l + 30, hi_l - 30)),
-                              normalize=False)
-                time.sleep(0.7)
-                sgn = +1 if altura_punta() > h0 else -1
-                rob.bus.write("Goal_Position", "shoulder_lift", lift,
-                              normalize=False)
-                time.sleep(0.5)
-                for _ in range(14):
-                    h = altura_punta()
-                    if abs(h - a.altura_vuelo) < 0.008:
-                        break
-                    paso = 18 if h < a.altura_vuelo else -18
-                    lift = int(np.clip(lift + sgn * paso, lo_l + 30, hi_l - 30))
-                    rob.bus.write("Goal_Position", "shoulder_lift", lift,
-                                  normalize=False)
-                    time.sleep(0.35)
-                print(f"    altura recuperada: {h*100:+.1f} cm sobre la mesa",
-                      flush=True)
+            # (la altura ya va DENTRO del lazo, como tercera salida)
             ahora = foto()
             ro, mo = encuentra_azul(ahora, cerca_de=obj_px)
             if ro is None:
