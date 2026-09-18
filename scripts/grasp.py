@@ -128,6 +128,45 @@ def main():
         rob.bus.write("Goal_Position", "shoulder_lift", lift, normalize=False)
         time.sleep(0.8)
         cerca = np.array(a.objetivo, np.float64)
+        # MEDIR los signos, no suponerlos. En la version anterior estaban puestos
+        # a ojo y el realineado del descenso empujaba al reves: el error crecia de
+        # 50 a 101 px mientras el brazo bajaba. El lazo principal los saca del
+        # jacobiano; aqui hacia falta lo mismo.
+        e0, cerca = error_px(cerca)
+        sig_pan = sig_cod = 0
+        if e0 is not None:
+            pan_t = int(rob.bus.read("Present_Position", "shoulder_pan",
+                                     normalize=False))
+            p_lo0 = int(rob.bus.read("Min_Position_Limit", "shoulder_pan",
+                                     normalize=False))
+            p_hi0 = int(rob.bus.read("Max_Position_Limit", "shoulder_pan",
+                                     normalize=False))
+            rob.bus.write("Goal_Position", "shoulder_pan",
+                          int(np.clip(pan_t + 40, p_lo0 + 30, p_hi0 - 30)),
+                          normalize=False)
+            time.sleep(0.9)
+            e1, _c = error_px(cerca)
+            rob.bus.write("Goal_Position", "shoulder_pan", pan_t, normalize=False)
+            time.sleep(0.9)
+            if e1 is not None:
+                sig_pan = -1 if (e1[0] - e0[0]) * 1 > 0 else +1
+            cod_t = int(rob.bus.read("Present_Position", "elbow_flex",
+                                     normalize=False))
+            c_lo0 = int(rob.bus.read("Min_Position_Limit", "elbow_flex",
+                                     normalize=False))
+            c_hi0 = int(rob.bus.read("Max_Position_Limit", "elbow_flex",
+                                     normalize=False))
+            rob.bus.write("Goal_Position", "elbow_flex",
+                          int(np.clip(cod_t + 40, c_lo0 + 30, c_hi0 - 30)),
+                          normalize=False)
+            time.sleep(0.9)
+            e2, _c = error_px(cerca)
+            rob.bus.write("Goal_Position", "elbow_flex", cod_t, normalize=False)
+            time.sleep(0.9)
+            if e2 is not None:
+                sig_cod = -1 if (e2[1] - e0[1]) > 0 else +1
+            print(f"   signos medidos: pan {sig_pan:+d}, codo {sig_cod:+d}",
+                  flush=True)
         pan0 = int(rob.bus.read("Present_Position", "shoulder_pan", normalize=False))
         p_lo = int(rob.bus.read("Min_Position_Limit", "shoulder_pan", normalize=False))
         p_hi = int(rob.bus.read("Max_Position_Limit", "shoulder_pan", normalize=False))
@@ -151,13 +190,13 @@ def main():
                 if e is not None:
                     # correccion proporcional pequena, con los signos medidos en
                     # el servocontrol: pan mueve sobre todo en x, codo en y
-                    if abs(e[0]) > 8:
-                        pan0 = int(np.clip(pan0 - np.sign(e[0]) * 10,
+                    if abs(e[0]) > 8 and sig_pan:
+                        pan0 = int(np.clip(pan0 + sig_pan * np.sign(e[0]) * 10,
                                            p_lo + 30, p_hi - 30))
                         rob.bus.write("Goal_Position", "shoulder_pan", pan0,
                                       normalize=False)
-                    if abs(e[1]) > 8:
-                        cod = int(np.clip(cod + np.sign(e[1]) * 8,
+                    if abs(e[1]) > 8 and sig_cod:
+                        cod = int(np.clip(cod + sig_cod * np.sign(e[1]) * 8,
                                           c_lo + 30, c_hi - 30))
                         rob.bus.write("Goal_Position", "elbow_flex", cod,
                                       normalize=False)
