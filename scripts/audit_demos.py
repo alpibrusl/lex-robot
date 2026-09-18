@@ -30,6 +30,11 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+# A verdict that decides whether an episode gets deleted must be repeatable.
+# Measured: the same question on the same frame answered differently across
+# two runs, because the model samples. Temperature 0 pins it down.
+DETERMINISTIC = {"temperature": 0}
+
 sys.path.insert(0, str(Path(__file__).parent.parent / "sidecar"))
 
 JOINTS = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"]
@@ -62,30 +67,94 @@ def load(root: Path):
     return data, metas, info
 
 
-def last_frame(root: Path, meta_ep, camera: str):
-    """Pull the episode's final frame. One mp4 per camera, with timestamps."""
+def frame_at(root: Path, meta_ep, camera: str, offset_s: float | None = None):
+    """Pull one frame of the episode. One mp4 per camera, with timestamps.
+
+    `offset_s` is measured from the start of the EPISODE, not of the file; all
+    episodes share one mp4 per camera. None means the final frame.
+    """
     import cv2
 
     path = root / "videos" / f"observation.images.{camera}" / f"chunk-{int(meta_ep[f'videos/observation.images.{camera}/chunk_index']):03d}" / f"file-{int(meta_ep[f'videos/observation.images.{camera}/file_index']):03d}.mp4"
     if not path.is_file():
         return None
+    start = float(meta_ep[f"videos/observation.images.{camera}/from_timestamp"])
     end = float(meta_ep[f"videos/observation.images.{camera}/to_timestamp"])
+    # Half a second before the end: the exact last frame sometimes cannot be
+    # decoded after a seek.
+    when = end - 0.5 if offset_s is None else min(start + offset_s, end - 0.1)
     cap = cv2.VideoCapture(str(path))
     try:
-        # Half a second before the end: the exact last frame sometimes cannot
-        # be decoded after a seek.
-        cap.set(cv2.CAP_PROP_POS_MSEC, max(0.0, end - 0.5) * 1000)
+        cap.set(cv2.CAP_PROP_POS_MSEC, max(0.0, when) * 1000)
         ok, frame = cap.read()
         return frame if ok else None
     finally:
         cap.release()
 
 
+def grasp_offset(states: np.ndarray, fps: int) -> float:
+    """Seconds from the episode start to the moment the gripper is most closed.
+
+    That instant is the one worth looking at: it is where precision is decided,
+    and where the arm is most likely to be standing between the tower camera
+    and the object.
+    """
+    return float(int(np.argmin(states[:, 5])) / fps)
+
+
+def head_is_blocked(root: Path, meta_ep, offset_s: float, task: str):
+    """Ask whether the tower camera can still see the object at the grasp.
+
+    Worth measuring rather than guessing: a top-down grasp puts the arm between
+    the tower and the table exactly when it matters. That is not fatal by
+    itself -- the wrist camera covers precisely that phase, and it sees detail
+    the fixed camera cannot replicate -- but if the tower view is already gone
+    during the APPROACH, both cameras are blind at once and there is nothing
+    left to locate the object with.
+    """
+    import vision
+
+    frame = frame_at(root, meta_ep, "head", offset_s)
+    if frame is None:
+        return None, "no head video"
+    brightness, contrast, usable = vision.calidad(frame)
+    if not usable:
+        return None, f"unusable frame (brightness {brightness:.0f})"
+
+    # Two phrasings, and only an agreement counts. Measured: the SAME prompt on
+    # the SAME frame answered differently on two runs, so one reading is noise,
+    # not a measurement.
+    questions = (
+        f"This is a fixed overhead camera watching a robot arm perform: {task}. "
+        f"Answer with ONE word only: BLOCKED if the robot arm is covering the object "
+        f"so you cannot see it, VISIBLE if the object can still be seen.",
+        f"In this overhead photo, is the robot arm standing between the camera and "
+        f"the object it is picking up? Answer with ONE word only: BLOCKED if the arm "
+        f"hides the object, VISIBLE if the object is in plain sight.",
+    )
+    answers = []
+    for q in questions:
+        try:
+            a = vision.pregunta_al_modelo(frame, q, timeout=120, opciones=DETERMINISTIC).strip().upper()
+        except Exception as e:
+            return None, f"the model did not answer ({type(e).__name__})"
+        if a.startswith("BLOCKED"):
+            answers.append(True)
+        elif a.startswith("VISIBLE"):
+            answers.append(False)
+        else:
+            return None, f"ambiguous answer: {a[:40]}"
+
+    if answers[0] != answers[1]:
+        return None, "the two phrasings disagree"
+    return answers[0], "both phrasings agree"
+
+
 def judge_with_model(root: Path, meta_ep, task: str):
     """Ask the local model whether the episode ended well."""
     import vision
 
-    frame = last_frame(root, meta_ep, "wrist")
+    frame = frame_at(root, meta_ep, "wrist")
     if frame is None:
         return None, "no wrist video"
 
@@ -96,20 +165,35 @@ def judge_with_model(root: Path, meta_ep, task: str):
     if not usable:
         return None, f"unusable frame (brightness {brightness:.0f}, contrast {contrast:.0f})"
 
-    question = (
-        f"This is the view from a robot arm's gripper at the end of an attempt "
-        f"to: {task}. Answer with ONE word only: YES if the gripper is holding "
-        f"the object, NO if it is not holding it or it cannot be seen."
+    # Ask TWICE, worded differently, and only believe an agreement. Measured:
+    # the same frame flipped verdict when the prompt was translated, so a
+    # single reading is not evidence. Same reasoning as the median-of-three on
+    # temperature: a verdict that decides whether an episode gets deleted
+    # cannot rest on one sample.
+    questions = (
+        f"This is the view from a robot arm's gripper at the end of an attempt to: "
+        f"{task}. Answer with ONE word only: YES if the gripper is holding the "
+        f"object, NO if it is not holding it or it cannot be seen.",
+        f"Look at this robot gripper. Is it gripping an object right now, or are its "
+        f"fingers empty? Answer with ONE word only: YES if it grips something, NO if "
+        f"the fingers are empty.",
     )
-    try:
-        answer = vision.pregunta_al_modelo(frame, question, timeout=120).strip().upper()
-    except Exception as e:
-        return None, f"the model did not answer ({type(e).__name__})"
-    if answer.startswith("YES") or answer.startswith("SI") or answer.startswith("SÍ"):
-        return True, answer[:40]
-    if answer.startswith("NO"):
-        return False, answer[:40]
-    return None, f"ambiguous answer: {answer[:40]}"
+    answers = []
+    for q in questions:
+        try:
+            a = vision.pregunta_al_modelo(frame, q, timeout=120, opciones=DETERMINISTIC).strip().upper()
+        except Exception as e:
+            return None, f"the model did not answer ({type(e).__name__})"
+        if a.startswith("YES") or a.startswith("SI") or a.startswith("SÍ"):
+            answers.append(True)
+        elif a.startswith("NO"):
+            answers.append(False)
+        else:
+            return None, f"ambiguous answer: {a[:40]}"
+
+    if answers[0] != answers[1]:
+        return None, "the two phrasings disagree -- look at this one yourself"
+    return answers[0], "both phrasings agree"
 
 
 def coverage(data, metas) -> None:
@@ -212,15 +296,21 @@ def main() -> int:
         if dropped:
             note(ep, f"{dropped} timestamp gaps (dropped frames)")
 
-    verdicts = {}
+    verdicts, occlusion = {}, {}
     if look:
         task = str(metas.iloc[0]["tasks"][0]) if len(metas) else "pick up the object"
         print(f"Asking the local model about the end of each episode ({task})...\n")
         for _, m in metas.iterrows():
+            ep = int(m["episode_index"])
             ok, detail = judge_with_model(root, m, task)
-            verdicts[int(m["episode_index"])] = (ok, detail)
+            verdicts[ep] = (ok, detail)
             if ok is False:
-                note(m["episode_index"], f"the model does not see the object held: {detail}")
+                note(ep, f"the model does not see the object held: {detail}")
+
+            states = np.stack(data[data["episode_index"] == ep]["observation.state"].values)
+            blocked, why = head_is_blocked(root, m, grasp_offset(states, fps), task)
+            if blocked is not None:
+                occlusion[ep] = blocked
 
     for _, m in metas.iterrows():
         ep = int(m["episode_index"])
@@ -233,6 +323,27 @@ def main() -> int:
         print(f"  episode {ep:3d}  {m['length']:4d} frames  {mark}{extra}")
         for f in failures:
             print(f"                - {f}")
+
+    if occlusion:
+        blocked = sum(occlusion.values())
+        print(
+            f"\nTower view at the moment of the grasp: blocked in {blocked} of "
+            f"{len(occlusion)} episodes where both phrasings agreed."
+        )
+        if blocked and blocked < len(occlusion):
+            print(
+                "  Blocked in SOME but not all. That inconsistency is the awkward case:\n"
+                "  the policy cannot settle on which camera carries the information at\n"
+                "  that phase. Grasp the object the same way every time."
+            )
+        elif blocked == len(occlusion):
+            print(
+                "  Blocked every time, which is consistent and workable: the policy will\n"
+                "  lean on the wrist camera for the final approach, which is exactly what\n"
+                "  that camera is for. Just make sure the tower still sees the object\n"
+                "  EARLIER, during the approach -- if both views lose it at once there is\n"
+                "  nothing left to locate it with."
+            )
 
     coverage(data, metas)
 

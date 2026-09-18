@@ -78,11 +78,22 @@ def captura(indice=0, intentos=4, calentar=10):
         cap.release()
 
 
-def pregunta_al_modelo(frame, pregunta, timeout=180):
+def pregunta_al_modelo(frame, pregunta, timeout=180, opciones=None):
+    """opciones: ajustes de muestreo de ollama.
+
+    Por defecto no se fija ninguno, que es lo que quiere la voz: describir la
+    escena con algo de soltura. Quien necesite un veredicto REPETIBLE debe
+    pasar {"temperature": 0}: medido, la misma pregunta sobre el mismo
+    fotograma contestaba distinto en dos ejecuciones seguidas, y de eso
+    dependia borrar o no un episodio.
+    """
     import cv2
     b64 = base64.b64encode(cv2.imencode(".jpg", frame)[1]).decode()
-    cuerpo = json.dumps({"model": MODELO, "prompt": pregunta, "images": [b64],
-                         "stream": False, "think": False}).encode()
+    peticion = {"model": MODELO, "prompt": pregunta, "images": [b64],
+                "stream": False, "think": False}
+    if opciones:
+        peticion["options"] = opciones
+    cuerpo = json.dumps(peticion).encode()
     req = urllib.request.Request(f"{OLLAMA}/api/generate", data=cuerpo,
                                  headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
