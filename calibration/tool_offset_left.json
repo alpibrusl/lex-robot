@@ -1,0 +1,11 @@
+{
+  "tool_offset_m": [
+    -0.03619,
+    0.02678,
+    0.02612
+  ],
+  "contacts": 6,
+  "condition": 33.0,
+  "max_residual_mm": 1.82,
+  "method": "contactos con la mesa en varias orientaciones de muneca; sistema lineal n.(R@off+p)=d. Sin camara."
+}

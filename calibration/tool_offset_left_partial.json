@@ -1,0 +1,10 @@
+{
+  "z_m": 0.035,
+  "z_sigma_m": 0.003,
+  "xy_determinado": false,
+  "contacts": 78,
+  "rms_residual_mm": 11.1,
+  "nota": "SOLO la componente vertical esta determinada (+3.3..+3.8 cm en seis regimenes distintos de 78 contactos). Las horizontales NO: incertidumbre +-32..39 mm y las mitades aleatorias discrepan 8-18 cm. Causa fisica, no estadistica: identificar x e y exige girar mucho la pinza, y girarla mucho hace que toque con otra parte, rompiendo el supuesto de punto rigido en el que se apoya el modelo. Mas datos no ayudan -- al anadir variedad el rms empeoro de 10.7 a 16.2 mm y el plano salio con 27 grados de inclinacion, absurdo para una mesa nivelada.",
+  "para_arreglarlo": "Una punta de calibracion acoplada a la pinza: con un vertice unico el punto de contacto deja de depender de la orientacion y el modelo se vuelve exacto. Es la solucion estandar y cuesta una pieza impresa.",
+  "observaciones": ["calibration/plane_offset_obs_left.json", "calibration/plane_offset_obs_left_b.json"]
+}

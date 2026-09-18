@@ -46,6 +46,25 @@ def main():
     p.add_argument("--max-reproj-px", type=float, default=4.0,
                    help="listón sobre la validacion; 4.0 asume una cinematica "
                         "mejor de la que tiene este brazo (~8 px = ~7 mm)")
+    p.add_argument("--contact-offset", default="",
+                   help="JSON de measure_tool_offset: el punto de la pinza que TOCA. "
+                        "Se GUARDA en la salida para agarrar, pero NO se usa en el "
+                        "ajuste. Son dos puntos distintos: la camara ve el centroide "
+                        "de la mancha de movimiento de los dedos, y lo que toca la "
+                        "mesa es la punta. Fijar el primero al segundo mete un "
+                        "conflicto de 18 cm en la altura del plano.")
+    p.add_argument("--board-plane", default="",
+                   help="JSON del MISMO plano visto por la camara (tablero)")
+    p.add_argument("--table-plane", default="",
+                   help="JSON del plano medido POR TACTO (5+ contactos). Se anade "
+                        "como restriccion al ajuste. Sin el, la pose de camara y "
+                        "el desfase de pinza se compensan mutuamente: el error de "
+                        "reproyeccion sale precioso y la camara acaba 22 cm fuera "
+                        "de sitio, cosa que la reproyeccion NO puede ver porque "
+                        "mide FK->pixel y ahi los dos errores se cancelan.")
+    p.add_argument("--plane-weight", type=float, default=200.0,
+                   help="px equivalentes por metro de error de plano (200 = 1 cm "
+                        "de mesa pesa como 2 px)")
     p.add_argument("--out", default="")
     a = p.parse_args()
 
@@ -90,7 +109,28 @@ def main():
     ok, r0, t0 = cv2.solvePnP(obj, img, K, dist, flags=cv2.SOLVEPNP_SQPNP)
     if not ok:
         sys.exit("el PnP de arranque no converge")
-    x, keep, e, loo = solve_with_tool_offset(obj_T, img, K, dist, r0, t0)
+    plano = None
+    if a.table_plane:
+        import cv2 as _cv
+        tc = json.loads(pathlib.Path(a.table_plane).read_text())
+        pl = json.loads(pathlib.Path(a.board_plane).read_text()) if a.board_plane else None
+        if pl is None:
+            sys.exit("--table-plane necesita tambien --board-plane (el mismo plano "
+                     "visto por la camara)")
+        Rb, _ = _cv.Rodrigues(np.array(pl["rvec"], np.float64))
+        plano = {"n_cam": Rb[:, 2], "p_cam": np.array(pl["tvec"], np.float64).ravel(),
+                 "n_arm": np.array(tc["normal"], np.float64),
+                 "c_arm": np.array(tc["centroid"], np.float64),
+                 "w": a.plane_weight}
+        print(f"  restriccion de plano activa (peso {a.plane_weight:.0f} px/m)")
+    contacto = None
+    if a.contact_offset:
+        co = json.loads(pathlib.Path(a.contact_offset).read_text())
+        contacto = np.array(co["tool_offset_m"], np.float64)
+        print(f"  punto de contacto ({contacto[0]*100:+.1f},{contacto[1]*100:+.1f},"
+              f"{contacto[2]*100:+.1f}) cm, medido por tacto -> se guarda, no entra "
+              "en el ajuste")
+    x, keep, e, loo = solve_with_tool_offset(obj_T, img, K, dist, r0, t0, plane=plano)
     tool = x[6:9]
     print(f"  ajuste: {keep.sum()}/{len(samples)} poses, media {e[keep].mean():.2f} px")
     print(f"  desfase de la pinza ({tool[0]*100:+.1f},{tool[1]*100:+.1f},"
@@ -120,7 +160,14 @@ def main():
            "cx0": round(float(K[0, 2]) / 640, 6), "cy0": round(float(K[1, 2]) / 480, 6),
            **dict(zip(("k1", "k2", "p1", "p2", "k3"),
                       [round(float(v), 8) for v in dist.ravel()[:5]])),
-           "gripper_tool_offset_m": [round(float(v), 5) for v in tool],
+           "blob_offset_m": [round(float(v), 5) for v in tool],
+           "blob_offset_note": ("centroide de la mancha de movimiento de los dedos, "
+                                "estimado en el ajuste. Parametro molesto, NO sirve "
+                                "para agarrar."),
+           **({} if contacto is None else {
+               "contact_offset_m": [round(float(v), 5) for v in contacto],
+               "contact_offset_note": ("el punto que TOCA, medido por tacto sin "
+                                       "camara. Este es el que sirve para agarrar.")}),
            "_provenance": {
                "method": f"eye-to-hand PnP agrupado sobre {len(a.samples)} tandas, "
                          "estimando tambien el desfase de los dedos respecto a "

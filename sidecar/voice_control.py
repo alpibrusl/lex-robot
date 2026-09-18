@@ -72,6 +72,7 @@ Formatos:
   {"accion":"pinza","brazo":"derecho"|"izquierdo"|null,"estado":"abrir"|"cerrar"}
   {"accion":"base","direccion":"adelante"|"atras"|"izquierda"|"derecha","segundos":<0.2-1.5>}
   {"accion":"parar"}
+  {"accion":"mirar","direccion":"frente"|"derecha"|"izquierda"|"cerca","pregunta":"<lo que preguntan>"}
   {"accion":"nada"}
 
 "+" = base a la derecha, hombro arriba, codo estira, muneca arriba, giro horario.
@@ -79,6 +80,10 @@ Si no dicen cuanto, usa 15 grados.
 "base" mueve el ROBOT ENTERO sobre sus ruedas ("avanza", "ve hacia atras",
 "gira a la izquierda"); si no dicen cuanto, usa 0.5 segundos.
 "articulacion":"base" es otra cosa: el giro del hombro de un brazo.
+"mirar" es para PREGUNTAS sobre lo que ve, no ordenes de movimiento: "que ves",
+"donde estas", "que hay a la derecha", "hay alguien". Copia la pregunta tal cual
+en "pregunta". "direccion" es hacia donde mirar: "frente" por defecto, y "cerca"
+si piden mirar de cerca lo que tiene en la pinza.
 La transcripcion puede traer erratas ("pinta" por "pinza"): interpreta la intencion."""
 
 # El reconocedor se sesga hacia este vocabulario. Sin el, "hombro" se
@@ -98,7 +103,16 @@ RMS_OBJETIVO = 0.05
 # Palabra de activacion. Sin ella el robot procesa TODO lo que oye: una
 # conversacion de fondo dio "Y cortero volando", y peor, se llego a oir a si
 # mismo y a transcribir su propia respuesta pegada a una orden humana.
-PALABRA_CLAVE = os.environ.get("LEX_VOZ_CLAVE", "robot").lower()
+PALABRA_CLAVE = os.environ.get("LEX_VOZ_CLAVE", "handi").lower()
+# Variantes ACEPTADAS explicitamente. La distancia de edicion sola no basta:
+# con tolerancia 2 sobre una palabra de 5 letras se cuela casi cualquier cosa,
+# y subirla para admitir "jandi" abriria aun mas la puerta. Whisper escribe los
+# nombres propios segun le suenan, asi que se listan las formas reales que
+# produce y se compara exacto contra ellas, dejando la tolerancia para el resto.
+VARIANTES = {
+    "handi": ("handi", "handy", "jandi", "jandy", "andi", "andy", "handie"),
+    "robot": ("robot", "robo", "roboc", "roboh"),
+}
 # Cuantas letras puede equivocar la transcripcion y seguir contando. Whisper
 # escribe "robot" como "robo", "roboc" o "Roberto" segun la pronunciacion, asi
 # que una comparacion exacta rechazaria ordenes buenas.
@@ -138,9 +152,16 @@ def tras_palabra_clave(texto: str, clave: str = None, tolerancia: int = None):
     tol = CLAVE_TOLERANCIA if tolerancia is None else tolerancia
     if not clave:
         return texto
+    variantes = VARIANTES.get(clave, ())
+    # Con variantes explicitas la tolerancia amplia sobra y hace dano: "mandy"
+    # esta a distancia 2 de "handi" y activaba el robot en mitad de una
+    # conversacion. Las formas que Whisper produce de verdad ya estan listadas,
+    # asi que basta 1 para deslices menores.
+    if variantes:
+        tol = min(tol, 1)
     palabras = _sin_tildes((texto or "").lower()).replace(",", " ").replace(".", " ").split()
     for i, p in enumerate(palabras[:3]):
-        if _distancia(p, clave) <= tol:
+        if p in variantes or _distancia(p, clave) <= tol:
             resto = " ".join(palabras[i + 1:]).strip()
             return resto or None
     return None
@@ -360,11 +381,24 @@ class Brazo:
         return False, self.pos(j)
 
 
+def mirar(plan: dict) -> str:
+    """Responder una pregunta sobre lo que se ve.
+
+    Va aparte de los movimientos a proposito: no toca el bus de servos de los
+    brazos, y su modo de fallar es distinto -- una camara a oscuras no da un
+    error, da una descripcion inventada. Eso se filtra en vision.captura.
+    """
+    import vision
+    return vision.mira(plan.get("direccion") or "frente", plan.get("pregunta"))
+
+
 def ejecuta(plan: dict, brazos: dict) -> str:
     ok, motivo = valida(plan, brazos)
     if not ok:
         return motivo
     accion = plan["accion"]
+    if accion == "mirar":
+        return mirar(plan)
     if accion == "parar":
         for b in brazos.values():
             b.suelta()

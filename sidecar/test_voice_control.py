@@ -232,8 +232,12 @@ def test_no_hablar_no_lanza_proceso(monkeypatch):
 # ── palabra de activacion ────────────────────────────────────────────────────
 
 def test_la_palabra_clave_deja_pasar_la_orden():
-    from voice_control import tras_palabra_clave
-    assert tras_palabra_clave("robot abre la pinza derecha") == "abre la pinza derecha"
+    from voice_control import tras_palabra_clave, PALABRA_CLAVE
+    # Con la clave POR DEFECTO, sea cual sea: asi el test sigue valiendo si se
+    # cambia (ya paso de "robot" a "handi") y de paso comprueba que el valor por
+    # defecto es uno que el propio mecanismo reconoce.
+    assert tras_palabra_clave(f"{PALABRA_CLAVE} abre la pinza derecha") == \
+        "abre la pinza derecha"
 
 
 def test_sin_palabra_clave_se_ignora():
@@ -243,20 +247,38 @@ def test_sin_palabra_clave_se_ignora():
     assert tras_palabra_clave("abre la pinza derecha") is None
 
 
-@pytest.mark.parametrize("oido", ["robo abre la pinza", "roboc abre la pinza",
-                                  "Robot, abre la pinza", "ROBOT abre la pinza"])
-def test_tolera_que_la_transcripcion_escriba_mal_la_clave(oido):
-    # Whisper escribe "robot" de varias formas segun la pronunciacion; exigir
-    # la palabra exacta rechazaria ordenes buenas.
+@pytest.mark.parametrize("clave,oido", [
+    ("robot", "robo abre la pinza"), ("robot", "roboc abre la pinza"),
+    ("robot", "Robot, abre la pinza"), ("robot", "ROBOT abre la pinza"),
+    ("handi", "Handi abre la pinza"), ("handi", "Handy abre la pinza"),
+    ("handi", "Jandi abre la pinza"), ("handi", "Andy abre la pinza"),
+    ("handi", "HANDI, abre la pinza"),
+])
+def test_tolera_que_la_transcripcion_escriba_mal_la_clave(clave, oido):
+    # Whisper escribe los nombres propios segun le suenan; exigir la palabra
+    # exacta rechazaria ordenes buenas. Se pasa la clave EXPLICITA en vez de
+    # confiar en la de por defecto: estos tests comprueban el mecanismo, y
+    # ataban la suite a un valor que luego cambio (robot -> handi).
     from voice_control import tras_palabra_clave
-    assert tras_palabra_clave(oido) == "abre la pinza"
+    assert tras_palabra_clave(oido, clave=clave) == "abre la pinza"
+
+
+@pytest.mark.parametrize("oido", ["mandy no cuenta", "candy tampoco",
+                                  "sandia ni de broma"])
+def test_no_confunde_nombres_parecidos_con_la_clave(oido):
+    """Con tolerancia 2 sobre 5 letras, "mandy" activaba el robot en mitad de una
+    conversacion. Las variantes reales estan listadas, asi que la tolerancia
+    puede bajar a 1 sin perder transcripciones legitimas."""
+    from voice_control import tras_palabra_clave
+    assert tras_palabra_clave(oido, clave="handi") is None
 
 
 def test_la_clave_solo_cuenta_al_principio():
     """Aceptarla en cualquier posicion dejaria que una frase de fondo que
     mencione 'robot' de pasada disparase lo que venga detras."""
     from voice_control import tras_palabra_clave
-    assert tras_palabra_clave("pues mira lo que hace el nuevo robot abre la pinza") is None
+    assert tras_palabra_clave("pues mira lo que hace el nuevo robot abre la pinza",
+                              clave="robot") is None
 
 
 def test_la_clave_sola_no_es_una_orden():
