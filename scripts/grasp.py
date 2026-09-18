@@ -127,6 +127,7 @@ def main():
         sgn = -1 if altura() > h0 else +1       # sentido que BAJA
         rob.bus.write("Goal_Position", "shoulder_lift", lift, normalize=False)
         time.sleep(0.8)
+        cerca = np.array(a.objetivo, np.float64)
         # Bajar POR FASES, realineando entre ellas con el lazo completo. La
         # correccion casera que habia aqui movia el codo 8 ticks, que con su
         # jacobiano (-19 px/100 ticks) son 1.5 px, mientras el propio descenso
