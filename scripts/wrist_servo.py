@@ -325,8 +325,12 @@ def main():
             ahora = foto()
             ro, mo = encuentra_azul(ahora, cerca_de=obj_px)
             if ro is None:
+                # Perder el objetivo NO es un exito: antes se salia con codigo 0
+                # y quien llamaba seguia adelante. El agarre bajo a ciegas y
+                # cerro sobre nada, informando "sin agarre" -- cierto, pero por
+                # el motivo equivocado.
                 print(f"  {mo}; paro", flush=True)
-                break
+                return 1
             obj_px = ro[0]
             r2, _m = encuentra_rosa(ahora)
             if r2 is not None:

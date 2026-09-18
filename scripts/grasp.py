@@ -172,6 +172,12 @@ def main():
             if abortado:
                 break
             e, cerca = error_px(cerca)
+            if e is None:
+                # Bajar sin poder medir el error es bajar a ciegas: se corta.
+                print("     no puedo medir el error; corto el descenso",
+                      flush=True)
+                abortado = True
+                break
             print(f"     a {altura()*100:+.1f} cm, error "
                   f"{'%.0f px' % np.linalg.norm(e) if e is not None else '?'}",
                   flush=True)
