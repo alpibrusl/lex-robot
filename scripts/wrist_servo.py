@@ -29,7 +29,13 @@ import numpy as np
 
 ARM = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll",
        "gripper"]
-JS = ("shoulder_pan", "elbow_flex")
+# TRES articulaciones, no dos. Con (pan, codo) el sistema salia casi singular:
+# medido, pan da (-111,+17) px/100 ticks y codo solo (+4,-8) -- catorce veces mas
+# debil y en la misma direccion. Ninguna movia la imagen en VERTICAL, asi que el
+# lazo corregia la x y se estancaba en ~52 px de error en y. Con el hombro
+# incluido, el solucionador combina lo que haga falta; la altura la recupera
+# despues el controlador de altura.
+JS = ("shoulder_pan", "shoulder_lift", "elbow_flex")
 SONDA = 50
 PASO_MAX = 60
 GANANCIA = 0.45
@@ -233,7 +239,7 @@ def main():
                 print(f"  LLEGADA en {it} iteraciones", flush=True)
                 break
             # jacobiano: cuanto se mueve el OBJETO en la imagen por tick
-            Jm = np.zeros((2, 2))
+            Jm = np.zeros((2, len(JS)))
             base = foto()
             for k, j in enumerate(JS):
                 v = int(np.clip(cur[j] + SONDA, L[j][0] + 30, L[j][1] - 30))
@@ -257,10 +263,10 @@ def main():
                     print(f"  perdi el objeto midiendo {j}; paro", flush=True)
                     return 1
                 Jm[:, k] = (r2[0] - r1[0]) / (v - cur[j])
-            print(f"    jacobiano: pan ({Jm[0,0]*100:+.1f},{Jm[1,0]*100:+.1f}) "
-                  f"codo ({Jm[0,1]*100:+.1f},{Jm[1,1]*100:+.1f}) px/100 ticks",
-                  flush=True)
-            if abs(np.linalg.det(Jm)) < 1e-9:
+            print("    jacobiano: " + "  ".join(
+                f"{j[:4]} ({Jm[0,k]*100:+.0f},{Jm[1,k]*100:+.0f})"
+                for k, j in enumerate(JS)) + " px/100 ticks", flush=True)
+            if np.linalg.matrix_rank(Jm, tol=1e-6) < 2:
                 print("  jacobiano degenerado; paro", flush=True)
                 break
             # OJO AL SIGNO. Aqui la camara va en el brazo, asi que quien se mueve
@@ -270,7 +276,7 @@ def main():
             # fijo -- y copiar aquella estructura sin invertir el signo hacia que
             # el lazo se alejara: 157 -> 204 -> 245 -> 292 px.
             JtJ = Jm.T @ Jm
-            d = np.linalg.solve(JtJ + AMORTIGUA * np.trace(JtJ) * np.eye(2),
+            d = np.linalg.solve(JtJ + AMORTIGUA * np.trace(JtJ) * np.eye(len(JS)),
                                 Jm.T @ (-err)) * GANANCIA
             esc = min(1.0, PASO_MAX / max(abs(d).max(), 1e-9))
             for k, j in enumerate(JS):

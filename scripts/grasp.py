@@ -127,107 +127,70 @@ def main():
         sgn = -1 if altura() > h0 else +1       # sentido que BAJA
         rob.bus.write("Goal_Position", "shoulder_lift", lift, normalize=False)
         time.sleep(0.8)
-        cerca = np.array(a.objetivo, np.float64)
-        # MEDIR los signos, no suponerlos. En la version anterior estaban puestos
-        # a ojo y el realineado del descenso empujaba al reves: el error crecia de
-        # 50 a 101 px mientras el brazo bajaba. El lazo principal los saca del
-        # jacobiano; aqui hacia falta lo mismo.
-        e0, cerca = error_px(cerca)
-        sig_pan = sig_cod = 0
-        if e0 is not None:
-            pan_t = int(rob.bus.read("Present_Position", "shoulder_pan",
-                                     normalize=False))
-            p_lo0 = int(rob.bus.read("Min_Position_Limit", "shoulder_pan",
-                                     normalize=False))
-            p_hi0 = int(rob.bus.read("Max_Position_Limit", "shoulder_pan",
-                                     normalize=False))
-            rob.bus.write("Goal_Position", "shoulder_pan",
-                          int(np.clip(pan_t + 40, p_lo0 + 30, p_hi0 - 30)),
-                          normalize=False)
-            time.sleep(0.9)
-            e1, _c = error_px(cerca)
-            rob.bus.write("Goal_Position", "shoulder_pan", pan_t, normalize=False)
-            time.sleep(0.9)
-            if e1 is not None:
-                sig_pan = -1 if (e1[0] - e0[0]) * 1 > 0 else +1
-            cod_t = int(rob.bus.read("Present_Position", "elbow_flex",
-                                     normalize=False))
-            c_lo0 = int(rob.bus.read("Min_Position_Limit", "elbow_flex",
-                                     normalize=False))
-            c_hi0 = int(rob.bus.read("Max_Position_Limit", "elbow_flex",
-                                     normalize=False))
-            rob.bus.write("Goal_Position", "elbow_flex",
-                          int(np.clip(cod_t + 40, c_lo0 + 30, c_hi0 - 30)),
-                          normalize=False)
-            time.sleep(0.9)
-            e2, _c = error_px(cerca)
-            rob.bus.write("Goal_Position", "elbow_flex", cod_t, normalize=False)
-            time.sleep(0.9)
-            if e2 is not None:
-                sig_cod = -1 if (e2[1] - e0[1]) > 0 else +1
-            print(f"   signos medidos: pan {sig_pan:+d}, codo {sig_cod:+d}",
-                  flush=True)
-        pan0 = int(rob.bus.read("Present_Position", "shoulder_pan", normalize=False))
-        p_lo = int(rob.bus.read("Min_Position_Limit", "shoulder_pan", normalize=False))
-        p_hi = int(rob.bus.read("Max_Position_Limit", "shoulder_pan", normalize=False))
-        cod = int(rob.bus.read("Present_Position", "elbow_flex", normalize=False))
-        c_lo = int(rob.bus.read("Min_Position_Limit", "elbow_flex", normalize=False))
-        c_hi = int(rob.bus.read("Max_Position_Limit", "elbow_flex", normalize=False))
+        # Bajar POR FASES, realineando entre ellas con el lazo completo. La
+        # correccion casera que habia aqui movia el codo 8 ticks, que con su
+        # jacobiano (-19 px/100 ticks) son 1.5 px, mientras el propio descenso
+        # movia el hombro 18 ticks = ~4 px: la correccion era TRES VECES mas
+        # debil que la perturbacion que intentaba compensar, y el error crecia de
+        # 45 a 84 px mientras bajaba. Improvisar un controlador teniendo uno que
+        # funciona fue el error; esto reutiliza el probado.
+        h_ini = altura()
+        fases = 3
         abortado = False
-        for paso_n in range(40):
-            if not termo.comprobar():
-                abortado = True
-                break
-            h = altura()
-            if h < a.altura_cierre - 0.006:
-                # Se ha pasado. Pasa cuando el termostato pausa a mitad del
-                # descenso: la pausa SUELTA el par (para que enfrie de verdad) y
-                # el brazo se desploma, asi que al reanudar ya esta por debajo.
-                # Se recupera en vez de darlo por perdido -- vale para esa causa
-                # y para cualquier otra.
-                print(f"   me pase ({h*100:+.1f} cm); recupero", flush=True)
-                for _ in range(20):
-                    if altura() >= a.altura_cierre:
-                        break
-                    lift = int(np.clip(lift - sgn * 8, lo_l + 30, hi_l - 30))
-                    rob.bus.write("Goal_Position", "shoulder_lift", lift,
-                                  normalize=False)
-                    time.sleep(0.3)
+        for fase in range(fases):
+            objetivo_h = h_ini + (a.altura_cierre - h_ini) * (fase + 1) / fases
+            print(f"   fase {fase+1}/{fases}: bajar a {objetivo_h*100:+.1f} cm",
+                  flush=True)
+            for _ in range(30):
+                if not termo.comprobar():
+                    abortado = True
+                    break
                 h = altura()
-            if abs(h - a.altura_cierre) <= 0.006:
+                if h < objetivo_h - 0.006:
+                    for _ in range(20):
+                        if altura() >= objetivo_h:
+                            break
+                        lift = int(np.clip(lift - sgn * 8, lo_l + 30, hi_l - 30))
+                        rob.bus.write("Goal_Position", "shoulder_lift", lift,
+                                      normalize=False)
+                        time.sleep(0.3)
+                    break
+                if abs(h - objetivo_h) <= 0.006:
+                    break
+                paso = 16 if (h - objetivo_h) > 0.02 else 7
+                lift = int(np.clip(lift + sgn * paso, lo_l + 30, hi_l - 30))
+                rob.bus.write("Goal_Position", "shoulder_lift", lift,
+                              normalize=False)
+                time.sleep(0.30)
+            if abortado:
                 break
-            paso = 18 if (h - a.altura_cierre) > 0.02 else 7
-            lift = int(np.clip(lift + sgn * paso, lo_l + 30, hi_l - 30))
-            rob.bus.write("Goal_Position", "shoulder_lift", lift, normalize=False)
-            time.sleep(0.32)
-            if paso_n % 3 == 2:
+            e, cerca = error_px(cerca)
+            print(f"     a {altura()*100:+.1f} cm, error "
+                  f"{'%.0f px' % np.linalg.norm(e) if e is not None else '?'}",
+                  flush=True)
+            if fase < fases - 1 and e is not None and np.linalg.norm(e) > 25:
+                cap.release()
+                r2 = subprocess.run(
+                    [sys.executable, str(aqui / "wrist_servo.py"),
+                     "--objetivo", str(cerca[0]), str(cerca[1]),
+                     "--iteraciones", "5"], text=True, capture_output=True)
+                for ln in r2.stdout.splitlines():
+                    if ": objeto en" in ln or "LLEGADA" in ln:
+                        print("     " + ln.strip(), flush=True)
+                cap = cv2.VideoCapture(
+                    int(os.environ.get("LEX_XLE_CAMERA_LEFT_INDEX", "1")))
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                for _ in range(8):
+                    cap.read()
+                lift = int(rob.bus.read("Present_Position", "shoulder_lift",
+                                        normalize=False))
                 e, cerca = error_px(cerca)
-                if e is not None:
-                    # correccion proporcional pequena, con los signos medidos en
-                    # el servocontrol: pan mueve sobre todo en x, codo en y
-                    if abs(e[0]) > 8 and sig_pan:
-                        pan0 = int(np.clip(pan0 + sig_pan * np.sign(e[0]) * 10,
-                                           p_lo + 30, p_hi - 30))
-                        rob.bus.write("Goal_Position", "shoulder_pan", pan0,
-                                      normalize=False)
-                    if abs(e[1]) > 8 and sig_cod:
-                        cod = int(np.clip(cod + sig_cod * np.sign(e[1]) * 8,
-                                          c_lo + 30, c_hi - 30))
-                        rob.bus.write("Goal_Position", "elbow_flex", cod,
-                                      normalize=False)
-                    time.sleep(0.4)
-                    print(f"   h={h*100:+4.1f} cm  error ({e[0]:+5.0f},{e[1]:+5.0f}) px",
-                          flush=True)
         e, cerca = error_px(cerca)
         print(f"   punta a {altura()*100:+.1f} cm; error final "
               f"{'%.0f px' % np.linalg.norm(e) if e is not None else 'no medido'}",
               flush=True)
         cap.release()
-
-        # Un aborto tiene que parar lo que viene DETRAS, no solo la fase en
-        # curso: el termostato corto el alineamiento y el descenso, y la
-        # secuencia siguio cerrando y levantando como si nada -- informando
-        # despues "sin agarre", que era cierto pero por el motivo equivocado.
         h_fin = altura()
         # Comprobar las DOS direcciones. La guarda solo miraba "no bajo lo
         # suficiente", y el descenso se paso a -2.3 cm -- por DEBAJO de la mesa,
