@@ -98,13 +98,20 @@ class Termostato:
     def temp(self, forzar=False):
         ahora = time.monotonic()
         if forzar or self._t is None or ahora - self._cuando > self.cada_s:
-            try:
-                self._t = int(self.bus.read("Present_Temperature", self.joint,
-                                            normalize=False))
+            # Mediana de tres: una lectura suelta del bus puede venir corrupta, y
+            # de un valor unico dependen tanto parar como seguir. Con tres, un
+            # byte malo no decide.
+            v = []
+            for _ in range(3):
+                try:
+                    v.append(int(self.bus.read("Present_Temperature", self.joint,
+                                               normalize=False)))
+                except Exception:
+                    pass
+            if v:
+                self._t = sorted(v)[len(v) // 2]
                 self._cuando = ahora
                 self.pico = max(self.pico, self._t)
-            except Exception:
-                pass                      # una lectura perdida no para nada
         return self._t if self._t is not None else 0
 
     def comprobar(self, log=print):
