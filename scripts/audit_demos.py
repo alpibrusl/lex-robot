@@ -42,6 +42,14 @@ MIN_MOVEMENT = 40.0    # below this the arm barely moved
 MIN_GRIPPER = 5.0      # gripper travel: without it there was no grasp attempt
 MAX_DRIFT = 0.45       # how far the arm may lag behind what was commanded
 
+# Coverage. Clean is not the same as good: a set of identical perfect takes
+# teaches the policy one narrow band of states, and at run time it WILL drift
+# slightly off that band. Once there it is in a state it never saw, acts badly,
+# drifts further, and the error compounds. So the end poses are expected to
+# spread out -- that spread is where you put the object.
+MIN_EPISODES_FOR_COVERAGE = 5   # below this the spread means nothing
+MIN_END_SPREAD = 3.0            # normalized units of std across episodes
+
 
 def load(root: Path):
     data = pd.concat(
@@ -102,6 +110,49 @@ def judge_with_model(root: Path, meta_ep, task: str):
     if answer.startswith("NO"):
         return False, answer[:40]
     return None, f"ambiguous answer: {answer[:40]}"
+
+
+def coverage(data, metas) -> None:
+    """Report how varied the takes are, not just how clean.
+
+    The spread that matters is the one at the END of the episode: that is where
+    the object was, so it stands in for how much you moved it around between
+    takes. The spread at the start says little -- everyone resets the arm to
+    roughly the same rest pose, and that is fine.
+    """
+    if len(metas) < MIN_EPISODES_FOR_COVERAGE:
+        print(
+            f"\nCoverage: {len(metas)} episodes is too few to judge the spread."
+            f" Ask again past {MIN_EPISODES_FOR_COVERAGE}."
+        )
+        return
+
+    starts, ends = [], []
+    for _, g in data.groupby("episode_index"):
+        s = np.stack(g["observation.state"].values)
+        starts.append(s[0])
+        ends.append(s[-1])
+    starts, ends = np.stack(starts), np.stack(ends)
+
+    print("\nCoverage (std across episodes, normalized units):")
+    print(f"  {'joint':14s} {'at start':>9s} {'at end':>9s}")
+    for i, joint in enumerate(JOINTS):
+        print(f"  {joint:14s} {starts[:, i].std():9.1f} {ends[:, i].std():9.1f}")
+
+    # The base and the shoulder are what move to reach a different spot on the
+    # table, so they are the ones that should differ between takes.
+    reach = float(np.mean([ends[:, 0].std(), ends[:, 1].std()]))
+    if reach < MIN_END_SPREAD:
+        print(
+            f"\n  TOO UNIFORM (base/shoulder spread {reach:.1f} at the end).\n"
+            "  Every take ends in nearly the same pose, so the object barely moved\n"
+            "  between them. Clean takes are not enough: a policy that only ever saw\n"
+            "  one narrow band of states has no idea what to do once it drifts off it,\n"
+            "  and it will drift. Move the object around between episodes -- nearer,\n"
+            "  further, off to the sides, turned differently."
+        )
+    else:
+        print(f"\n  Varied enough (base/shoulder spread {reach:.1f} at the end).")
 
 
 def main() -> int:
@@ -183,6 +234,8 @@ def main() -> int:
         for f in failures:
             print(f"                - {f}")
 
+    coverage(data, metas)
+
     suspect = sorted(issues)
     print(f"\n{len(metas) - len(suspect)} of {len(metas)} episodes clean.")
     if suspect:
@@ -190,6 +243,11 @@ def main() -> int:
         print(
             "\nLook at them before training. ACT imitates everything you give it, so\n"
             "a failed take is not ignored: it learns to fail the same way."
+        )
+        print(
+            "Remove the FAILURES, not the imperfections: a take where you overshot and\n"
+            "corrected is good data, because it is the only place the policy ever sees\n"
+            "how to get back on track."
         )
     if not look:
         print("\nWith --look, the local model also judges whether the object ended up held.")

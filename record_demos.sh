@@ -4,6 +4,15 @@
 #   ./record_demos.sh               the left arm (default)
 #   ARM=right ./record_demos.sh     the other one
 #
+# FOCUSED, BUT NOT IDENTICAL. Move the object between episodes -- nearer,
+# further, to the sides, turned differently. A set of flawless takes that are
+# all the same teaches one narrow band of states, and at run time the policy
+# WILL drift slightly off it; once there it is somewhere it never saw, acts
+# badly, drifts further, and the error compounds. What you delete afterwards
+# are the FAILURES, not the imperfections: a take where you overshot and
+# corrected is valuable, because it is the only place the policy ever sees how
+# to get back on track. `scripts/audit_demos.py` reports that spread.
+#
 # ONE SKILL PER DATASET. Do not chain pick -> place -> release -> pick again in
 # a single episode: imitation learning is built for a single task and gets
 # unreliable on long multi-stage takes, even when every stage is a skill it
