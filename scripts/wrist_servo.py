@@ -46,6 +46,13 @@ ROSA = dict(h_lo=138, h_hi=176, s_min=95, v_min=60, area_min=150)
 # lazo apuntaba al sitio equivocado.
 AZUL = dict(h_lo=95, h_hi=135, s_min=145, v_min=130, area_min=200)
 
+# La pegatina esta en la CARA de un dedo, no en el punto de agarre. Llevar el
+# objeto a la pegatina lo lleva CONTRA el dedo: el primer agarre fallido dejo el
+# objeto asomando justo detras de el. El punto util es el vertice de la V que
+# forman los dedos, medido en la imagen a (+35,+7) px de la pegatina.
+# Hay que rehacer esta medida si se mueve la pegatina o se cambia la pinza.
+DESFASE_AGARRE = np.array([35.0, 7.0])
+
 
 def encuentra_color(frame, cfg, que="la mancha", cerca_de=None, salto_max=120):
     """Centro de la mancha del color pedido. (centro, area) o (None, motivo).
@@ -163,6 +170,7 @@ def main():
         anota(f, None, None, "sin_pegatina", a.fotos)
         sys.exit(f"{motivo} -> {a.fotos}/sin_pegatina.jpg")
     mira, area = r
+    mira = mira + DESFASE_AGARRE      # apuntar al hueco, no al dedo
     objetivo = np.array(a.objetivo) if a.objetivo else None
     anota(f, mira, objetivo, "inicial", a.fotos)
     print(f"  punto de mira (pegatina) en ({mira[0]:.0f},{mira[1]:.0f}), "
