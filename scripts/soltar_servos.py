@@ -13,9 +13,11 @@ import sys
 from lerobot.motors import Motor, MotorNormMode
 from lerobot.motors.feetech import FeetechMotorsBus
 
+# El lado se identifica por los auxiliares de cada bus, no por la etiqueta:
+# torre (ids 7,8) = izquierdo, ruedas (ids 9,10) = derecho.
 BRAZOS = {
-    "derecho": "/dev/cu.usbmodem5B610332201",
-    "izquierdo": "/dev/cu.usbmodem5B3D0437151",
+    "izquierdo": "/dev/cu.usbmodem5B610332201",
+    "derecho": "/dev/cu.usbmodem5B3D0437151",
 }
 EJES = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"]
 

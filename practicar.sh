@@ -1,12 +1,19 @@
 #!/bin/zsh
 # Practicar con el teclado SIN grabar nada. Se puede dejar corriendo.
 #
+#   ./practicar.sh                      los dos brazos, se cambia con 1 y 2
+#   ./practicar.sh izquierdo            solo ese
+#   ./practicar.sh derecho
+#
 #     w / s   girar la base        y / h   muñeca arriba/abajo
 #     e / d   hombro               u / j   girar la muñeca
 #     t / g   codo                 i / k   abrir/cerrar la pinza
 #
+#     1 / 2   cambiar de brazo (izquierdo / derecho)
+#
 #   Se combinan pulsando a la vez. Shift = cuarto de velocidad.
-#   Esc o Ctrl-C para salir. El brazo se queda sujeto, no se desploma.
+#   Esc o Ctrl-C para salir. Los brazos se quedan sujetos, no se desploman.
+#   El brazo inactivo tambien conserva el par: se queda donde lo dejaste.
 #
 # Sin camaras y sin conjunto de datos: esto no graba, solo mueve.
 # Al terminar, para dejar los servos libres:  python scripts/soltar_servos.py
