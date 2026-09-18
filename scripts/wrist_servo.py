@@ -53,11 +53,18 @@ ROSA = dict(h_lo=138, h_hi=176, s_min=95, v_min=60, area_min=150)
 AZUL = dict(h_lo=95, h_hi=135, s_min=145, v_min=130, area_min=200)
 
 # La pegatina esta en la CARA de un dedo, no en el punto de agarre. Llevar el
-# objeto a la pegatina lo lleva CONTRA el dedo: el primer agarre fallido dejo el
-# objeto asomando justo detras de el. El punto util es el vertice de la V que
-# forman los dedos, medido en la imagen a (+35,+7) px de la pegatina.
-# Hay que rehacer esta medida si se mueve la pegatina o se cambia la pinza.
-DESFASE_AGARRE = np.array([35.0, 7.0])
+# objeto a la pegatina lo lleva CONTRA el dedo.
+#
+# Este valor se MIDIO poniendo un objeto entre los dedos y cerrando: donde queda
+# ES el punto de agarre, sin geometria de por medio. Las tres estimaciones
+# previas -- a ojo (+35,+7), por diferencia de imagenes (+14,+2) y con rejilla
+# (+42,-20) -- no coincidian entre si, que ya avisaba de que leer la posicion de
+# los dedos desde una camara que los mira DE CANTO no funciona. La diferencia en
+# vertical entre el valor a ojo y el medido son 44 px, o sea mas de 2 cm.
+#
+# Rehacer la medida si se mueve la pegatina o se cambia la pinza:
+#   python /tmp/medir_agarre.py   (con un objeto entre los dedos)
+DESFASE_AGARRE = np.array([26.0, -37.0])
 
 
 def encuentra_color(frame, cfg, que="la mancha", cerca_de=None, salto_max=120):
