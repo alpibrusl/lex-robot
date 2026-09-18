@@ -59,7 +59,10 @@ def teclado_responde(segundos: int = ESPERA_TECLA_S) -> bool:
         "  Ajustes > Privacidad y seguridad > Accesibilidad\n"
         "  Añade Terminal (Aplicaciones/Utilidades) con el +, activalo,\n"
         "  y CIERRA Y REABRE Terminal para que lo coja.\n"
-        "Sin esto lerobot no avisa: grabaria los episodios vacios.",
+        "\nSin esto lerobot no avisa: grabaria los episodios vacios.\n"
+        "Y no hay atajo. Existe un lector que no pide permiso (lee el propio\n"
+        "terminal), pero lerobot-record ya lo usa para pasar de episodio y se\n"
+        "queda con la entrada: no se puede leer dos veces el mismo terminal.",
         file=sys.stderr,
     )
     return False
@@ -67,10 +70,13 @@ def teclado_responde(segundos: int = ESPERA_TECLA_S) -> bool:
 
 def ayuda_teclas() -> None:
     print("  Fila de arriba SUMA, fila de casa RESTA, de la base a la pinza:")
-    for arriba, abajo in (("q", "a"), ("w", "s"), ("e", "d"), ("r", "f"), ("t", "g"), ("y", "h")):
+    for arriba, abajo in (("w", "s"), ("e", "d"), ("t", "g"), ("y", "h"), ("u", "j"), ("i", "k")):
         print(f"    {arriba} / {abajo}   {TECLAS[arriba][0]}")
     print("  Se combinan pulsando a la vez.  Shift = cuarto de velocidad (agarre fino).")
-    print("  Flecha derecha = terminar episodio,  Esc = salir.\n")
+    print("  Reservadas por lerobot-record, no mueven el brazo:")
+    print("    n / flecha derecha = episodio bueno, siguiente")
+    print("    r / flecha izquierda = repetir el episodio")
+    print("    q / esc = salir\n")
 
 
 def main() -> int:

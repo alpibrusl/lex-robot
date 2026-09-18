@@ -8,13 +8,15 @@
 # Teclas: control ARTICULAR, un servo por pareja de teclas. Fila de arriba
 # suma, fila de casa resta, de izquierda a derecha de la base a la pinza:
 #
-#     q / a   girar la base        r / f   muñeca arriba/abajo
-#     w / s   hombro               t / g   girar la muñeca
-#     e / d   codo                 y / h   abrir/cerrar la pinza
+#     w / s   girar la base        y / h   muñeca arriba/abajo
+#     e / d   hombro               u / j   girar la muñeca
+#     t / g   codo                 i / k   abrir/cerrar la pinza
 #
-#   Se combinan pulsando a la vez (w+e sube hombro y codo en el mismo
+#   No se usan q, r, n, esc ni las flechas: son de lerobot-record (siguiente
+#   episodio, repetir, salir) y los dos escuchas reciben todas las teclas.
+#
+#   Se combinan pulsando a la vez (e+t sube hombro y codo en el mismo
 #   fotograma). Shift = cuarto de velocidad, para el agarre fino.
-#   Flecha derecha termina el episodio; Esc sale.
 #
 # Por que no el teclado cartesiano de lerobot (keyboard_ee): emite deltas
 # x/y/z y el brazo solo entiende claves `<motor>.pos`. Nadie traduce en medio,

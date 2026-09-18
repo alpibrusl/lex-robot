@@ -11,15 +11,26 @@ la cinematica inversa, no tu.
 Aqui cada servo es tuyo. Distribucion sistematica: fila de arriba suma,
 fila de casa resta, de izquierda a derecha es de la base a la pinza.
 
-    q/a  shoulder_pan     girar la base
-    w/s  shoulder_lift    subir/bajar el hombro
-    e/d  elbow_flex       codo
-    r/f  wrist_flex       muñeca arriba/abajo
-    t/g  wrist_roll       girar la muñeca
-    y/h  gripper          abrir/cerrar
+    w/s  shoulder_pan     girar la base
+    e/d  shoulder_lift    subir/bajar el hombro
+    t/g  elbow_flex       codo
+    y/h  wrist_flex       muñeca arriba/abajo
+    u/j  wrist_roll       girar la muñeca
+    i/k  gripper          abrir/cerrar
 
-Se combinan pulsando a la vez: w+e sube hombro y codo en el mismo fotograma.
+Se combinan pulsando a la vez: e+t sube hombro y codo en el mismo fotograma.
 Mantener shift mueve a un cuarto de velocidad, para el agarre fino.
+
+OJO con las teclas libres: lerobot-record monta SU PROPIO escucha de teclado
+para pasar de episodio, y con pynput los dos escuchas reciben todas las
+pulsaciones. Estas estan cogidas y no se pueden usar para mover el brazo:
+
+    n / flecha derecha   dar el episodio por bueno y pasar al siguiente
+    r / flecha izquierda repetir el episodio
+    q / esc              salir
+
+Por eso el mapa se salta la columna r/f y no empieza en q: girar la base
+habria cerrado el programa.
 """
 
 from dataclasses import dataclass, field
@@ -42,14 +53,19 @@ PASOS = {
     "gripper": 1.5,
 }
 
+# Reservadas por lerobot-record: n, r, q, esc y las flechas. Ver el docstring.
+RESERVADAS = frozenset({"n", "r", "q"})
+
 TECLAS = {
-    "q": ("shoulder_pan", +1), "a": ("shoulder_pan", -1),
-    "w": ("shoulder_lift", +1), "s": ("shoulder_lift", -1),
-    "e": ("elbow_flex", +1), "d": ("elbow_flex", -1),
-    "r": ("wrist_flex", +1), "f": ("wrist_flex", -1),
-    "t": ("wrist_roll", +1), "g": ("wrist_roll", -1),
-    "y": ("gripper", +1), "h": ("gripper", -1),
+    "w": ("shoulder_pan", +1), "s": ("shoulder_pan", -1),
+    "e": ("shoulder_lift", +1), "d": ("shoulder_lift", -1),
+    "t": ("elbow_flex", +1), "g": ("elbow_flex", -1),
+    "y": ("wrist_flex", +1), "h": ("wrist_flex", -1),
+    "u": ("wrist_roll", +1), "j": ("wrist_roll", -1),
+    "i": ("gripper", +1), "k": ("gripper", -1),
 }
+
+assert not (RESERVADAS & TECLAS.keys()), "una tecla de mover chocaria con lerobot-record"
 
 # El follower normaliza todo a -100..100 menos la pinza, que va de 0 a 100.
 LIMITES = {"gripper": (0.0, 100.0)}
