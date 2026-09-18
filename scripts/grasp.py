@@ -179,7 +179,22 @@ def main():
                 abortado = True
                 break
             h = altura()
-            if h <= a.altura_cierre:
+            if h < a.altura_cierre - 0.006:
+                # Se ha pasado. Pasa cuando el termostato pausa a mitad del
+                # descenso: la pausa SUELTA el par (para que enfrie de verdad) y
+                # el brazo se desploma, asi que al reanudar ya esta por debajo.
+                # Se recupera en vez de darlo por perdido -- vale para esa causa
+                # y para cualquier otra.
+                print(f"   me pase ({h*100:+.1f} cm); recupero", flush=True)
+                for _ in range(20):
+                    if altura() >= a.altura_cierre:
+                        break
+                    lift = int(np.clip(lift - sgn * 8, lo_l + 30, hi_l - 30))
+                    rob.bus.write("Goal_Position", "shoulder_lift", lift,
+                                  normalize=False)
+                    time.sleep(0.3)
+                h = altura()
+            if abs(h - a.altura_cierre) <= 0.006:
                 break
             paso = 18 if (h - a.altura_cierre) > 0.02 else 7
             lift = int(np.clip(lift + sgn * paso, lo_l + 30, hi_l - 30))
