@@ -51,6 +51,10 @@ ROSA = dict(h_lo=138, h_hi=176, s_min=95, v_min=60, area_min=150)
 # V=93 (deslavado). Con s_min=80 ganaba el reflejo por ser mas extenso, y el
 # lazo apuntaba al sitio equivocado.
 AZUL = dict(h_lo=95, h_hi=135, s_min=145, v_min=130, area_min=200)
+# Estrella de madera amarilla, MEDIDA en la escena: H=23 S=200 V=234. El brillo
+# la separa de la madera (V 234 vs 155) y la saturacion del post-it (S 200 vs
+# 147), que es lo mas parecido que hay alrededor.
+AMARILLO = dict(h_lo=17, h_hi=29, s_min=175, v_min=210, area_min=300)
 
 # La pegatina esta en la CARA de un dedo, no en el punto de agarre. Llevar el
 # objeto a la pegatina lo lleva CONTRA el dedo.
@@ -106,6 +110,11 @@ def encuentra_rosa(frame, cfg=ROSA):
     return encuentra_color(frame, cfg, "la pegatina")
 
 
+def encuentra_amarillo(frame, cfg=AMARILLO, cerca_de=None, salto_max=140):
+    return encuentra_color(frame, cfg, "la estrella", cerca_de=cerca_de,
+                           salto_max=salto_max)
+
+
 def encuentra_azul(frame, cfg=AZUL, cerca_de=None, salto_max=140):
     # El salto admisible depende de si el movimiento estaba ORDENADO: al medir el
     # jacobiano se mueve una articulacion a proposito y el objeto se desplaza
@@ -151,6 +160,8 @@ def main():
     p.add_argument("--tol-px", type=float, default=TOL_PX)
     p.add_argument("--verificar", action="store_true",
                    help="solo mirar y guardar la imagen anotada, sin mover")
+    p.add_argument("--color", default="azul", choices=["azul", "amarillo"],
+                   help="color del objeto a seguir")
     p.add_argument("--fotos", default="/tmp/muneca")
     p.add_argument("--altura-vuelo", type=float, default=0.045,
                    help="metros que la PUNTA de la pinza debe mantener sobre la "
@@ -158,6 +169,9 @@ def main():
     a = p.parse_args()
 
     import cv2
+    global encuentra_azul
+    if a.color == "amarillo":
+        encuentra_azul = encuentra_amarillo      # el lazo sigue el color elegido
     from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
     from lerobot.model.kinematics import RobotKinematics
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))

@@ -37,6 +37,7 @@ def main():
     p.add_argument("--id", default="xle_right")
     p.add_argument("--altura-cierre", type=float, default=0.012,
                    help="altura de la punta sobre la mesa al cerrar (m)")
+    p.add_argument("--color", default="azul", choices=["azul", "amarillo"])
     p.add_argument("--sin-alinear", action="store_true",
                    help="saltar el alineamiento (usar si ya esta encima)")
     a = p.parse_args()
@@ -46,6 +47,7 @@ def main():
         print("== 1. alinear ==", flush=True)
         r = subprocess.run([sys.executable, str(aqui / "wrist_servo.py"),
                             "--objetivo", str(a.objetivo[0]), str(a.objetivo[1]),
+                            "--color", a.color,
                             "--iteraciones", "12"], text=True)
         # Si el alineamiento FALLA, no hay nada que agarrar donde se cree. Antes
         # se imprimia el codigo y se seguia igual: un error de bus tumbo el
@@ -100,7 +102,11 @@ def main():
         # y LUEGO bajar pierde el alineamiento: la primera prueba cerro la pinza
         # donde el objeto ya no estaba. Hay que intercalar, no secuenciar.
         import cv2
-        from wrist_servo import encuentra_rosa, encuentra_azul
+        import wrist_servo as _ws
+        from wrist_servo import encuentra_rosa
+        # El seguidor del objetivo depende del color pedido
+        encuentra_objeto = (_ws.encuentra_amarillo if a.color == "amarillo"
+                            else _ws.encuentra_azul)
         cap = cv2.VideoCapture(int(os.environ.get("LEX_XLE_CAMERA_LEFT_INDEX", "1")))
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
@@ -113,7 +119,7 @@ def main():
             ok, f = cap.read()
             if not ok:
                 return None, cerca
-            ro, _m = encuentra_azul(f, cerca_de=cerca, salto_max=110)
+            ro, _m = encuentra_objeto(f, cerca_de=cerca, salto_max=110)
             rr, _m2 = encuentra_rosa(f)
             if ro is None or rr is None:
                 return None, cerca
@@ -169,11 +175,16 @@ def main():
             print(f"     a {altura()*100:+.1f} cm, error "
                   f"{'%.0f px' % np.linalg.norm(e) if e is not None else '?'}",
                   flush=True)
-            if fase < fases - 1 and e is not None and np.linalg.norm(e) > 25:
+            # Realinear TAMBIEN tras la ultima bajada. Antes solo se hacia entre
+            # fases, asi que el momento en que la punteria importa -- justo antes
+            # de cerrar -- era el unico sin corregir: la fase 2 dejaba el error en
+            # 40 px y la bajada final lo devolvia a 78, que son ~4 cm.
+            if e is not None and np.linalg.norm(e) > 25:
                 cap.release()
                 r2 = subprocess.run(
                     [sys.executable, str(aqui / "wrist_servo.py"),
                      "--objetivo", str(cerca[0]), str(cerca[1]),
+                     "--color", a.color,
                      "--iteraciones", "5"], text=True, capture_output=True)
                 for ln in r2.stdout.splitlines():
                     if ": objeto en" in ln or "LLEGADA" in ln:
