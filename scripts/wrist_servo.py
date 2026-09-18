@@ -40,7 +40,11 @@ TOL_PX = 18.0
 # que en esta luz cae justo ahi y es mucho mas extensa, asi que el centroide se
 # iba de la pegatina a la mesa. El tono medido esta firmemente en magenta.
 ROSA = dict(h_lo=138, h_hi=176, s_min=95, v_min=60, area_min=150)
-AZUL = dict(h_lo=95, h_hi=135, s_min=80, v_min=50, area_min=200)
+# Umbrales MEDIDOS para separar el objeto de los reflejos: el objeto real da
+# S=220 V=250 (azul vivo) y el reflejo azulado sobre el papel del tablero S=90
+# V=93 (deslavado). Con s_min=80 ganaba el reflejo por ser mas extenso, y el
+# lazo apuntaba al sitio equivocado.
+AZUL = dict(h_lo=95, h_hi=135, s_min=145, v_min=130, area_min=200)
 
 
 def encuentra_color(frame, cfg, que="la mancha", cerca_de=None, salto_max=120):
