@@ -58,7 +58,11 @@ AZUL = dict(h_lo=95, h_hi=135, s_min=145, v_min=130, area_min=200)
 # Estrella de madera amarilla, MEDIDA en la escena: H=23 S=200 V=234. El brillo
 # la separa de la madera (V 234 vs 155) y la saturacion del post-it (S 200 vs
 # 147), que es lo mas parecido que hay alrededor.
-AMARILLO = dict(h_lo=17, h_hi=29, s_min=175, v_min=210, area_min=300)
+# area_min baja a 120: al acercarse, la PROPIA PINZA tapa el objeto (la estrella
+# paso de 8277 px a 112 en tres iteraciones) y con 300 el lazo lo daba por
+# perdido justo cuando estaba llegando. Es una limitacion geometrica del ojo en
+# mano: los dedos ocupan la parte baja del encuadre y el objeto baja hacia ellos.
+AMARILLO = dict(h_lo=17, h_hi=29, s_min=175, v_min=210, area_min=120)
 
 # La pegatina esta en la CARA de un dedo, no en el punto de agarre. Llevar el
 # objeto a la pegatina lo lleva CONTRA el dedo.
@@ -254,6 +258,7 @@ def main():
             return None     # se resuelve con el jacobiano abajo
 
         obj_px = objetivo.copy()
+        area_inicial = area_previa = None
         for it in range(a.iteraciones):
             if not termo.comprobar():
                 break
@@ -324,6 +329,14 @@ def main():
             # (la altura ya va DENTRO del lazo, como tercera salida)
             ahora = foto()
             ro, mo = encuentra_azul(ahora, cerca_de=obj_px)
+            if ro is None and area_previa and area_previa < 0.25 * area_inicial:
+                # Encogiendose progresivamente y ahora invisible: lo tapa la
+                # pinza, o sea que se ha llegado. Distinto de perderlo de golpe
+                # con el objeto aun grande, que si es un fallo.
+                print(f"  el objeto quedo tapado por la pinza tras encogerse de "
+                      f"{area_inicial} a {area_previa} px: doy por buena la "
+                      "aproximacion", flush=True)
+                break
             if ro is None:
                 # Perder el objetivo NO es un exito: antes se salia con codigo 0
                 # y quien llamaba seguia adelante. El agarre bajo a ciegas y
@@ -332,6 +345,9 @@ def main():
                 print(f"  {mo}; paro", flush=True)
                 return 1
             obj_px = ro[0]
+            area_previa = ro[1]
+            if area_inicial is None:
+                area_inicial = ro[1]
             r2, _m = encuentra_rosa(ahora)
             if r2 is not None:
                 mira = r2[0]           # la pegatina no deberia moverse, pero se remide
