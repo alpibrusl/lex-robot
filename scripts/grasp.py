@@ -225,6 +225,17 @@ def main():
         else:
             print("\n   sin agarre", flush=True)
     finally:
+        # SOLTAR AL SALIR. Terminar con el par puesto deja el brazo sosteniendose
+        # y calentando sin hacer nada: tras un intento quedo con carga 276 en el
+        # hombro y 51 C. El agarre ya termino; lo que hay que preservar es el
+        # objeto en la pinza, y eso solo aplica si de verdad cogio algo.
+        try:
+            for j in ARM:
+                if j == "gripper" and locals().get("hay_algo"):
+                    continue          # si sostiene algo, la pinza sigue apretando
+                rob.bus.write("Torque_Enable", j, 0, normalize=False)
+        except Exception:
+            pass
         try:
             rob.bus.disconnect(disable_torque=False)
         except Exception:
