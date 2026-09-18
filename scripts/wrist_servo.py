@@ -62,7 +62,12 @@ AZUL = dict(h_lo=95, h_hi=135, s_min=145, v_min=130, area_min=200)
 # paso de 8277 px a 112 en tres iteraciones) y con 300 el lazo lo daba por
 # perdido justo cuando estaba llegando. Es una limitacion geometrica del ojo en
 # mano: los dedos ocupan la parte baja del encuadre y el objeto baja hacia ellos.
-AMARILLO = dict(h_lo=17, h_hi=29, s_min=175, v_min=210, area_min=120)
+# Umbrales con MARGEN, no ajustados al pelo. Medida inicial de la estrella:
+# S=200 V=234. Al moverla a otra zona de luz bajo a S=166 V=222 y el umbral de
+# 175 la hizo desaparecer -- un detector que se cae porque el objeto se mueve
+# treinta centimetros no sirve. Sigue separada del post-it (H=46, muy lejos de
+# la banda) y de la madera (V=155, por debajo del minimo).
+AMARILLO = dict(h_lo=16, h_hi=34, s_min=125, v_min=180, area_min=120)
 
 # La pegatina esta en la CARA de un dedo, no en el punto de agarre. Llevar el
 # objeto a la pegatina lo lleva CONTRA el dedo.
