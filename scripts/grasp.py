@@ -47,7 +47,14 @@ def main():
         r = subprocess.run([sys.executable, str(aqui / "wrist_servo.py"),
                             "--objetivo", str(a.objetivo[0]), str(a.objetivo[1]),
                             "--iteraciones", "12"], text=True)
-        print(f"   (alineamiento termino con codigo {r.returncode})", flush=True)
+        # Si el alineamiento FALLA, no hay nada que agarrar donde se cree. Antes
+        # se imprimia el codigo y se seguia igual: un error de bus tumbo el
+        # alineamiento y la secuencia bajo y cerro de todas formas.
+        if r.returncode != 0:
+            print(f"   el alineamiento fallo (codigo {r.returncode}); no sigo",
+                  flush=True)
+            return 1
+        print("   alineado", flush=True)
 
     from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
     from lerobot.model.kinematics import RobotKinematics
@@ -167,11 +174,24 @@ def main():
         # curso: el termostato corto el alineamiento y el descenso, y la
         # secuencia siguio cerrando y levantando como si nada -- informando
         # despues "sin agarre", que era cierto pero por el motivo equivocado.
-        if abortado or altura() > a.altura_cierre + 0.02:
-            print(f"\n   NO CIERRO: el descenso no llego ({altura()*100:+.1f} cm, "
-                  f"objetivo {a.altura_cierre*100:.1f})"
-                  + (" tras abortar por temperatura" if abortado else ""),
-                  flush=True)
+        h_fin = altura()
+        # Comprobar las DOS direcciones. La guarda solo miraba "no bajo lo
+        # suficiente", y el descenso se paso a -2.3 cm -- por DEBAJO de la mesa,
+        # presionando contra ella. Quedarse corto es un intento fallido;
+        # pasarse es empujar el brazo contra el tablero.
+        if abortado or not (a.altura_cierre - 0.010 < h_fin < a.altura_cierre + 0.020):
+            print(f"\n   NO CIERRO: la punta quedo a {h_fin*100:+.1f} cm y se "
+                  f"esperaba {a.altura_cierre*100:.1f}"
+                  + (" (abortado por temperatura)" if abortado else ""), flush=True)
+            if h_fin < a.altura_cierre:
+                print("   LEVANTO para no seguir presionando", flush=True)
+                for _ in range(12):
+                    lift = int(np.clip(lift - sgn * 20, lo_l + 30, hi_l - 30))
+                    rob.bus.write("Goal_Position", "shoulder_lift", lift,
+                                  normalize=False)
+                    time.sleep(0.3)
+                    if altura() > 0.06:
+                        break
             return 1
         print("== 4. cerrar ==", flush=True)
         rob.bus.write("Goal_Position", "gripper", g_lo + 20, normalize=False)
