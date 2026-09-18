@@ -135,6 +135,7 @@ def main():
             confs.append((+180, +170, wf, wr))
 
         for k, (pan, codo, wf, wr) in enumerate(confs):
+          try:
             if not termo.comprobar():
                 break
             for j in ARM:
@@ -223,6 +224,16 @@ def main():
                           int(np.clip(lift - sgn * 110, L["shoulder_lift"][0] + 30,
                                       L["shoulder_lift"][1] - 30)), normalize=False)
             time.sleep(1.1)
+          except Exception as e:
+            # Un fallo de bus o una sobrecarga a mitad NO debe tirar lo ya medido:
+            # una tanda anterior perdio 20 contactos buenos porque la excepcion
+            # mato la funcion antes de llegar al guardado, que estaba DESPUES del
+            # bucle. Se corta y se resuelve con lo que haya.
+            print(f"  {k+1}/{len(confs)}: {type(e).__name__}: {str(e)[:60]}",
+                  flush=True)
+            print(f"  corto aqui y sigo con los {len(obs)} contactos que llevo",
+                  flush=True)
+            break
             # Pausa real entre poses: el hombro es el que calienta, y 39 poses
             # seguidas lo llevaron a proteccion termica tres veces.
 
