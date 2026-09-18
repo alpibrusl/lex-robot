@@ -40,10 +40,18 @@ TOL_PX = 18.0
 # que en esta luz cae justo ahi y es mucho mas extensa, asi que el centroide se
 # iba de la pegatina a la mesa. El tono medido esta firmemente en magenta.
 ROSA = dict(h_lo=138, h_hi=176, s_min=95, v_min=60, area_min=150)
+AZUL = dict(h_lo=95, h_hi=135, s_min=80, v_min=50, area_min=200)
 
 
-def encuentra_rosa(frame, cfg=ROSA):
-    """Pixel de la pegatina. Devuelve (centro, area) o (None, motivo)."""
+def encuentra_color(frame, cfg, que="la mancha", cerca_de=None, salto_max=120):
+    """Centro de la mancha del color pedido. (centro, area) o (None, motivo).
+
+    Con `cerca_de` se elige por CONTINUIDAD y no por tamano. Coger siempre la
+    mayor hacia que el seguimiento saltara entre manchas distintas -- habia tres
+    regiones azules en la escena -- y el jacobiano cambiaba de signo y de orden
+    de magnitud entre iteraciones (+770, -898, +26), con lo que el lazo se
+    estancaba en 54 px sin poder cerrar.
+    """
     import cv2
     h = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     H, S, V = h[:, :, 0].astype(int), h[:, :, 1].astype(int), h[:, :, 2].astype(int)
@@ -52,12 +60,36 @@ def encuentra_rosa(frame, cfg=ROSA):
     m = cv2.morphologyEx(m.astype(np.uint8), cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
     n, lab, st, ce = cv2.connectedComponentsWithStats(m, 8)
     if n < 2:
-        return None, "no veo la pegatina"
-    i = max(range(1, n), key=lambda k: st[k, cv2.CC_STAT_AREA])
-    a = int(st[i, cv2.CC_STAT_AREA])
-    if a < cfg["area_min"]:
-        return None, f"la mancha rosa es de solo {a} px"
-    return (np.array([float(ce[i][0]), float(ce[i][1])]), a), None
+        return None, f"no veo {que}"
+    cand = [k for k in range(1, n) if st[k, cv2.CC_STAT_AREA] >= cfg["area_min"]]
+    if not cand:
+        mayor = max(range(1, n), key=lambda k: st[k, cv2.CC_STAT_AREA])
+        return None, f"{que}: solo {int(st[mayor, cv2.CC_STAT_AREA])} px"
+    if cerca_de is None:
+        i = max(cand, key=lambda k: st[k, cv2.CC_STAT_AREA])
+    else:
+        i = min(cand, key=lambda k: np.hypot(ce[k][0] - cerca_de[0],
+                                             ce[k][1] - cerca_de[1]))
+        if np.hypot(ce[i][0] - cerca_de[0], ce[i][1] - cerca_de[1]) > salto_max:
+            return None, (f"{que}: la mas cercana esta a "
+                          f"{np.hypot(ce[i][0]-cerca_de[0], ce[i][1]-cerca_de[1]):.0f} px "
+                          "de donde estaba; no me fio")
+    return (np.array([float(ce[i][0]), float(ce[i][1])]),
+            int(st[i, cv2.CC_STAT_AREA])), None
+
+
+def encuentra_rosa(frame, cfg=ROSA):
+    return encuentra_color(frame, cfg, "la pegatina")
+
+
+def encuentra_azul(frame, cfg=AZUL, cerca_de=None, salto_max=140):
+    # El salto admisible depende de si el movimiento estaba ORDENADO: al medir el
+    # jacobiano se mueve una articulacion a proposito y el objeto se desplaza
+    # cientos de pixeles (se midieron hasta 770 px por 100 ticks), asi que un
+    # umbral de continuidad estrecho ahi rechaza detecciones buenas. Tras el
+    # paso correctivo, en cambio, el objeto deberia moverse poco.
+    return encuentra_color(frame, cfg, "el objeto azul", cerca_de=cerca_de,
+                           salto_max=salto_max)
 
 
 def anota(frame, mira, objetivo, etiqueta, carpeta):
@@ -175,11 +207,17 @@ def main():
                 time.sleep(1.0)
                 if base is None or f2 is None:
                     sys.exit("me quede sin imagen midiendo el jacobiano")
-                g1 = cv2.cvtColor(base, cv2.COLOR_BGR2GRAY).astype(np.float32)
-                g2 = cv2.cvtColor(f2, cv2.COLOR_BGR2GRAY).astype(np.float32)
-                w = cv2.createHanningWindow((g1.shape[1], g1.shape[0]), cv2.CV_32F)
-                (dx, dy), _c = cv2.phaseCorrelate(g1 * w, g2 * w)
-                Jm[:, k] = np.array([dx, dy]) / (v - cur[j])
+                # Se sigue el OBJETO detectandolo, no correlacionando la imagen:
+                # la vista de la muneca es casi toda madera lisa, y la
+                # correlacion de fase necesita textura -- devolvia 1-5 px por
+                # cada 100 ticks cuando el movimiento real era ~30, asi que el
+                # lazo avanzaba un pixel por vuelta y no convergia nunca.
+                r1, _m1 = encuentra_azul(base, cerca_de=obj_px, salto_max=160)
+                r2, _m2 = encuentra_azul(f2, cerca_de=obj_px, salto_max=450)
+                if r1 is None or r2 is None:
+                    print(f"  perdi el objeto midiendo {j}; paro", flush=True)
+                    return 1
+                Jm[:, k] = (r2[0] - r1[0]) / (v - cur[j])
             print(f"    jacobiano: pan ({Jm[0,0]*100:+.1f},{Jm[1,0]*100:+.1f}) "
                   f"codo ({Jm[0,1]*100:+.1f},{Jm[1,1]*100:+.1f}) px/100 ticks",
                   flush=True)
@@ -190,20 +228,16 @@ def main():
             d = np.linalg.solve(JtJ + AMORTIGUA * np.trace(JtJ) * np.eye(2),
                                 Jm.T @ err) * GANANCIA
             esc = min(1.0, PASO_MAX / max(abs(d).max(), 1e-9))
-            antes = foto()
             for k, j in enumerate(JS):
                 cur[j] = int(np.clip(cur[j] + d[k] * esc, L[j][0] + 30, L[j][1] - 30))
                 rob.bus.write("Goal_Position", j, cur[j], normalize=False)
             time.sleep(1.2)
             ahora = foto()
-            # El objeto se ha movido en la imagen tanto como la escena: se sigue
-            # por correlacion en vez de volver a detectarlo, que seria otra
-            # oportunidad de engancharse a algo equivocado.
-            g1 = cv2.cvtColor(antes, cv2.COLOR_BGR2GRAY).astype(np.float32)
-            g2 = cv2.cvtColor(ahora, cv2.COLOR_BGR2GRAY).astype(np.float32)
-            w = cv2.createHanningWindow((g1.shape[1], g1.shape[0]), cv2.CV_32F)
-            (dx, dy), _c = cv2.phaseCorrelate(g1 * w, g2 * w)
-            obj_px = obj_px + np.array([dx, dy])
+            ro, mo = encuentra_azul(ahora, cerca_de=obj_px)
+            if ro is None:
+                print(f"  {mo}; paro", flush=True)
+                break
+            obj_px = ro[0]
             r2, _m = encuentra_rosa(ahora)
             if r2 is not None:
                 mira = r2[0]           # la pegatina no deberia moverse, pero se remide
