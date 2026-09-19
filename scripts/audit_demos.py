@@ -196,6 +196,57 @@ def judge_with_model(root: Path, meta_ep, task: str):
     return answers[0], "both phrasings agree"
 
 
+def object_visibility(root: Path, metas) -> None:
+    """How often each camera can actually SEE the object.
+
+    Deterministic and free: it is the colour detector already used by the
+    visual servo, not a model. Worth knowing before anything else, because a
+    camera that never resolves the object contributes nothing about WHERE it
+    is -- and no detector rescues an object that is only a few pixels across.
+    ACT feeds the frame straight into its backbone without resizing, so the
+    pixels the object occupies are exactly the detail the policy gets.
+    """
+    try:
+        from wrist_servo import encuentra_rosa
+    except Exception as e:
+        print(f"\nObject visibility: colour detector unavailable ({type(e).__name__})")
+        return
+
+    hits = {"head": 0, "wrist": 0}
+    total = {"head": 0, "wrist": 0}
+    sizes = {"head": [], "wrist": []}
+    for _, m in metas.iterrows():
+        for camera in ("head", "wrist"):
+            for offset in (0.5, None):  # early in the episode, and at the end
+                frame = frame_at(root, m, camera, offset)
+                if frame is None:
+                    continue
+                total[camera] += 1
+                found, _ = encuentra_rosa(frame)
+                if found is not None:
+                    hits[camera] += 1
+                    sizes[camera].append(found[1])
+
+    print("\nObject visibility (pink marker, colour detector):")
+    for camera in ("head", "wrist"):
+        if not total[camera]:
+            continue
+        area = f", median {int(np.median(sizes[camera]))} px" if sizes[camera] else ""
+        print(f"  {camera:6s}: found in {hits[camera]}/{total[camera]} frames{area}")
+
+    if total["head"] and hits["head"] == 0:
+        print(
+            "\n  The tower NEVER resolves the object. That view still carries useful\n"
+            "  context -- where the arm is over the table -- but it contributes almost\n"
+            "  nothing about WHERE the object is, so the wrist camera is carrying the\n"
+            "  task alone. This is a framing problem, not a detector problem: nothing\n"
+            "  recovers an object a couple of dozen pixels across. Either aim the tower\n"
+            "  so the workspace fills the frame, or record that camera at a higher\n"
+            "  resolution -- ACT feeds frames to its backbone WITHOUT resizing, so the\n"
+            "  pixels on the object are the detail the policy gets."
+        )
+
+
 def coverage(data, metas) -> None:
     """Report how varied the takes are, not just how clean.
 
@@ -345,6 +396,7 @@ def main() -> int:
                 "  nothing left to locate it with."
             )
 
+    object_visibility(root, metas)
     coverage(data, metas)
 
     suspect = sorted(issues)
