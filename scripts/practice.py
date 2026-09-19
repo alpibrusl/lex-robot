@@ -1,9 +1,17 @@
 """Practice with the keyboard without recording anything. Leave it running.
 
-With several arms: switch on the fly with 1 and 2. The inactive arm keeps its
-torque, so it stays where you left it instead of falling, and coming back to it
-picks up from wherever it really is (DeltaToPosition's 8-unit cap re-anchors on
-its own).
+Two ways of driving two arms:
+
+  ./practice.sh           one at a time, switching with 1 and 2. The inactive
+                          arm keeps its torque, so it stays where you left it,
+                          and coming back to it picks up from wherever it
+                          really is (DeltaToPosition's 8-unit cap re-anchors on
+                          its own).
+
+  ./practice.sh --both    both at once, left hand on the left arm and right
+                          hand on the right one. Twelve keys per arm is a lot
+                          to play; if the layout does not suit you, point
+                          $LEX_KEYMAP at a JSON file instead of editing code.
 
 Deliberate differences from record_demos.sh:
 
@@ -36,7 +44,16 @@ from lerobot.robots.so_follower.config_so_follower import SOFollowerRobotConfig 
 from lerobot.robots.utils import make_robot_from_config  # noqa: E402
 from lerobot.teleoperators.utils import make_teleoperator_from_config  # noqa: E402
 
-from joint_keyboard_teleop import DeltaToPosition, JointKeyboardTeleopConfig  # noqa: E402
+from joint_keyboard_teleop import (  # noqa: E402
+    DUAL_KEYS,
+    FINE,
+    KEYS,
+    DeltaToPosition,
+    JointKeyboardTeleopConfig,
+    deltas_from_keys,
+    is_fine,
+    load_keymap,
+)
 
 # MIND THE PROFILE NAMES: they are CROSSED with respect to the physical side,
 # on purpose. `xle_right` is the LEFT arm's profile. They are just lookup keys;
@@ -137,7 +154,25 @@ def connect(requested: list[str]) -> list[Arm]:
     return arms
 
 
-def key_help(arms: list[Arm]) -> None:
+def key_help(arms: list[Arm], both: bool = False, dual_map: dict | None = None) -> None:
+    if both:
+        names = {"shoulder_pan": "base", "shoulder_lift": "shoulder", "elbow_flex": "elbow",
+                 "wrist_flex": "wrist", "wrist_roll": "roll", "gripper": "gripper"}
+        print()
+        for a in arms:
+            layout = (dual_map or DUAL_KEYS).get(a.name, {})
+            pairs = {}
+            for key, (motor, sign) in layout.items():
+                pairs.setdefault(motor, {})[sign] = key
+            shown = "   ".join(
+                f"{pairs[m].get(1,'?')}/{pairs[m].get(-1,'?')} {names.get(m, m)}"
+                for m in names if m in pairs
+            )
+            print(f"  {a.name:5s} arm:  {shown}")
+        print("\n  Both arms move at once. Shift = quarter speed.")
+        print("  Esc or Ctrl-C to quit; the arms stay HELD, they do not fall.\n")
+        return
+
     print("\n  w/s  rotate the base     y/h  wrist up/down")
     print("  e/d  shoulder            u/j  rotate the wrist")
     print("  t/g  elbow               i/k  open/close the gripper")
@@ -160,6 +195,7 @@ def main() -> int:
         )
         return 1
 
+    both = "--both" in sys.argv
     requested = [a.lower() for a in sys.argv[1:] if not a.startswith("-")]
     unknown = [r for r in requested if r not in {n for n, _, _ in ARMS}]
     if unknown:
@@ -172,9 +208,14 @@ def main() -> int:
         print("\nNo usable arm.", file=sys.stderr)
         return 1
 
+    dual_map = load_keymap(DUAL_KEYS) if both else {}
+    if both and len(arms) < 2:
+        print("\n--both needs two arms and only one connected; driving that one.", file=sys.stderr)
+        both = False
+
     teleop = make_teleoperator_from_config(JointKeyboardTeleopConfig())
     teleop.connect()
-    key_help(arms)
+    key_help(arms, both, dual_map)
 
     active, reason = 0, "Esc"
     period = 1.0 / FPS
@@ -188,8 +229,22 @@ def main() -> int:
                 if teleop.current_pressed.get(key) and index < len(arms):
                     active = index
 
-            arm = arms[active]
-            obs = arm.move(teleop.get_action())
+            if both:
+                # One keyboard, two arms: the same pressed keys are run through
+                # each arm's own map, so the hands do not interfere.
+                teleop._drain_pressed_keys()
+                pressed = {k for k, v in teleop.current_pressed.items() if v}
+                scale = FINE if is_fine(pressed) else 1.0
+                obs = None
+                for a in arms:
+                    deltas = deltas_from_keys(pressed, dual_map.get(a.name, {}), scale)
+                    moved = a.move({f"{m}.delta": v for m, v in deltas.items()})
+                    if obs is None:
+                        obs = moved
+                arm = arms[0]
+            else:
+                arm = arms[active]
+                obs = arm.move(teleop.get_action())
             for a in arms:
                 a.measure(cycle)
 

@@ -33,7 +33,10 @@ That is why the map skips the r/f column and does not start at q: rotating the
 base would have quit the program.
 """
 
+import json
+import os
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from lerobot.configs.types import FeatureType, PipelineFeatureType, PolicyFeature
 from lerobot.processor import ProcessorStepRegistry, RobotActionProcessorStep, TransitionKey
@@ -66,6 +69,96 @@ KEYS = {
 }
 
 assert not (RESERVED & KEYS.keys()), "a movement key would collide with lerobot-record"
+
+# Second layout, for driving both arms at once: left hand drives the left arm,
+# right hand the right one, which is the mapping your hands already expect.
+# Twelve keys per arm is a lot to play; if it does not suit you, change it --
+# see load_keymap below, no code editing needed.
+DUAL_KEYS = {
+    "left": {
+        "w": ("shoulder_pan", +1), "s": ("shoulder_pan", -1),
+        "e": ("shoulder_lift", +1), "d": ("shoulder_lift", -1),
+        "t": ("elbow_flex", +1), "g": ("elbow_flex", -1),
+        "a": ("wrist_flex", +1), "z": ("wrist_flex", -1),
+        "f": ("wrist_roll", +1), "v": ("wrist_roll", -1),
+        "c": ("gripper", +1), "x": ("gripper", -1),
+    },
+    "right": {
+        "y": ("shoulder_pan", +1), "h": ("shoulder_pan", -1),
+        "u": ("shoulder_lift", +1), "j": ("shoulder_lift", -1),
+        "i": ("elbow_flex", +1), "k": ("elbow_flex", -1),
+        "o": ("wrist_flex", +1), "l": ("wrist_flex", -1),
+        "p": ("wrist_roll", +1), "ñ": ("wrist_roll", -1),
+        ".": ("gripper", +1), ",": ("gripper", -1),
+    },
+}
+
+for _side, _map in DUAL_KEYS.items():
+    assert not (RESERVED & _map.keys()), f"a {_side} key would collide with lerobot-record"
+assert not (DUAL_KEYS["left"].keys() & DUAL_KEYS["right"].keys()), "both hands share a key"
+
+
+def load_keymap(default: dict, name: str = "LEX_KEYMAP") -> dict:
+    """Let the key layout be changed without editing code.
+
+    Point $LEX_KEYMAP at a JSON file of {"key": ["motor", +1 or -1]} (or, for
+    the two-arm layout, {"left": {...}, "right": {...}}). It is MERGED over the
+    default, so the file only has to list what you want to change; redefining
+    one key does not cost you the other eleven.
+
+    Note it merges by KEY, not by joint: mapping a joint to a new key leaves
+    the old key working too, unless you also point that old key somewhere else.
+    """
+    path = os.environ.get(name)
+    if not path:
+        return default
+    try:
+        raw = json.loads(Path(path).read_text())
+    except Exception as e:
+        print(f"Could not read the key map at {path} ({type(e).__name__}); using the default")
+        return default
+
+    def convert(d):
+        return {k: (v[0], int(v[1])) for k, v in d.items()}
+
+    try:
+        if all(isinstance(v, dict) for v in raw.values()):
+            # Merge per side, so a file can redefine one arm and leave the
+            # other alone.
+            merged = {side: dict(m) for side, m in default.items()}
+            for side, m in raw.items():
+                merged.setdefault(side, {}).update(convert(m))
+            return merged
+        return {**default, **convert(raw)}
+    except Exception as e:
+        print(f"The key map at {path} has the wrong shape ({type(e).__name__}); using the default")
+        return default
+
+
+def deltas_from_keys(pressed: set, keymap: dict, scale: float) -> dict[str, float]:
+    """How far each joint wants to move, given the keys held down right now.
+
+    Split out of the teleoperator so the same rule can drive two arms from one
+    keyboard: the caller runs it once per arm with that arm's own key map,
+    against the same set of pressed keys.
+    """
+    deltas = {m: 0.0 for m in STEPS}
+    for key in pressed:
+        if not isinstance(key, str):
+            continue
+        target = keymap.get(key.lower())
+        if target is None:
+            continue
+        motor, sign = target
+        # Add, do not assign: opposite keys pressed together cancel out, which
+        # is what anyone would expect.
+        deltas[motor] += sign * STEPS[motor] * scale
+    return deltas
+
+
+def is_fine(pressed: set) -> bool:
+    """Shift held: quarter speed, for fine grasping."""
+    return any(getattr(k, "name", "") in ("shift", "shift_r") for k in pressed)
 
 # The follower normalizes everything to -100..100 except the gripper, 0..100.
 LIMITS = {"gripper": (0.0, 100.0)}
@@ -110,22 +203,9 @@ class JointKeyboardTeleop(KeyboardTeleop):
     def get_action(self) -> dict[str, float]:
         self._drain_pressed_keys()
         pressed = {k for k, v in self.current_pressed.items() if v}
-
-        fine = any(getattr(k, "name", "") in ("shift", "shift_r") for k in pressed)
-        scale = self.config.scale * (FINE if fine else 1.0)
-
-        action = {f"{m}.delta": 0.0 for m in STEPS}
-        for key in pressed:
-            if not isinstance(key, str):
-                continue
-            target = KEYS.get(key.lower())
-            if target is None:
-                continue
-            motor, sign = target
-            # Add, do not assign: w and s together cancel out, which is what
-            # anyone would expect.
-            action[f"{motor}.delta"] += sign * STEPS[motor] * scale
-        return action
+        scale = self.config.scale * (FINE if is_fine(pressed) else 1.0)
+        deltas = deltas_from_keys(pressed, load_keymap(KEYS), scale)
+        return {f"{m}.delta": v for m, v in deltas.items()}
 
     def send_feedback(self, feedback: dict[str, float]) -> None:
         pass
