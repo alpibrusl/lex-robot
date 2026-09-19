@@ -41,6 +41,10 @@ PASO_MAX = 60
 GANANCIA = 0.45
 AMORTIGUA = 0.08
 TOL_PX = 18.0
+# Para resolver imagen y altura A LA VEZ hay que pesarlas en la misma unidad.
+# 900 px/m significa que 1 cm de altura pesa como 9 px de imagen: comparable al
+# error de punteria tipico, asi que ninguna de las dos domina a la otra.
+PX_POR_METRO = 900.0
 # La pegatina: rosa saturado. Medido en la escena real, H=155 S=135 V=181.
 # SIN banda de tono baja: incluir 0-8 para "captar rojos" metia la MADERA CALIDA,
 # que en esta luz cae justo ahi y es mucho mas extensa, asi que el centroide se
@@ -51,13 +55,33 @@ ROSA = dict(h_lo=138, h_hi=176, s_min=95, v_min=60, area_min=150)
 # V=93 (deslavado). Con s_min=80 ganaba el reflejo por ser mas extenso, y el
 # lazo apuntaba al sitio equivocado.
 AZUL = dict(h_lo=95, h_hi=135, s_min=145, v_min=130, area_min=200)
+# Estrella de madera amarilla, MEDIDA en la escena: H=23 S=200 V=234. El brillo
+# la separa de la madera (V 234 vs 155) y la saturacion del post-it (S 200 vs
+# 147), que es lo mas parecido que hay alrededor.
+# area_min baja a 120: al acercarse, la PROPIA PINZA tapa el objeto (la estrella
+# paso de 8277 px a 112 en tres iteraciones) y con 300 el lazo lo daba por
+# perdido justo cuando estaba llegando. Es una limitacion geometrica del ojo en
+# mano: los dedos ocupan la parte baja del encuadre y el objeto baja hacia ellos.
+# Umbrales con MARGEN, no ajustados al pelo. Medida inicial de la estrella:
+# S=200 V=234. Al moverla a otra zona de luz bajo a S=166 V=222 y el umbral de
+# 175 la hizo desaparecer -- un detector que se cae porque el objeto se mueve
+# treinta centimetros no sirve. Sigue separada del post-it (H=46, muy lejos de
+# la banda) y de la madera (V=155, por debajo del minimo).
+AMARILLO = dict(h_lo=16, h_hi=34, s_min=125, v_min=180, area_min=120)
 
 # La pegatina esta en la CARA de un dedo, no en el punto de agarre. Llevar el
-# objeto a la pegatina lo lleva CONTRA el dedo: el primer agarre fallido dejo el
-# objeto asomando justo detras de el. El punto util es el vertice de la V que
-# forman los dedos, medido en la imagen a (+35,+7) px de la pegatina.
-# Hay que rehacer esta medida si se mueve la pegatina o se cambia la pinza.
-DESFASE_AGARRE = np.array([35.0, 7.0])
+# objeto a la pegatina lo lleva CONTRA el dedo.
+#
+# Este valor se MIDIO poniendo un objeto entre los dedos y cerrando: donde queda
+# ES el punto de agarre, sin geometria de por medio. Las tres estimaciones
+# previas -- a ojo (+35,+7), por diferencia de imagenes (+14,+2) y con rejilla
+# (+42,-20) -- no coincidian entre si, que ya avisaba de que leer la posicion de
+# los dedos desde una camara que los mira DE CANTO no funciona. La diferencia en
+# vertical entre el valor a ojo y el medido son 44 px, o sea mas de 2 cm.
+#
+# Rehacer la medida si se mueve la pegatina o se cambia la pinza:
+#   python /tmp/medir_agarre.py   (con un objeto entre los dedos)
+DESFASE_AGARRE = np.array([26.0, -37.0])
 
 
 def encuentra_color(frame, cfg, que="la mancha", cerca_de=None, salto_max=120):
@@ -97,6 +121,11 @@ def encuentra_color(frame, cfg, que="la mancha", cerca_de=None, salto_max=120):
 
 def encuentra_rosa(frame, cfg=ROSA):
     return encuentra_color(frame, cfg, "la pegatina")
+
+
+def encuentra_amarillo(frame, cfg=AMARILLO, cerca_de=None, salto_max=140):
+    return encuentra_color(frame, cfg, "la estrella", cerca_de=cerca_de,
+                           salto_max=salto_max)
 
 
 def encuentra_azul(frame, cfg=AZUL, cerca_de=None, salto_max=140):
@@ -144,6 +173,8 @@ def main():
     p.add_argument("--tol-px", type=float, default=TOL_PX)
     p.add_argument("--verificar", action="store_true",
                    help="solo mirar y guardar la imagen anotada, sin mover")
+    p.add_argument("--color", default="azul", choices=["azul", "amarillo"],
+                   help="color del objeto a seguir")
     p.add_argument("--fotos", default="/tmp/muneca")
     p.add_argument("--altura-vuelo", type=float, default=0.045,
                    help="metros que la PUNTA de la pinza debe mantener sobre la "
@@ -151,6 +182,9 @@ def main():
     a = p.parse_args()
 
     import cv2
+    global encuentra_azul
+    if a.color == "amarillo":
+        encuentra_azul = encuentra_amarillo      # el lazo sigue el color elegido
     from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
     from lerobot.model.kinematics import RobotKinematics
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
@@ -229,18 +263,22 @@ def main():
             return None     # se resuelve con el jacobiano abajo
 
         obj_px = objetivo.copy()
+        area_inicial = area_previa = None
         for it in range(a.iteraciones):
             if not termo.comprobar():
                 break
-            err = obj_px - mira
+            h_ahora = altura_punta()
+            err = np.array([(obj_px - mira)[0], (obj_px - mira)[1],
+                            (h_ahora - a.altura_vuelo) * PX_POR_METRO])
             print(f"  {it}: objeto en ({obj_px[0]:.0f},{obj_px[1]:.0f}), error "
                   f"{np.linalg.norm(err):5.1f} px", flush=True)
-            if np.linalg.norm(err) < a.tol_px:
+            if np.linalg.norm(err[:2]) < a.tol_px and abs(err[2]) < 25:
                 print(f"  LLEGADA en {it} iteraciones", flush=True)
                 break
             # jacobiano: cuanto se mueve el OBJETO en la imagen por tick
-            Jm = np.zeros((2, len(JS)))
+            Jm = np.zeros((3, len(JS)))
             base = foto()
+            h1 = altura_punta()
             for k, j in enumerate(JS):
                 v = int(np.clip(cur[j] + SONDA, L[j][0] + 30, L[j][1] - 30))
                 if v == cur[j]:
@@ -248,6 +286,7 @@ def main():
                 rob.bus.write("Goal_Position", j, v, normalize=False)
                 time.sleep(1.0)
                 f2 = foto()
+                h2 = altura_punta()
                 rob.bus.write("Goal_Position", j, cur[j], normalize=False)
                 time.sleep(1.0)
                 if base is None or f2 is None:
@@ -262,11 +301,20 @@ def main():
                 if r1 is None or r2 is None:
                     print(f"  perdi el objeto midiendo {j}; paro", flush=True)
                     return 1
-                Jm[:, k] = (r2[0] - r1[0]) / (v - cur[j])
+                # Tercera fila: cuanto cambia la ALTURA. Antes esto lo llevaba un
+                # controlador aparte que movia shoulder_lift DESPUES del lazo, o
+                # sea deshaciendo parte de lo que el lazo acababa de hacer con esa
+                # misma articulacion. Dos controladores peleandose por la misma
+                # salida: el error oscilaba entre 49 y 65 px sin converger, y el
+                # brazo solo se movia en vertical porque la correccion lateral se
+                # cancelaba. Mismo error que resolver el plano y el desfase por
+                # separado, o la altura y el radio en la colocacion.
+                Jm[:, k] = np.array([(r2[0] - r1[0])[0], (r2[0] - r1[0])[1],
+                                     (h2 - h1)]) / (v - cur[j])
             print("    jacobiano: " + "  ".join(
                 f"{j[:4]} ({Jm[0,k]*100:+.0f},{Jm[1,k]*100:+.0f})"
                 for k, j in enumerate(JS)) + " px/100 ticks", flush=True)
-            if np.linalg.matrix_rank(Jm, tol=1e-6) < 2:
+            if np.linalg.matrix_rank(Jm, tol=1e-9) < 3:
                 print("  jacobiano degenerado; paro", flush=True)
                 break
             # OJO AL SIGNO. Aqui la camara va en el brazo, asi que quien se mueve
@@ -283,41 +331,28 @@ def main():
                 cur[j] = int(np.clip(cur[j] + d[k] * esc, L[j][0] + 30, L[j][1] - 30))
                 rob.bus.write("Goal_Position", j, cur[j], normalize=False)
             time.sleep(1.2)
-            # Recuperar la altura que el movimiento del codo se ha llevado
-            h = altura_punta()
-            if abs(h - a.altura_vuelo) > 0.012:
-                lo_l, hi_l = (int(rob.bus.read("Min_Position_Limit", "shoulder_lift",
-                                               normalize=False)),
-                              int(rob.bus.read("Max_Position_Limit", "shoulder_lift",
-                                               normalize=False)))
-                lift = int(rob.bus.read("Present_Position", "shoulder_lift",
-                                        normalize=False))
-                h0 = h
-                rob.bus.write("Goal_Position", "shoulder_lift",
-                              int(np.clip(lift + 30, lo_l + 30, hi_l - 30)),
-                              normalize=False)
-                time.sleep(0.7)
-                sgn = +1 if altura_punta() > h0 else -1
-                rob.bus.write("Goal_Position", "shoulder_lift", lift,
-                              normalize=False)
-                time.sleep(0.5)
-                for _ in range(14):
-                    h = altura_punta()
-                    if abs(h - a.altura_vuelo) < 0.008:
-                        break
-                    paso = 18 if h < a.altura_vuelo else -18
-                    lift = int(np.clip(lift + sgn * paso, lo_l + 30, hi_l - 30))
-                    rob.bus.write("Goal_Position", "shoulder_lift", lift,
-                                  normalize=False)
-                    time.sleep(0.35)
-                print(f"    altura recuperada: {h*100:+.1f} cm sobre la mesa",
-                      flush=True)
+            # (la altura ya va DENTRO del lazo, como tercera salida)
             ahora = foto()
             ro, mo = encuentra_azul(ahora, cerca_de=obj_px)
-            if ro is None:
-                print(f"  {mo}; paro", flush=True)
+            if ro is None and area_previa and area_previa < 0.25 * area_inicial:
+                # Encogiendose progresivamente y ahora invisible: lo tapa la
+                # pinza, o sea que se ha llegado. Distinto de perderlo de golpe
+                # con el objeto aun grande, que si es un fallo.
+                print(f"  el objeto quedo tapado por la pinza tras encogerse de "
+                      f"{area_inicial} a {area_previa} px: doy por buena la "
+                      "aproximacion", flush=True)
                 break
+            if ro is None:
+                # Perder el objetivo NO es un exito: antes se salia con codigo 0
+                # y quien llamaba seguia adelante. El agarre bajo a ciegas y
+                # cerro sobre nada, informando "sin agarre" -- cierto, pero por
+                # el motivo equivocado.
+                print(f"  {mo}; paro", flush=True)
+                return 1
             obj_px = ro[0]
+            area_previa = ro[1]
+            if area_inicial is None:
+                area_inicial = ro[1]
             r2, _m = encuentra_rosa(ahora)
             if r2 is not None:
                 mira = r2[0]           # la pegatina no deberia moverse, pero se remide
