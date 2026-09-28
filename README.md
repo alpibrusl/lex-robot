@@ -60,6 +60,7 @@ is public and fetched automatically on first run.
 | demo | command | needs |
 |---|---|---|
 | LLM planner / grant / task / budget / depot | `make demo` / `grant` / `task` / `budget` / `depot` | **`lex` + `python3` only** (stdlib sidecars) |
+| Typed-judgment planner (Jev / Laya), mock judge | `make judge` | **`lex` + `python3` only**; a real judge needs a TypeSafe key or `pip install laya` |
 | XLeRobot dual-arm + base governance | `make xlerobot` | **`lex` + `python3` only** (stub sidecar) |
 | XLeRobot in MuJoCo physics (+ gym env) | `make xlerobot-sim` | + `pip install mujoco numpy` (`gymnasium` for the env) |
 | "bring me the cup": vision-grounded fetch (`locate_object`) | `make xlerobot-find` | **`lex` + `python3` only** (canned Tier-1 lookup) |
@@ -173,6 +174,18 @@ checks it against the grant's keep-out box, and blocks/clamps the unsafe ones.
 Vanilla LeRobot has no such boundary — it executes whatever the policy emits.
 That is the property Lex adds: a learned policy you don't fully trust, kept
 inside an enforced envelope.
+
+## Typed-judgment planner: Jev or Laya behind the grant
+
+A third kind of brain behind the same grant: a System One model that returns a
+label and a probability instead of writing tool calls. Code builds the options
+(each with its own target), the grant decides which are **offered**, and a
+probability below the measured threshold is an abstain. `make judge` runs it
+against a mock judge; `docs/JUDGE.md` covers the real backends and what
+measuring them found. In short, with code filtering out what facts already
+decide, Jev was right on every decision it was at least 70% sure of (99/99).
+Laya never gets confident enough to move. On exact facts, neither beats a plain
+state machine.
 
 ## Untrusted LLM planner, Lex on the rails (lex-robot#5)
 
