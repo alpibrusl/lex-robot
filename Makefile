@@ -6,7 +6,7 @@
 #     make bus-check PY=.venv/bin/python
 PY ?= python3
 
-.PHONY: help check smoke bus-check bus-soak demo grant task budget depot xlerobot xlerobot-task xlerobot-voice xlerobot-touch vision-split vision-serve vision-pose stream home-wash ap2 dispense xlerobot-sim xlerobot-find xlerobot-find-sim keepout dynamic_keepout tool_fire mcp-grant a2a-grant xlerobot-rl-train xlerobot-rl-run xlerobot-rl-usage xlerobot-rl-finetune xlerobot-llm-mock xlerobot-llm xlerobot-llm-local fleet-clean-house bazaar-visit skill-acquisition skill-catalog fridge-report deps clean
+.PHONY: help check smoke bus-check bus-soak demo judge grant task budget depot xlerobot xlerobot-task xlerobot-voice xlerobot-touch vision-split vision-serve vision-pose stream home-wash ap2 dispense xlerobot-sim xlerobot-find xlerobot-find-sim keepout dynamic_keepout tool_fire mcp-grant a2a-grant xlerobot-rl-train xlerobot-rl-run xlerobot-rl-usage xlerobot-rl-finetune xlerobot-llm-mock xlerobot-llm xlerobot-llm-local fleet-clean-house bazaar-visit skill-acquisition skill-catalog fridge-report deps clean
 
 help: ## Show this help
 	@grep -hE '^[a-z-]+:.*##' $(MAKEFILE_LIST) | sed -E 's/:.*## /\t/' | sort
@@ -19,6 +19,9 @@ smoke: ## Run the zero-dep smoke test (check + 5 demos, asserts output)
 
 demo: ## Hero demo: untrusted LLM planner, Lex on the rails (no ML deps)
 	@bash scripts/demo.sh llm
+
+judge: ## Typed-judgment planner (Jev/Laya) behind the grant; mock judge by default (no ML deps)
+	@bash scripts/demo.sh judge
 
 grant: ## Grant gate: in-bounds allowed, out-of-bounds denied (no ML deps)
 	@bash scripts/demo.sh grant

@@ -42,6 +42,20 @@ echo "== demos =="
 expect grant "denied" "grant gate denies out-of-bounds move"
 expect llm   "BLOCKED (never sent): 3" "LLM planner blocks 3 unsafe actions"
 expect llm   "chain intact" "LLM planner audit chain verifies"
+expect judge "withheld by the grant: carry_via_shortcut, sweep_table" "judge planner: grant-refused options are never offered to the model"
+expect judge "withheld, bystander within reach: approach_cup" "judge planner: a bystander removes every moving option before the model is asked"
+expect judge "judge: abstain" "judge planner: a low-probability judgment is an abstain (hold), not an action"
+expect judge "task SUCCESS — cup in the bin" "judge planner: typed judgments behind the grant complete the task"
+expect judge "chain intact" "judge planner: audit chain verifies"
+# Fail closed: a judge that cannot start leaves the arm where it is.
+# (Output captured first, as expect() does: under pipefail, grep -q closing the
+# pipe early would SIGPIPE the demo and read as a failure.)
+jnone="$(LEX_JUDGE_BACKEND=nonexistent LEX_JUDGE_PORT=8912 scripts/demo.sh judge 2>/dev/null | tr -d '\r')"
+if grep -qF "HALTED, arm left where it is" <<<"$jnone" && grep -qF "acted: 0" <<<"$jnone"; then
+  pass "judge planner: no judge → halted after 3 unanswered steps, nothing moved"
+else
+  bad "judge planner: an unreachable judge did not halt the task"
+fi
 expect task  "SUCCESS" "evidence-gated task graph succeeds"
 expect depot "task SUCCESS" "OCPP-gated depot demo succeeds"
 expect dynamic_keepout "commands BLOCKED" "dynamic keep-out blocks intrusions into moving bystander zone"

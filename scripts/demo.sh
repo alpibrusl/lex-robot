@@ -16,6 +16,7 @@ NO_SIDECAR=0
 case "$DEMO" in
   grant)       SIDECAR=sim_sidecar;   FILE=examples/demo.lex;                EFF="net,sense,actuate,io" ;;
   llm)         SIDECAR=sim_sidecar;   FILE=examples/llm_planner_demo.lex;    EFF="fs_write,io,net,sense,actuate,sql,time" ;;
+  judge)       SIDECAR=sim_sidecar;   FILE=examples/judge_planner_demo.lex;  EFF="actuate,env,fs_write,io,net,sense,sql,time"; JUDGE=1 ;;
   task)        SIDECAR=sim_sidecar;   FILE=examples/task_demo.lex;           EFF="net,sense,actuate,io,sql,fs_write,time" ;;
   budget)      SIDECAR=sim_sidecar;   FILE=examples/budget_demo.lex;         EFF="net,sense,actuate,io,sql,fs_write,time" ;;
   depot)       SIDECAR=depot_sidecar; FILE=examples/depot_demo.lex;          EFF="env,net,sense,actuate,io" ;;
@@ -34,7 +35,7 @@ case "$DEMO" in
   xlerobot_find) SIDECAR=xlerobot_sidecar; FILE=examples/find_and_fetch_demo.lex; EFF="net,sense,actuate,io" ;;
   mcp_grant)   NO_SIDECAR=1;          FILE=tests/test_mcp_grant.lex;         EFF="io,time,crypto,random,sql,fs_read,fs_write,net,concurrent,llm,proc,sense,actuate,approval" ;;
   a2a_grant)   NO_SIDECAR=1;          FILE=tests/test_a2a_robot_grant.lex;   EFF="io,time,crypto,random,sql,fs_read,fs_write,net,concurrent,llm,proc,sense,actuate,stream,approval" ;;
-  *) echo "unknown demo '$DEMO' (use: grant | llm | task | budget | depot | xlerobot | xlerobot_task | xlerobot_voice | xlerobot_touch | xlerobot_vision | vision_pose | stream | xlerobot_find | home_wash | ap2 | dispense | dynamic_keepout | tool_fire | mcp_grant | a2a_grant)" >&2; exit 2 ;;
+  *) echo "unknown demo '$DEMO' (use: grant | llm | judge | task | budget | depot | xlerobot | xlerobot_task | xlerobot_voice | xlerobot_touch | xlerobot_vision | vision_pose | stream | xlerobot_find | home_wash | ap2 | dispense | dynamic_keepout | tool_fire | mcp_grant | a2a_grant)" >&2; exit 2 ;;
 esac
 
 command -v lex >/dev/null || { echo "error: 'lex' not on PATH — see README Install" >&2; exit 1; }
@@ -60,6 +61,31 @@ else
     done
     export LEX_XLE_VISION_URL="http://127.0.0.1:$VPORT"
     export LEX_VISION_URL="http://127.0.0.1:$VPORT"
+  fi
+
+  # Typed-judgment planner: the judge sidecar (mock by default — every reply
+  # says so). LEX_JUDGE_BACKEND=laya needs a Python with `laya` installed
+  # (LEX_JUDGE_PYTHON); =jev needs TYPESAFE_API_KEY or LEX_JUDGE_JEV_KEY_FILE.
+  JUDGE_PID=""
+  if [ -n "${JUDGE:-}" ]; then
+    JPORT="${LEX_JUDGE_PORT:-8902}"
+    JLOG="$(mktemp)"
+    LEX_JUDGE_BACKEND="${LEX_JUDGE_BACKEND:-mock}" LEX_JUDGE_HOST=127.0.0.1 LEX_JUDGE_PORT="$JPORT" \
+      "${LEX_JUDGE_PYTHON:-$PY}" sidecar/judge_sidecar.py >"$JLOG" 2>&1 &
+    JUDGE_PID=$!
+    # A local model loads in ~20 s; the mock in well under one.
+    export LEX_JUDGE_URL="http://127.0.0.1:$JPORT"
+    for _ in $(seq 1 600); do
+      # Liveness first: a stale judge still answering on this port must not
+      # stand in for one that failed to start.
+      if ! kill -0 "$JUDGE_PID" 2>/dev/null; then
+        echo "judge sidecar exited — running with NO judge:" >&2; cat "$JLOG" >&2
+        export LEX_JUDGE_URL="http://127.0.0.1:9"   # discard port: nothing answers
+        break
+      fi
+      if curl -sf "http://127.0.0.1:$JPORT/health" >/dev/null 2>&1; then break; fi
+      sleep 0.1
+    done
   fi
 
   # AP2 demo: the stall runs AS the pottery stall with the mandate wall up,
@@ -90,7 +116,7 @@ else
     "$PY" "sidecar/$SIDECAR.py" >"$LOG" 2>&1 &
   fi
   SID=$!
-  cleanup() { kill "$SID" 2>/dev/null || true; [ -n "$VIS_PID" ] && kill "$VIS_PID" 2>/dev/null || true; [ -n "$CP_PID" ] && kill "$CP_PID" 2>/dev/null || true; }
+  cleanup() { kill "$SID" 2>/dev/null || true; [ -n "$VIS_PID" ] && kill "$VIS_PID" 2>/dev/null || true; [ -n "$CP_PID" ] && kill "$CP_PID" 2>/dev/null || true; [ -n "$JUDGE_PID" ] && kill "$JUDGE_PID" 2>/dev/null || true; }
   trap cleanup EXIT
 
   # Wait for the sidecar's /health (both stubs expose it).
