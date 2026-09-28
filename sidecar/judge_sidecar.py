@@ -129,6 +129,20 @@ def build_question(task: str, options: list[dict]) -> dict:
     return {"next": {"type": "choice", "instructions": spec["instructions"], "criteria": criteria}}
 
 
+NOUL_PREFIX = "next_is_"
+
+
+def build_nouls(task: str, options: list[dict]) -> dict:
+    """The noul strategy: one yes/no per offered option, all in ONE request
+    (same state, several questions). A yes/no about one option is closer to
+    a lookup than a six-way choice — and lookups are what Laya got right."""
+    choice = build_question(task, options)["next"]   # same validation, same wording
+    return {NOUL_PREFIX + oid: {
+        "type": "noul",
+        "instructions": f"Given `facts`, is this the right next step toward `goal`? {desc}",
+    } for oid, desc in choice["criteria"].items()}
+
+
 def build_state(task: str, facts: dict) -> dict:
     return {"goal": TASKS[task]["goal"], "facts": facts}
 
@@ -140,8 +154,26 @@ class MockBackend:
     model = "mock-oracle"
     mock = True
 
-    def ask(self, task, facts, question):
-        opts = list(question["next"]["criteria"])
+    def answers(self, task, facts, questions):
+        if "next" in questions:
+            return {"next": {"type": "choice", "probabilities": self._choice(task, facts, questions["next"])}}
+        # noul strategy: yes for the oracle's option, no for the rest
+        opts = [k[len(NOUL_PREFIX):] for k in questions]
+        want = ORACLES[task](facts)
+        if want not in opts:
+            want = "hold" if "hold" in opts else opts[0]
+        other = next((o for o in opts if o != want), None)
+        out = {}
+        for o in opts:
+            if facts.get("sensor_conflict"):
+                v = 0.55 if o == want else (0.45 if o == other else 0.05)
+            else:
+                v = MOCK_P if o == want else 1 - MOCK_P
+            out[NOUL_PREFIX + o] = {"type": "noul", "noul": v}
+        return out
+
+    def _choice(self, task, facts, question):
+        opts = list(question["criteria"])
         want = ORACLES[task](facts)
         if want not in opts:
             want = "hold" if "hold" in opts else opts[0]
@@ -176,9 +208,8 @@ class LayaBackend:
         self.model = "/".join([repo] + ([kw["subfolder"]] if "subfolder" in kw else [])) + (
             "@" + kw["revision"] if "revision" in kw else "")
 
-    def ask(self, task, facts, question):
-        r = self.agent.system_one(build_state(task, facts), question)
-        return r["answers"]["next"]["probabilities"]
+    def answers(self, task, facts, questions):
+        return self.agent.system_one(build_state(task, facts), questions)["answers"]
 
 
 class JevBackend:
@@ -197,9 +228,9 @@ class JevBackend:
         self.key = key
         self.model = os.environ.get("LEX_JUDGE_JEV_MODEL", "jev-latest")
 
-    def ask(self, task, facts, question):
+    def answers(self, task, facts, questions):
         body = json.dumps({"state": build_state(task, facts), "model": self.model,
-                           "questions": question}).encode()
+                           "questions": questions}).encode()
         req = urllib.request.Request(self.URL, data=body, headers={
             "Content-Type": "application/json", "Authorization": f"Bearer {self.key}"})
         try:
@@ -210,7 +241,7 @@ class JevBackend:
         except (urllib.error.URLError, TimeoutError) as e:
             raise JudgeError(f"jev unreachable: {e}") from None
         self.model = r.get("model", self.model)   # the resolved version, e.g. jev-1.13.0
-        return r["answers"]["next"]["probabilities"]
+        return r["answers"]
 
 
 def make_backend(name: str):
@@ -223,21 +254,49 @@ def make_backend(name: str):
     raise JudgeError(f"unknown backend {name!r} (mock | laya | jev)")
 
 
-def decide(backend, task: str, facts: dict, options: list[dict]) -> dict:
+STRATEGY = os.environ.get("LEX_JUDGE_STRATEGY", "choice")
+
+
+def noul_margin(nouls: dict) -> tuple[str, float]:
+    """Turn per-option yes-probabilities into one decision. The score is the
+    weaker of 'the best is a yes' and 'the runner-up is a no', so two options
+    both looking right — or none — can never clear a threshold."""
+    ranked = sorted(nouls.items(), key=lambda kv: -kv[1])
+    best, pb = ranked[0]
+    second = ranked[1][1] if len(ranked) > 1 else 0.0
+    return best, min(pb, 1 - second)
+
+
+def decide(backend, task: str, facts: dict, options: list[dict], strategy: str | None = None) -> dict:
     """One judgment. Raises JudgeError instead of ever inventing an answer."""
-    question = build_question(task, options)
+    strategy = strategy or STRATEGY
+    if strategy == "choice":
+        questions = build_question(task, options)
+        offered = set(questions["next"]["criteria"])
+    elif strategy == "nouls":
+        questions = build_nouls(task, options)
+        offered = {k[len(NOUL_PREFIX):] for k in questions}
+    else:
+        raise JudgeError(f"unknown strategy {strategy!r} (choice | nouls)")
     t0 = time.perf_counter()
-    probs = backend.ask(task, facts, question)
+    answers = backend.answers(task, facts, questions)
     ms = (time.perf_counter() - t0) * 1000
-    offered = set(question["next"]["criteria"])
-    probs = {k: float(v) for k, v in probs.items()}
-    if not probs:
-        raise JudgeError("backend returned no probabilities")
-    choice = max(probs, key=probs.get)
+    if strategy == "choice":
+        probs = {k: float(v) for k, v in answers["next"]["probabilities"].items()}
+        if not probs:
+            raise JudgeError("backend returned no probabilities")
+        choice = max(probs, key=probs.get)
+        p = probs[choice]
+    else:
+        probs = {k[len(NOUL_PREFIX):]: float(a["noul"]) for k, a in answers.items()
+                 if k.startswith(NOUL_PREFIX)}
+        if set(probs) != offered:
+            raise JudgeError("backend did not answer every option")
+        choice, p = noul_margin(probs)
     if choice not in offered:
         # A backend answering outside the offered set is broken, not creative.
         raise JudgeError(f"backend chose {choice!r}, which was not offered")
-    return {"ok": True, "choice": choice, "p": round(probs[choice], 4),
+    return {"ok": True, "choice": choice, "p": round(p, 4), "strategy": strategy,
             "probabilities": {k: round(v, 4) for k, v in probs.items()},
             "backend": backend.name, "model": backend.model,
             "latency_ms": round(ms, 1), "mock": backend.mock}
@@ -273,7 +332,7 @@ def make_handler(backend):
                 n = int(self.headers.get("Content-Length", "0"))
                 req = json.loads(self.rfile.read(n) or b"{}")
                 out = decide(backend, req.get("task", ""), req.get("facts") or {},
-                             req.get("options") or [])
+                             req.get("options") or [], req.get("strategy"))
                 self._send(200, out)
             except JudgeError as e:
                 self._send(200, {"ok": False, "error": str(e)})
@@ -288,7 +347,7 @@ def main():
     perimeter.assert_loopback(HOST)
     backend = make_backend(BACKEND)
     srv = ThreadingHTTPServer((HOST, PORT), make_handler(backend))
-    print(f"judge_sidecar: backend={backend.name} model={backend.model} on {HOST}:{PORT}", flush=True)
+    print(f"judge_sidecar: backend={backend.name} model={backend.model} strategy={STRATEGY} on {HOST}:{PORT}", flush=True)
     srv.serve_forever()
 
 

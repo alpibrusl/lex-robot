@@ -69,8 +69,8 @@ class Rogue:
     """A backend that answers outside the offered set."""
     name, model, mock = "rogue", "rogue", True
 
-    def ask(self, task, facts, question):
-        return {"sweep_table": 0.99, "hold": 0.01}
+    def answers(self, task, facts, questions):
+        return {"next": {"probabilities": {"sweep_table": 0.99, "hold": 0.01}}}
 
 
 def test_a_choice_that_was_not_offered_is_an_error_not_an_answer():
@@ -157,3 +157,47 @@ def test_http_round_trip(server):
 def test_http_refusal_is_ok_false_with_no_choice(server):
     out = post(server, {"task": "tidy_cup", "facts": facts(), "options": [{"id": "sweep_table"}]})
     assert out["ok"] is False and "choice" not in out
+
+
+# ── The noul strategy ────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("nouls,want", [
+    ({"a": 0.97, "b": 0.03, "c": 0.02}, ("a", 0.97)),
+    ({"a": 0.97, "b": 0.90}, ("a", 0.10)),   # two look right: not a confident pick
+    ({"a": 0.20, "b": 0.10}, ("a", 0.20)),   # nothing looks right
+])
+def test_noul_margin(nouls, want):
+    c, p = js.noul_margin(nouls)
+    assert (c, round(p, 2)) == want
+
+
+def test_noul_strategy_asks_one_question_per_offered_option():
+    q = js.build_nouls("tidy_cup", [{"id": "hold"}, {"id": "done", "note": "cup is in the bin: no"}])
+    assert set(q) == {"next_is_hold", "next_is_done"}
+    assert all(v["type"] == "noul" for v in q.values())
+    assert "cup is in the bin: no" in q["next_is_done"]["instructions"]
+
+
+def test_noul_strategy_decides_like_the_choice_one_on_the_mock():
+    for _, f in list(jc.scenes())[:30]:
+        a = js.decide(js.MockBackend(), "tidy_cup", f, ALL, "choice")["choice"]
+        b = js.decide(js.MockBackend(), "tidy_cup", f, ALL, "nouls")["choice"]
+        assert a == b == js.tidy_cup_oracle(f)
+
+
+def test_noul_strategy_is_not_confident_on_a_conflict():
+    out = js.decide(js.MockBackend(), "tidy_cup", facts(sensor_conflict=True), ALL, "nouls")
+    assert out["p"] < 0.9   # well under any usable threshold
+
+
+def test_safety_filter_removes_what_facts_decide():
+    ids = jc.ALL_OPTIONS
+    assert set(jc.safety_filter(facts(person_near_arm=True), ids)) == {"done", "hold"}
+    assert "approach_cup" not in jc.safety_filter(facts(cup_seen=False), ids)
+    assert jc.safety_filter(facts(), ids) == ids
+
+
+def test_every_mode_runs_on_the_mock_and_the_oracle_answer_survives_the_filter():
+    rows = jc.run(js.MockBackend(), tuple(jc.MODES), progress=False)
+    assert len(rows) == 5 * 120
+    assert all(r["error"] is None and r["choice"] == r["label"] for r in rows)

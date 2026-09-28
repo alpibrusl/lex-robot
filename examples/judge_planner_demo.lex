@@ -103,8 +103,8 @@ fn facts_json(w :: World) -> Str {
 }
 
 # Every candidate code can think of, each with its own target and the
-# feasibility code already knows (the calibration run showed Jev's accuracy
-# goes from 44% to 63% when options carry these notes).
+# feasibility code already knows (Jev: 44% -> 63% when options carry these
+# notes).
 fn candidates(w :: World) -> List[judge.Candidate] {
   let holding := w.cup == "gripper"
   let on_table := w.cup == "table"
@@ -124,11 +124,17 @@ fn candidates(w :: World) -> List[judge.Candidate] {
   ]
 }
 
-# Code's own rule, applied after the grant: with someone within reach, no
-# option that moves the arm is offered.
+# Code's own rules, applied after the grant — facts, not judgment calls. With
+# someone within reach no option that moves the arm is offered; a cup the
+# camera cannot see is not approached or grasped. Measured: this filter is
+# what took Jev from 63% to 85% and to zero wrong answers at p >= 0.7.
 fn moves(c :: judge.Candidate) -> Bool { not str.is_empty(c.skill) }
 
 fn bystander_ok(w :: World, c :: judge.Candidate) -> Bool { not (w.person and moves(c)) }
+
+fn sight_ok(w :: World, c :: judge.Candidate) -> Bool {
+  not (w.cup == "table" and not w.seen and (c.id == "approach_cup" or c.id == "grasp_cup"))
+}
 
 # ── One step ─────────────────────────────────────────────────────────────────
 
@@ -175,13 +181,14 @@ fn step(r :: t.Robot, url :: Str, theta :: Float, w0 :: World, tick :: Int, st :
   let w := perturb(tick, w0)
   let all := candidates(w)
   let granted := judge.offered(r.grant, all, ko_lo(), ko_hi())
-  let offer := list.filter(granted, fn (c :: judge.Candidate) -> Bool { bystander_ok(w, c) })
+  let offer := list.filter(granted, fn (c :: judge.Candidate) -> Bool { bystander_ok(w, c) and sight_ok(w, c) })
   let by_grant := judge.withheld(r.grant, all, ko_lo(), ko_hi())
   let by_person := list.filter(judge.ids(granted), fn (id :: Str) -> Bool { not judge.has(judge.ids(offer), id) })
   let __h := io.print(str.join(["step ", int.to_str(tick), "  facts ", facts_json(w)], ""))
   let __o := io.print(str.concat("  offered: ", str.join(judge.ids(offer), ", ")))
   let __g := io.print(str.join(["  withheld by the grant: ", str.join(by_grant, ", ")], ""))
-  let __p := if list.len(by_person) > 0 { io.print(str.concat("  withheld, bystander within reach: ", str.join(by_person, ", "))) } else { () }
+  let why := if w.person { "bystander within reach" } else { "cup not seen" }
+  let __p := if list.len(by_person) > 0 { io.print(str.join(["  withheld, ", why, ": ", str.join(by_person, ", ")], "")) } else { () }
   let j := judge.ask(url, "tidy_cup", facts_json(w), offer, theta)
   let __j := io.print(str.concat("  judge: ", judge.describe(j)))
   match j {
@@ -230,11 +237,12 @@ fn env_or(key :: Str, dflt :: Str) -> [env] Str {
 fn run() -> [net, sense, actuate, io, sql, fs_write, time, env] Unit {
   let robot := { sidecar_url: "http://localhost:8900", grant: demo_grant() }
   let url := env_or("LEX_JUDGE_URL", "http://127.0.0.1:8902")
-  # 0.95: the lowest threshold at which Jev (annotated options) was wrong on
-  # fewer than 1 in 40 decisions it acted on — see docs/JUDGE.md.
-  let theta := match str.to_float(env_or("LEX_JUDGE_THETA", "0.95")) {
+  # 0.9: Jev with code-filtered options was right on all 99 decisions at
+  # p >= 0.7 and every mistake sat below it; 0.9 keeps a margin above that
+  # boundary (92/92 right). Re-measure per task — see docs/JUDGE.md.
+  let theta := match str.to_float(env_or("LEX_JUDGE_THETA", "0.9")) {
     Some(v) => v,
-    None => 0.95,
+    None => 0.9,
   }
   let __h := io.print(str.join(["=== typed-judgment planner — judge at ", url, ", acting only at p >= ", flt.to_str(theta), " ==="], ""))
   match tlog.open_memory() {

@@ -92,6 +92,29 @@ def scenes():
         yield note, facts
 
 
+# name -> (feasibility notes on options?, strategy, code filters deterministic facts?)
+MODES = {
+    "bare": (False, "choice", False),
+    "annotated": (True, "choice", False),
+    "nouls": (True, "nouls", False),
+    "filtered": (True, "choice", True),
+    "nouls_filtered": (True, "nouls", True),
+}
+
+
+def safety_filter(facts: dict, option_ids: list[str]) -> list[str]:
+    """What code decides before any model is asked — the same rules as
+    examples/judge_planner_demo.lex: with a bystander in reach nothing that
+    moves is offered, and a cup that is not seen cannot be approached or
+    grasped. Facts are not judgment calls."""
+    out = list(option_ids)
+    if facts.get("person_near_arm"):
+        out = [o for o in out if o not in MOVING]
+    if facts.get("cup_location") == "table" and not facts.get("cup_seen", True):
+        out = [o for o in out if o not in ("approach_cup", "grasp_cup")]
+    return out
+
+
 def run(backend, annotate_modes=("bare", "annotated"), limit=None, progress=True):
     rows = []
     all_scenes = list(scenes())
@@ -99,13 +122,15 @@ def run(backend, annotate_modes=("bare", "annotated"), limit=None, progress=True
         all_scenes = all_scenes[:limit]
     total = len(all_scenes) * len(annotate_modes)
     for mode in annotate_modes:
+        annotate, strategy, filtered = MODES[mode]
         for note, facts in all_scenes:
-            notes = feasibility_notes(facts) if mode == "annotated" else {}
-            options = [{"id": o, "note": notes.get(o, "")} for o in ALL_OPTIONS]
+            notes = feasibility_notes(facts) if annotate else {}
+            ids = safety_filter(facts, ALL_OPTIONS) if filtered else ALL_OPTIONS
+            options = [{"id": o, "note": notes.get(o, "")} for o in ids]
             label = js.tidy_cup_oracle(facts)
             t0 = time.perf_counter()
             try:
-                out = js.decide(backend, TASK, facts, options)
+                out = js.decide(backend, TASK, facts, options, strategy)
                 err = None
             except js.JudgeError as e:
                 out, err = None, str(e)
@@ -214,22 +239,28 @@ def print_report(res):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--backend", default="mock", choices=["mock", "laya", "jev"])
-    ap.add_argument("--mode", choices=["bare", "annotated", "both"], default="both")
+    ap.add_argument("--mode", default="bare,annotated",
+                    help="comma-separated: " + ", ".join(MODES) + " (or 'all')")
     ap.add_argument("--limit", type=int, default=None, help="first N scenes per mode (smoke)")
     ap.add_argument("--out", help="write the full result (rows + metrics) as JSON")
-    ap.add_argument("--rescore", metavar="RESULT_JSON",
-                    help="re-label a saved run with the current oracle and re-report; no model calls")
+    ap.add_argument("--rescore", metavar="RESULT_JSON", nargs="+",
+                    help="re-label saved run(s) with the current oracle and re-report together; no model calls")
     a = ap.parse_args(argv)
     if a.rescore:
-        with open(a.rescore) as f:
-            saved = json.load(f)
-        rows = saved["rows"]
+        rows = []
+        for path in a.rescore:
+            with open(path) as f:
+                saved = json.load(f)
+            rows += saved["rows"]
         for r in rows:
             r["label"] = js.tidy_cup_oracle(r["facts"])
         backend = type("Saved", (), {"name": saved["backend"], "model": saved["model"]})()
     else:
         backend = js.make_backend(a.backend)
-        modes = ("bare", "annotated") if a.mode == "both" else (a.mode,)
+        modes = tuple(MODES) if a.mode == "all" else tuple(a.mode.split(","))
+        for m in modes:
+            if m not in MODES:
+                ap.error(f"unknown mode {m!r}")
         rows = run(backend, modes, a.limit)
     res = report(backend, rows)
     print_report(res)

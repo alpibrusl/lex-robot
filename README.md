@@ -182,8 +182,9 @@ label and a probability instead of writing tool calls. Code builds the options
 (each with its own target), the grant decides which are **offered**, and a
 probability below the measured threshold is an abstain. `make judge` runs it
 against a mock judge; `docs/JUDGE.md` covers the real backends and what
-measuring them found. In short, Jev completes the task behind the gate, Laya
-never gets confident enough to move, and on exact facts neither beats a plain
+measuring them found. In short, with code filtering out what facts already
+decide, Jev was right on every decision it was at least 70% sure of (99/99).
+Laya never gets confident enough to move. On exact facts, neither beats a plain
 state machine.
 
 ## Untrusted LLM planner, Lex on the rails (lex-robot#5)
