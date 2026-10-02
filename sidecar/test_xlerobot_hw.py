@@ -709,3 +709,282 @@ def test_a_precomputed_path_is_used_instead_of_recomputing():
         "left", ARM_JOINTS, [list(_A), list(_B)], 10.0, 1.0, ee_path=inside)
     assert clamp["ceiling"] == 0.25 and clamp["requested"] == pytest.approx(1.0)
     assert speed == pytest.approx(0.25)
+
+
+# ---- jog_joint (the wrist keys on /control) --------------------------------
+#
+# move_arm lets IK pick the wrist, so the gripper's angle can only be set in
+# joint space. These drive jog_joint against a fake bus whose FK is a plain
+# function, so the grant/collision discipline is testable with no hardware.
+
+import xlerobot_sidecar  # noqa: E402  (module global USE_HW is patched below)
+
+
+class _JogBus:
+    def __init__(self, present):
+        self.present = dict(present)
+        self.writes = []
+        self.torque_enabled = False
+
+    def sync_read(self, register):
+        assert register == "Present_Position"
+        return dict(self.present)
+
+    def sync_write(self, register, values):
+        assert register == "Goal_Position"
+        self.writes.append(dict(values))
+
+    def enable_torque(self):
+        self.torque_enabled = True
+
+
+class _JogArm:
+    """`fk` maps {joint: deg} to an (x, y, z) end-effector position."""
+
+    def __init__(self, present, fk):
+        class _Follower:
+            pass
+        self.follower = _Follower()
+        self.follower.bus = _JogBus(present)
+        self._fk = fk
+
+    def _forward_kinematics_ee(self, joints):
+        return self._fk({j: joints[f"{j}.pos"] for j in ARM_JOINTS})
+
+
+_HOME = {j: 0.0 for j in ARM_JOINTS}
+
+
+def _jog_robot(monkeypatch, fk=lambda q: (0.5, 0.5, 0.5), present=_HOME):
+    robot = XLeRobot()   # built first: with USE_HW set, __init__ opens real ports
+    monkeypatch.setattr(xlerobot_sidecar, "USE_HW", True)
+    robot._grant = _TEST_GRANT
+    arm = _JogArm(present, fk)
+    robot._hw_arms = {"left": arm}
+    monkeypatch.setattr(robot, "_collision_check_for", lambda side: None)
+    return robot, arm.follower.bus
+
+
+def test_jog_joint_moves_only_the_named_joint(monkeypatch):
+    robot, bus = _jog_robot(monkeypatch)
+    result = robot.jog_joint("left", "wrist_roll", 5)
+    assert result["outcome"] == "reached"
+    assert result["detail"] == "left wrist_roll +5.0 deg"
+    final = bus.writes[-1]
+    assert final["wrist_roll"] == pytest.approx(5.0)
+    assert all(final[j] == pytest.approx(0.0) for j in ARM_JOINTS if j != "wrist_roll")
+
+
+def test_jog_joint_creeps_rather_than_snapping(monkeypatch):
+    # 10 deg is more than teach.MAX_STEP_DEG (6), so it must go in two steps.
+    robot, bus = _jog_robot(monkeypatch)
+    robot.jog_joint("left", "wrist_flex", -10)
+    assert [w["wrist_flex"] for w in bus.writes] == [pytest.approx(-5.0), pytest.approx(-10.0)]
+
+
+def test_jog_joint_leaving_the_granted_workspace_never_enables_torque(monkeypatch):
+    robot, bus = _jog_robot(monkeypatch, fk=lambda q: (0.5, 0.5, 0.5 + q["wrist_flex"]))
+    result = robot.jog_joint("left", "wrist_flex", 1)   # z = 1.5, box is [0, 1]
+    assert result["outcome"] == "denied"
+    assert "z=1.500" in result["detail"]
+    assert bus.writes == [] and bus.torque_enabled is False
+
+
+def test_jog_joint_checks_the_path_not_just_the_endpoint(monkeypatch):
+    # The midpoint of a two-step jog leaves the box although the end is back
+    # inside. Checking only the destination would drive straight through it.
+    fk = lambda q: (0.5, 0.5, 5.0 if q["wrist_flex"] == pytest.approx(5.0) else 0.5)
+    robot, bus = _jog_robot(monkeypatch, fk=fk)
+    result = robot.jog_joint("left", "wrist_flex", 10)
+    assert result["outcome"] == "denied" and "frame 0 of 2" in result["detail"]
+    assert bus.writes == []
+
+
+def test_jog_joint_refused_when_kinematics_are_unavailable(monkeypatch):
+    # Refuse, don't downgrade: a box is declared and nothing can check it.
+    robot, bus = _jog_robot(monkeypatch, fk=lambda q: None)
+    result = robot.jog_joint("left", "wrist_roll", 3)
+    assert result["outcome"] == "denied"
+    assert "no forward kinematics available" in result["detail"]
+    assert bus.writes == []
+
+
+def test_jog_joint_stops_on_a_collision_veto(monkeypatch):
+    robot, bus = _jog_robot(monkeypatch)
+    monkeypatch.setattr(robot, "_collision_check_for",
+                        lambda side: (lambda joints: ["gripper vs mast"]))
+    result = robot.jog_joint("left", "wrist_flex", 4)
+    assert result["outcome"] == "denied" and "gripper vs mast" in result["detail"]
+    assert bus.writes == []
+
+
+@pytest.mark.parametrize("joint,delta,why", [
+    ("gripper", 5, "grasp_arm"),          # force-bounded path, not a position nudge
+    ("elbow", 5, "cannot jog 'elbow'"),
+    ("wrist_roll", 10.5, "at most 10 deg"),
+    ("wrist_roll", float("nan"), "at most 10 deg"),
+    ("wrist_roll", "lots", "must be a number"),
+])
+def test_jog_joint_refuses_bad_requests_before_touching_the_bus(monkeypatch, joint, delta, why):
+    robot, bus = _jog_robot(monkeypatch)
+    result = robot.jog_joint("left", joint, delta)
+    assert result["outcome"] == "stalled" and why in result["detail"]
+    assert bus.writes == [] and bus.torque_enabled is False
+
+
+def test_jog_joint_never_falls_through_to_the_other_arm(monkeypatch):
+    robot, bus = _jog_robot(monkeypatch)
+    result = robot.jog_joint("right", "wrist_roll", 2)
+    assert result["outcome"] == "stalled" and "right arm not configured" in result["detail"]
+    assert bus.writes == []
+
+
+def test_jog_joint_stub_tier_says_no_check_ran():
+    # Tier 1 has no arm, so nothing was bounded -- the ledger must not read
+    # this as "checked and allowed".
+    result = XLeRobot().jog_joint("left", "wrist_flex", 5)
+    assert result["outcome"] == "reached"
+    assert "(simulated)" in result["detail"] and "no workspace check ran" in result["detail"]
+
+
+def test_jog_joint_is_dispatched_and_ledgered_as_an_actuation():
+    import governance
+    assert "jog_joint" in governance.CATEGORIES["actuate"]
+    result = xlerobot_sidecar._handle_skill(
+        "jog_joint", {"arm": "left", "joint": "wrist_roll", "delta_deg": -3})
+    assert result["outcome"] == "reached" and "-3.0 deg" in result["detail"]
+
+
+# ---- move_to: hold the gripper's orientation, refuse IK branch jumps --------
+#
+# Live on 2026-10-02: move_arm sent IK a fixed (0, 0, 0) orientation. With the
+# right wrist at -133 deg, 1 cm translations rolled it ~26 deg, and one asked a
+# joint for 140 deg -- stopped only because the stall detector misread it.
+
+from xlerobot_sidecar import _HwArm, ik_jump  # noqa: E402
+
+_BODY = ARM_JOINTS[:5]
+
+
+def _obs(**over):
+    o = {f"{j}.pos": 0.0 for j in ARM_JOINTS}
+    o.update({f"{k}.pos": v for k, v in over.items()})
+    return o
+
+
+def test_ik_jump_allows_a_small_solution_for_a_small_move():
+    assert ik_jump(_obs(), _obs(elbow_flex=8.0), (0.20, 0.0, 0.20), (0.21, 0.0, 0.20)) is None
+
+
+def test_ik_jump_refuses_the_measured_140_deg_branch_jump():
+    why = ik_jump(_obs(wrist_roll=-133.0), _obs(wrist_roll=7.0), (0.20, 0.0, 0.20), (0.20, 0.01, 0.20))
+    assert why is not None and "wrist_roll" in why and "140 deg" in why and "1.0 cm" in why
+
+
+def test_ik_jump_gives_long_moves_room_in_proportion():
+    # 20 cm away: 15 + 6*20 = 135 deg allowed, so a 90 deg solution is fine.
+    assert ik_jump(_obs(), _obs(shoulder_pan=90.0), (0.20, 0.0, 0.20), (0.20, 0.20, 0.20)) is None
+
+
+def test_ik_jump_without_fk_only_grants_the_base_allowance():
+    assert ik_jump(_obs(), _obs(elbow_flex=14.0), None, (0.2, 0.0, 0.2)) is None
+    assert ik_jump(_obs(), _obs(elbow_flex=16.0), None, (0.2, 0.0, 0.2)) is not None
+
+
+def test_ik_jump_ignores_the_gripper():
+    assert ik_jump(_obs(), _obs(gripper=90.0), (0.2, 0.0, 0.2), (0.2, 0.0, 0.2)) is None
+
+
+class _MoveFollower:
+    def __init__(self, obs):
+        self.obs = dict(obs)
+        self.sent = []
+
+    def get_observation(self):
+        return dict(self.obs)
+
+    def send_action(self, action):
+        self.sent.append(dict(action))
+        self.obs.update({k: v for k, v in action.items() if k.endswith(".pos")})
+
+
+def _move_arm(start, solution, pose=(0.20, 0.0, 0.20, 0.3, -0.2, 1.1)):
+    """An _HwArm with a fake IK that returns `solution` and records its targets."""
+    arm = object.__new__(_HwArm)
+    arm.side = "right"
+    arm.follower = _MoveFollower(start)
+    arm.events = []
+
+    class _Kin:
+        def forward_kinematics(self, q):
+            arm.events.append(("fk", [round(float(v), 3) for v in q]))
+
+    arm._kinematics = _Kin()
+    arm.targets = []
+
+    def ik(transition):
+        from lerobot.processor import TransitionKey
+        arm.events.append(("ik", None))
+        arm.targets.append(dict(transition[TransitionKey.ACTION]))
+        return {TransitionKey.ACTION: dict(solution)}
+
+    arm._ik = ik
+    arm._forward_kinematics_pose = lambda joints: pose
+    arm._forward_kinematics_ee = lambda joints: None if pose is None else pose[:3]
+    return arm
+
+
+def test_move_to_holds_the_current_orientation_instead_of_zero():
+    arm = _move_arm(_obs(), _obs(elbow_flex=3.0))
+    arm.move_to(0.20, 0.0, 0.20, None, None, None, timeout_s=0.5, tol_m=0.01)
+    t = arm.targets[0]
+    assert (t["ee.wx"], t["ee.wy"], t["ee.wz"]) == (0.3, -0.2, 1.1)
+
+
+def test_move_to_still_takes_an_explicit_orientation():
+    arm = _move_arm(_obs(), _obs(elbow_flex=3.0))
+    arm.move_to(0.20, 0.0, 0.20, 0.0, 0.0, 0.0, timeout_s=0.5, tol_m=0.01)
+    assert (arm.targets[0]["ee.wx"], arm.targets[0]["ee.wy"], arm.targets[0]["ee.wz"]) == (0.0, 0.0, 0.0)
+
+
+def test_move_to_refuses_an_ik_jump_before_sending_anything():
+    arm = _move_arm(_obs(wrist_roll=-133.0), _obs(wrist_roll=7.0))
+    result = arm.move_to(0.20, 0.01, 0.20, None, None, None, timeout_s=0.5, tol_m=0.01)
+    assert result["outcome"] == "refused" and "wrist_roll" in result["detail"]
+    assert arm.follower.sent == []
+
+
+def test_move_to_refuses_when_the_orientation_cannot_be_held():
+    arm = _move_arm(_obs(), _obs(elbow_flex=3.0), pose=None)
+    result = arm.move_to(0.20, 0.0, 0.20, None, None, None, timeout_s=0.5, tol_m=0.01)
+    assert result["outcome"] == "refused" and "orientation" in result["detail"]
+    assert arm.follower.sent == [] and arm.targets == []
+
+
+def test_move_arm_asks_the_hardware_to_hold_the_orientation(monkeypatch):
+    robot = XLeRobot()
+    monkeypatch.setattr(xlerobot_sidecar, "USE_HW", True)
+    robot._grant = None
+    seen = {}
+
+    class _Arm:
+        def move_to(self, x, y, z, rx, ry, rz, timeout_s, tol_m, collision_check=None):
+            seen["rot"] = (rx, ry, rz)
+            return {"outcome": "reached", "detail": "ok"}
+
+    robot._hw_arms = {"right": _Arm()}
+    monkeypatch.setattr(robot, "_collision_check_for", lambda side: None)
+    assert robot.move_arm("right", 0.2, 0.0, 0.2)["outcome"] == "reached"
+    assert seen["rot"] == (None, None, None)
+
+
+def test_move_to_refreshes_the_solver_on_the_live_joints_before_every_ik():
+    # lerobot's IK linearises around the LAST computed pose, not the joints it
+    # is handed: from a stale state a 1 cm step came back as 51 deg.
+    start = _obs(shoulder_pan=-6.6, wrist_roll=-106.5)
+    arm = _move_arm(start, _obs(shoulder_pan=-6.0, wrist_roll=-106.5))
+    arm.move_to(0.20, 0.0, 0.20, None, None, None, timeout_s=0.5, tol_m=0.01)
+    first_ik = arm.events.index(("ik", None))
+    kind, q = arm.events[first_ik - 1]
+    assert kind == "fk"
+    assert q == [round(start[f"{j}.pos"], 3) for j in ARM_JOINTS]

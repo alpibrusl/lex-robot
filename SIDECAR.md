@@ -153,6 +153,35 @@ What it does and doesn't do:
   drive controls, since `move_base` isn't exercised from this page. The
   "Enable control" toggle is explicitly not a safety mechanism; it is UI
   convenience only.
+- **Keyboard on `/control`** — one arm at a time (`1` left, `2` right):
+  `W`/`S` reach out/in, `A`/`D` left/right, `R`/`F` up/down, `I`/`K` wrist
+  tilt, `L`/`J` wrist roll, `O`/`C` gripper open/close, `-`/`+` halve or
+  double the step, `Esc` untick "Enable control". Keys press the same buttons
+  (same busy gate, same sidecar checks); separate taps queue, a held key's
+  auto-repeat keeps at most one waiting, so releasing it stops the arm. The
+  wrist keys call **`jog_joint`** (`{arm, joint, delta_deg}`, at most 10 deg),
+  because `move_arm`'s IK chooses the wrist itself and the gripper's angle
+  cannot be set from x/y/z. It is joint-space like `teach_home_go` and held to
+  the same rules: the approach path is checked against the granted workspace
+  through FK before torque is enabled, then driven in `teach.MAX_STEP_DEG`
+  steps with each pose offered to the collision model. Which way `+` turns
+  the wrist has not been measured on this unit, so the page labels it `+`/`-`.
+- **`move_arm` holds the gripper's orientation** (`move_to` with `rx/ry/rz =
+  None`) instead of asking IK for a fixed `(0, 0, 0)`; that fixed target rolled
+  the wrist on every x/y/z step and once asked a joint for 140 deg. Two more
+  guards came out of measuring it on the real arm:
+  - lerobot's `RobotKinematics.inverse_kinematics` never calls
+    `update_kinematics()` before solving, so placo linearises around the last
+    pose it computed, not the joints it is handed. A 1 cm step was a 51 deg
+    joint move from a stale solver, 3 deg from a fresh one.
+    `_refresh_kinematics` runs one FK on the live joints before every IK.
+  - An IK solution moving any joint more than `15 + 6 * distance_cm` deg
+    (`LEX_XLE_IK_JUMP_BASE_DEG`, `LEX_XLE_IK_JUMP_DEG_PER_CM`) is refused, not
+    driven.
+  Simulated 10 x 1 cm presses from a live pose: x and z hold the gripper
+  within 1.5 deg; y cannot (5 joints: moving sideways means panning, which
+  yaws the gripper -- about 17 deg over 10 cm), so re-square it with the
+  wrist keys.
 - **Grasp** — position-based (gripper closed to a fraction of full-close
   scaled by the requested/firmware-capped force), *not* current/force
   closed-loop. `Present_Load` is read best-effort for the audit trail only
