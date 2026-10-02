@@ -165,6 +165,7 @@ def test_the_workspace_row_names_every_place_the_box_is_checked():
     row = {r["bound"]: r for r in gov.grant_enforcement(GRANT)}["arms.left.workspace_m"]
     assert "move_arm" in row["how"]
     assert "teach_replay" in row["how"] and "teach_home_go" in row["how"]
+    assert "jog_joint" in row["how"]
     assert "_grant_trajectory_violation" in row["where"]
 
 

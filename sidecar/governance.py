@@ -59,7 +59,7 @@ from trail import compute_id
 CATEGORIES = {
     "actuate": (
         "move_arm", "move_to", "grasp_arm", "grasp", "release_arm", "move_base",
-        "teach_replay", "teach_home_go", "teach_free", "teach_hold",
+        "teach_replay", "teach_home_go", "teach_free", "teach_hold", "jog_joint",
         "run_policy", "reset",
         # ha_sidecar: starting the washer spends water and electricity, which
         # is an actuation with a cost even though nothing on the robot moves.
@@ -265,8 +265,9 @@ def grant_enforcement(grant: Optional[dict]) -> list:
         if cfg.get("workspace_m"):
             rows.append({"bound": f"arms.{side}.workspace_m", "value": cfg["workspace_m"],
                          "enforced": True,
-                         "how": "move_arm refuses a target outside the box; teach_replay and "
-                                "teach_home_go refuse a pose whose end effector leaves it",
+                         "how": "move_arm refuses a target outside the box; teach_replay, "
+                                "teach_home_go and jog_joint refuse a pose whose end effector "
+                                "leaves it",
                          "where": "_grant_workspace_violation, _grant_trajectory_violation"})
         if cfg.get("max_velocity_mps") is not None:
             # Partly enforced, and the row says which part. teach_replay has a

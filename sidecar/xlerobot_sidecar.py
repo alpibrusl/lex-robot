@@ -287,6 +287,12 @@ def _arm_frame_for(base, world):
     return {"arm": best_arm, "x": ox, "y": oy, "z": oz}
 
 ARM_JOINTS = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"]
+# jog_joint moves one of these at a time. Not the gripper: closing it is a
+# force-bounded grasp (grasp_arm), and a position nudge would bypass that cap.
+JOG_JOINTS = ARM_JOINTS[:5]
+# One keypress is a nudge, not a destination. Larger moves are many presses,
+# each one checked on its own.
+JOG_JOINT_MAX_DEG = 10.0
 
 # XLeRobot 0.4.0 ships a dual-wheel DIFFERENTIAL base (no strafing); the
 # 0.3.0-era kit was a 3-omni-wheel holonomic (LeKiwi) base. Matches the
@@ -1721,6 +1727,14 @@ CONTROL_PAGE_HTML = """<!doctype html>
   .axis-row label { width:auto; min-width:112px; }
   .camera img { width:100%; height:100%; object-fit:contain; display:block; }
   .camera .unavail { color:var(--muted); font-size:11px; padding:8px; text-align:center; }
+  #keys { padding:8px 16px; border-bottom:1px solid var(--border); font-size:11px; color:var(--muted);
+          display:flex; flex-wrap:wrap; gap:4px 14px; align-items:center; }
+  #keys b { color:var(--text); font-weight:normal; }
+  kbd { background:var(--bg3); border:1px solid var(--border); padding:0 4px; color:var(--text);
+        font-family:inherit; font-size:11px; }
+  kbd.hit { border-color:var(--cyan); color:var(--cyan); }
+  #keys .armsel { color:var(--cyan); }
+  .panel.kb-active { outline:1px solid var(--cyan); outline-offset:-1px; }
 </style></head>
 <body>
 <header>
@@ -1731,6 +1745,19 @@ CONTROL_PAGE_HTML = """<!doctype html>
 <div id="notice">"Enable control" only gates this page's buttons -- it is not a
   safety system. The sidecar's own joint clamp, Lex grants, and the hardware
   e-stop are the real safety boundary.</div>
+<div id="keys">
+  <span>KEYBOARD &rarr; <b class="armsel" id="kb-arm">left</b> arm
+    (<kbd data-k="1">1</kbd> left <kbd data-k="2">2</kbd> right)</span>
+  <span>reach <kbd data-k="w">W</kbd> out <kbd data-k="s">S</kbd> in</span>
+  <span>across <kbd data-k="a">A</kbd> left <kbd data-k="d">D</kbd> right</span>
+  <span>height <kbd data-k="r">R</kbd> up <kbd data-k="f">F</kbd> down</span>
+  <span>wrist tilt <kbd data-k="i">I</kbd> + <kbd data-k="k">K</kbd> &minus;</span>
+  <span>wrist roll <kbd data-k="l">L</kbd> + <kbd data-k="j">J</kbd> &minus;</span>
+  <span>gripper <kbd data-k="o">O</kbd> open <kbd data-k="c">C</kbd> close</span>
+  <span>step <kbd data-k="-">-</kbd> &divide;2 <kbd data-k="+">+</kbd> &times;2</span>
+  <span><kbd data-k="Escape">Esc</kbd> disable control</span>
+  <span>Hold a key to keep moving: each step is sent only after the last one answers.</span>
+</div>
 <div id="tower">
   <div class="panel">
     <h2><span class="dot" id="dot-head"></span>HEAD / TOWER CAMERA</h2>
@@ -1753,7 +1780,8 @@ CONTROL_PAGE_HTML = """<!doctype html>
     </div>
     <div class="pose" id="pose-left">pose: --</div>
     <div id="jog-left"></div>
-    <div class="step-row">step (m) <input type="number" id="step-left" value="0.01" step="0.005" min="0.001"></div>
+    <div class="step-row">step (m) <input type="number" id="step-left" value="0.01" step="0.005" min="0.001">
+      wrist step (deg) <input type="number" id="wstep-left" value="5" step="1" min="1" max="10"></div>
     <div class="gripper-row">
       <button id="open-left" disabled>Open</button>
       <button id="close-left" disabled>Close</button>
@@ -1776,7 +1804,8 @@ CONTROL_PAGE_HTML = """<!doctype html>
     </div>
     <div class="pose" id="pose-right">pose: --</div>
     <div id="jog-right"></div>
-    <div class="step-row">step (m) <input type="number" id="step-right" value="0.01" step="0.005" min="0.001"></div>
+    <div class="step-row">step (m) <input type="number" id="step-right" value="0.01" step="0.005" min="0.001">
+      wrist step (deg) <input type="number" id="wstep-right" value="5" step="1" min="1" max="10"></div>
     <div class="gripper-row">
       <button id="open-right" disabled>Open</button>
       <button id="close-right" disabled>Close</button>
@@ -1797,6 +1826,16 @@ const AXES = ["x", "y", "z"];
 let enabled = false;
 let lastPose = {left: null, right: null};
 let busy = {left: false, right: false};
+// Keyboard commands that arrived while this arm was busy. Separate taps all
+// queue (up to KB_QUEUE_MAX) so quick W-A-F is not silently thinned out, but a
+// HELD key's auto-repeat only ever keeps one waiting -- otherwise the arm
+// would carry on moving after the key was released.
+const KB_QUEUE_MAX = 5;
+let pending = {left: [], right: []};
+function runPending(arm) {
+  const next = pending[arm].shift();
+  if (next) next();
+}
 let polling = {left: false, right: false};
 let grant = null;  // fetched once from read_grant; null = no grant configured
 
@@ -1837,19 +1876,24 @@ async function fetchGrant() {
   updateButtonStates();
 }
 
+// True when a Cartesian jog from the last known pose would land outside the
+// granted box. Only a convenience -- the sidecar refuses it regardless.
+function wouldLeave(arm, axis, dir) {
+  if (!(grant && grant.arms && grant.arms[arm] && grant.arms[arm].workspace_m)) return false;
+  const step = parseFloat(document.getElementById(`step-${arm}`).value) || 0.01;
+  const target = lastPose[arm][axis] + dir * step;
+  const bound = grant.arms[arm].workspace_m[AXES.indexOf(axis)];
+  return target < bound.min || target > bound.max;
+}
+
 function updateButtonStates() {
   for (const arm of ARMS) {
     const baseDisable = !enabled || busy[arm] || !lastPose[arm];
     document.querySelectorAll(`#jog-${arm} button`).forEach(b => {
       let disable = baseDisable;
-      if (!disable && grant && grant.arms && grant.arms[arm] && grant.arms[arm].workspace_m) {
-        const axis = b.dataset.axis;
-        const dir = parseFloat(b.dataset.dir);
-        const step = parseFloat(document.getElementById(`step-${arm}`).value) || 0.01;
-        const target = lastPose[arm][axis] + dir * step;
-        const bound = grant.arms[arm].workspace_m[AXES.indexOf(axis)];
-        if (target < bound.min || target > bound.max) disable = true;
-      }
+      // Wrist buttons move a joint, not the end effector: their workspace
+      // check needs forward kinematics, so only the sidecar can make it.
+      if (!disable && b.dataset.axis) disable = wouldLeave(arm, b.dataset.axis, parseFloat(b.dataset.dir));
       b.disabled = disable;
     });
     document.getElementById(`open-${arm}`).disabled = !enabled || busy[arm];
@@ -1867,6 +1911,12 @@ function updateButtonStates() {
 // decreasing ticks at +0.025 m of y. That matches the standard URDF convention
 // (x forward, y left, z up), but it is measured here, not assumed -- the URDF
 // fixes each arm's own frame, not how the arm is mounted.
+// The wrist is driven in joint space (jog_joint): move_arm's IK chooses the
+// wrist for you, so the gripper's angle cannot be set from x/y/z. Labelled
+// +/- rather than up/down: which way + turns has not been measured on this
+// unit, and a label that guessed would be worse than one that doesn't say.
+const WRIST = [['wrist_flex', 'wrist tilt'], ['wrist_roll', 'wrist roll']];
+
 const AXIS_LABEL = {
   x: {name: 'reach', neg: 'in', pos: 'out'},
   y: {name: 'across', neg: 'right', pos: 'left'},
@@ -1885,8 +1935,19 @@ function buildJogControls() {
         `<button data-axis="${axis}" data-dir="1" disabled>${L.pos}</button>`;
       container.appendChild(row);
     }
+    for (const [joint, label] of WRIST) {
+      const row = document.createElement('div');
+      row.className = 'axis-row';
+      row.innerHTML = `<label>${label}</label>` +
+        `<button data-joint="${joint}" data-dir="-1" disabled>&minus;</button>` +
+        `<button data-joint="${joint}" data-dir="1" disabled>+</button>`;
+      container.appendChild(row);
+    }
     container.querySelectorAll('button').forEach(btn => {
-      btn.addEventListener('click', () => jog(arm, btn.dataset.axis, parseFloat(btn.dataset.dir)));
+      const dir = parseFloat(btn.dataset.dir);
+      btn.addEventListener('click', () => btn.dataset.joint
+        ? jogJoint(arm, btn.dataset.joint, dir)
+        : jog(arm, btn.dataset.axis, dir));
     });
   }
 }
@@ -1904,10 +1965,35 @@ async function jog(arm, axis, dir) {
     });
     const j = await r.json();
     document.getElementById(`status-${arm}`).textContent = `${j.outcome}: ${j.detail || ''}`;
+    // Holding a key sends the next step as soon as this one answers -- far
+    // sooner than the next poll. Without this every step would start from the
+    // same stale pose and the arm would stop after one.
+    if (j.outcome === 'reached' && lastPose[arm]) lastPose[arm] = {...lastPose[arm], ...target};
   } catch (e) {
     document.getElementById(`status-${arm}`).textContent = 'command failed (sidecar unreachable)';
   } finally {
     busy[arm] = false; updateButtonStates();
+    runPending(arm);
+  }
+}
+
+async function jogJoint(arm, joint, dir) {
+  if (!enabled || busy[arm]) return;
+  const step = Math.min(10, Math.max(1,
+    parseFloat(document.getElementById(`wstep-${arm}`).value) || 5));
+  busy[arm] = true; updateButtonStates();
+  try {
+    const r = await fetchWithTimeout('/skill/jog_joint', {
+      method: 'POST',
+      body: JSON.stringify({arm, joint, delta_deg: dir * step}),
+    });
+    const j = await r.json();
+    document.getElementById(`status-${arm}`).textContent = `${j.outcome}: ${j.detail || ''}`;
+  } catch (e) {
+    document.getElementById(`status-${arm}`).textContent = 'command failed (sidecar unreachable)';
+  } finally {
+    busy[arm] = false; updateButtonStates();
+    runPending(arm);
   }
 }
 
@@ -1930,6 +2016,7 @@ async function gripperCmd(arm, action) {
     document.getElementById(`status-${arm}`).textContent = 'command failed (sidecar unreachable)';
   } finally {
     busy[arm] = false; updateButtonStates();
+    runPending(arm);
   }
 }
 
@@ -2116,7 +2203,94 @@ function poll() {
   pollExtra();
 }
 
+// ---- keyboard ---------------------------------------------------------------
+// One arm at a time, chosen with 1/2. Every key goes through the same jog /
+// jogJoint / gripperCmd the buttons use, so it gets the same busy gate, the
+// same "Enable control" gate and the same sidecar checks -- the keyboard is a
+// second way to press the buttons, not a second path to the servos.
+let kbArm = 'left';
+const KEYMAP = {
+  w: ['xyz', 'x', 1], s: ['xyz', 'x', -1],
+  a: ['xyz', 'y', 1], d: ['xyz', 'y', -1],     // +y is the robot's left
+  r: ['xyz', 'z', 1], f: ['xyz', 'z', -1],
+  i: ['joint', 'wrist_flex', 1], k: ['joint', 'wrist_flex', -1],
+  l: ['joint', 'wrist_roll', 1], j: ['joint', 'wrist_roll', -1],
+  o: ['grip', 'open'], c: ['grip', 'close'],
+};
+
+function selectKbArm(arm) {
+  kbArm = arm;
+  document.getElementById('kb-arm').textContent = arm;
+  document.querySelectorAll('#arms .panel').forEach(p =>
+    p.classList.toggle('kb-active', p.dataset.arm === arm));
+}
+
+function scaleSteps(arm, factor) {
+  const m = document.getElementById(`step-${arm}`);
+  const w = document.getElementById(`wstep-${arm}`);
+  m.value = Math.min(0.05, Math.max(0.001, (parseFloat(m.value) || 0.01) * factor)).toFixed(3);
+  w.value = Math.min(10, Math.max(1, Math.round((parseFloat(w.value) || 5) * factor)));
+  updateButtonStates();
+}
+
+function flashKey(k) {
+  const el = document.querySelector(`#keys kbd[data-k="${k}"]`);
+  if (!el) return;
+  el.classList.add('hit');
+  setTimeout(() => el.classList.remove('hit'), 150);
+}
+
+document.addEventListener('keydown', (e) => {
+  // Typing a step size must not drive the arm.
+  const t = e.target;
+  if (t.isContentEditable || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' ||
+      (t.tagName === 'INPUT' && t.type !== 'checkbox')) return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  const k = e.key === 'Escape' ? 'Escape' : e.key.toLowerCase();
+  if (k === 'Escape') {
+    const box = document.getElementById('enable');
+    box.checked = false; enabled = false; updateButtonStates();
+    pending.left = []; pending.right = [];
+    flashKey(k); return;
+  }
+  if (k === '1' || k === '2') { selectKbArm(k === '1' ? 'left' : 'right'); flashKey(k); return; }
+  // -/+ rather than [/]: on a Spanish or French layout the brackets need
+  // AltGr, which the modifier guard above ignores. '=' is '+' unshifted on US.
+  if (k === '-' || k === '+' || k === '=') {
+    if (!e.repeat) scaleSteps(kbArm, k === '-' ? 0.5 : 2);
+    flashKey(k === '=' ? '+' : k); e.preventDefault(); return;
+  }
+  const action = KEYMAP[k];
+  if (!action) return;
+  e.preventDefault();
+  flashKey(k);
+  if (action[0] === 'grip' && e.repeat) return;   // one open/close per press
+  const arm = kbArm;
+  if (busy[arm]) {
+    const q = pending[arm];
+    if (e.repeat ? q.length === 0 : q.length < KB_QUEUE_MAX) q.push(() => keyAction(arm, action));
+    return;
+  }
+  keyAction(arm, action);
+});
+
+// Evaluated when the command is actually SENT, not when the key went down:
+// a pending step must be checked against the pose the previous one produced.
+function keyAction(arm, [kind, what, dir]) {
+  const status = document.getElementById(`status-${arm}`);
+  if (!enabled) { status.textContent = 'keyboard ignored: tick "Enable control" first'; return; }
+  if (kind === 'grip') return gripperCmd(arm, what);
+  if (kind === 'joint') return jogJoint(arm, what, dir);
+  if (!lastPose[arm]) { status.textContent = 'no pose yet -- waiting for the next poll'; return; }
+  if (wouldLeave(arm, what, dir)) {
+    status.textContent = `not sent: that step would leave the granted workspace (${what})`;
+    return;
+  }
+  return jog(arm, what, dir);
+}
+
 buildJogControls();
+selectKbArm('left');
 fetchGrant();
 poll();
 setInterval(poll, 500);
@@ -3108,6 +3282,57 @@ class XLeRobot:
         a["positions"][5] = 0.0
         return {"outcome": "reached", "detail": f"{arm} released (was_holding={was})"}
 
+    def jog_joint(self, arm, joint, delta_deg):
+        """Nudge ONE body joint by a few degrees -- the wrist keys on /control.
+
+        move_arm only takes a position: IK picks every joint, the wrist
+        included, so the gripper's angle is something an operator jogging in
+        x/y/z cannot set. Grasping at the right angle needs the wrist driven
+        directly, in joint space.
+
+        Joint space is where teach_home_go already lives, so this is the same
+        discipline: the whole approach path is checked against the granted
+        workspace through forward kinematics BEFORE any torque is enabled
+        (refused whole, never stopped halfway), then driven in bounded steps
+        with every intermediate pose offered to the collision model.
+        """
+        if arm not in ("left", "right"):
+            return {"outcome": "stalled", "detail": f"unknown arm '{arm}' (use left|right)"}
+        if joint not in JOG_JOINTS:
+            return {"outcome": "stalled",
+                    "detail": f"cannot jog '{joint}' (use one of {', '.join(JOG_JOINTS)}; "
+                              "the gripper goes through grasp_arm/release_arm)"}
+        try:
+            delta = float(delta_deg)
+        except (TypeError, ValueError):
+            return {"outcome": "stalled", "detail": f"delta_deg must be a number, got {delta_deg!r}"}
+        if not math.isfinite(delta) or abs(delta) > JOG_JOINT_MAX_DEG:
+            return {"outcome": "stalled",
+                    "detail": f"a jog is at most {JOG_JOINT_MAX_DEG:g} deg per call, got {delta_deg}"}
+        if not USE_HW:
+            return {"outcome": "reached",
+                    "detail": f"(simulated) would move the {arm} {joint} {delta:+.1f} deg -- "
+                              "no hardware, so no workspace check ran"}
+        missing = self._hw_arm_missing(arm)
+        if missing is not None:
+            return missing
+        import teach as _teach
+        bus = self._hw_arms[arm].follower.bus
+        obs = bus.sync_read("Present_Position")
+        current = [float(obs[j]) for j in ARM_JOINTS]
+        target = list(current)
+        target[ARM_JOINTS.index(joint)] += delta
+        # Check the frames go_to will actually send, not just the endpoint.
+        frames = _teach.approach_path(current, target, _teach.MAX_STEP_DEG)
+        denial = self._grant_trajectory_violation(arm, ARM_JOINTS, frames)
+        if denial is not None:
+            return {"outcome": "denied", "detail": denial}
+        result = _teach.go_to(bus, ARM_JOINTS, target,
+                              collision_check=self._collision_check_for(arm))
+        if result.get("outcome") == "reached":
+            result = dict(result, detail=f"{arm} {joint} {delta:+.1f} deg")
+        return result
+
     def move_base(self, x, y, speed):
         # Grant floor area: refused outright, and nothing reaches the wheels.
         # Until now this bound was declared in the capsule and checked only on
@@ -3582,6 +3807,9 @@ def _handle_skill(name, args):
     if name == "move_arm":
         return ROBOT.move_arm(args.get("arm", "left"), float(args.get("x", 0.2)),
                               float(args.get("y", 0.0)), float(args.get("z", 0.2)))
+    if name == "jog_joint":
+        return ROBOT.jog_joint(args.get("arm", "left"), args.get("joint", ""),
+                               args.get("delta_deg", 0.0))
     if name == "grasp_arm":
         return ROBOT.grasp_arm(args.get("arm", "left"), float(args.get("force", 10.0)))
     if name == "release_arm":
@@ -3823,6 +4051,14 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_bytes(200, "text/html; charset=utf-8", TEACH_PAGE_HTML.encode())
         if path == "/control":
             return self._send_bytes(200, "text/html; charset=utf-8", CONTROL_PAGE_HTML.encode())
+        if path == "/":
+            # Opening the bare port in a browser used to answer a JSON 404.
+            # The operator almost always wants the arm page.
+            self.send_response(302)
+            self.send_header("Location", "/control")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         if path == "/governance":
             return self._send_bytes(200, "text/html; charset=utf-8", GOVERNANCE_PAGE_HTML.encode())
         if path == "/governance/state":
