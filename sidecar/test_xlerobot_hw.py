@@ -709,3 +709,29 @@ def test_a_precomputed_path_is_used_instead_of_recomputing():
         "left", ARM_JOINTS, [list(_A), list(_B)], 10.0, 1.0, ee_path=inside)
     assert clamp["ceiling"] == 0.25 and clamp["requested"] == pytest.approx(1.0)
     assert speed == pytest.approx(0.25)
+
+
+# ---- the shipped capsule admits the robot's real rest poses ------------------
+#
+# Measured on the Mac Studio unit on 2026-10-02 with read_arm_pose (each arm's
+# own frame). The right arm rests beside the tower, i.e. toward the robot's
+# centre: +y in its own frame. The old capsule split y into per-arm halves and
+# put that rest pose outside the grant; the left one reached below the tray.
+
+def test_the_real_capsule_admits_the_measured_rest_poses():
+    robot = XLeRobot()
+    assert robot._grant_workspace_violation("left", 0.333, 0.110, -0.095) is None
+    assert robot._grant_workspace_violation("right", 0.154, 0.038, 0.281) is None
+
+
+def test_the_real_capsule_is_the_same_box_for_both_arms():
+    # Keeping the arms apart is the collision model's job, from both arms'
+    # live joints -- not a per-arm half-plane in each arm's own frame.
+    arms = XLeRobot().read_grant()["arms"]
+    assert arms["left"]["workspace_m"] == arms["right"]["workspace_m"]
+
+
+def test_the_real_capsule_still_bounds_the_arms():
+    robot = XLeRobot()
+    assert robot._grant_workspace_violation("left", 0.30, 0.0, -0.31) is not None   # below the floor of the box
+    assert robot._grant_workspace_violation("right", 0.30, 0.40, 0.2) is not None   # too far across

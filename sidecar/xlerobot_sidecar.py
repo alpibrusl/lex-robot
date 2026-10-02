@@ -288,6 +288,19 @@ def _arm_frame_for(base, world):
 
 ARM_JOINTS = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"]
 
+
+def _hit_involves(hit, arm):
+    """Whether a collision report names this arm's links ("<arm>:<link>").
+
+    Reads collision.Collision's endpoints, and falls back to its text for
+    anything else, so an unexpected shape is still judged rather than skipped.
+    """
+    mine = f"{arm}:"
+    names = [getattr(hit, "a", None), getattr(hit, "b", None)]
+    if any(isinstance(n, str) for n in names):
+        return any(isinstance(n, str) and n.startswith(mine) for n in names)
+    return mine in str(hit)
+
 # XLeRobot 0.4.0 ships a dual-wheel DIFFERENTIAL base (no strafing); the
 # 0.3.0-era kit was a 3-omni-wheel holonomic (LeKiwi) base. Matches the
 # BASE_MODE convention in gym_env/xlerobot_sim.py so grant/skill semantics
@@ -2716,6 +2729,12 @@ class XLeRobot:
 
         Closes over the OTHER arm's current joints too, so arm-vs-arm is
         checked -- the constraint neither arm can see on its own.
+
+        Only hits that involve THIS arm are returned. The other arm is not
+        being moved, so a problem it has on its own (resting against the
+        tray, or a geometry error that makes it look that way) says nothing
+        about this motion -- and returning it made one arm's false positive
+        freeze the other arm completely.
         """
         model = self._collision_model()
         if model is None:
@@ -2736,10 +2755,13 @@ class XLeRobot:
                 except Exception:
                     pass           # other arm unreadable -> check this one alone
             try:
-                return model.check(**kw)
+                hits = model.check(**kw)
             except Exception as e:
                 print(f"[xlerobot] collision check failed, allowing move: {e}")
                 return []
+            # Outside the try on purpose: a filter that raised would land in
+            # the fail-open branch above and wave the move through.
+            return [h for h in hits if _hit_involves(h, arm)]
         return check
 
     def _hw_base_missing(self):

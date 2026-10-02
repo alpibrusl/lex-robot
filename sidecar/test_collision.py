@@ -229,3 +229,71 @@ def test_links_beyond_the_mount_are_still_checked_against_the_tray():
     hits = [h.a for h in m.check(left_joints_deg=ZERO) if h.b == "cart tray"]
     caps = m.arm_capsules("left", ZERO)
     assert caps[2].name in hits, "a link that can be driven into the tray must still be caught"
+
+
+# ── the cart as a bounded box, not an infinite plane ────────────────────────
+#
+# The tray is 35 x 45 cm. Treated as an infinite plane, it refused every pose
+# below tray height, including a gripper reaching past the cart's edge down to
+# a table -- which is the whole point of a pick-and-place arm on a cart.
+
+def _one_link(a, b, r=0.02):
+    return Capsule(tuple(a), tuple(b), r, "probe")
+
+
+def boxed_model(**kw):
+    m = synthetic_model(tray_z=kw.pop("tray_z", 0.76))
+    m.tray_size = kw.pop("tray_size", (0.35, 0.45))
+    return m
+
+
+def test_a_link_past_the_trays_edge_may_go_below_it():
+    m = boxed_model()
+    beyond_front = _one_link((0.30, 0.0, 0.70), (0.35, 0.0, 0.60))    # x edge is 0.175
+    assert m._cart_clearance(beyond_front) > m.margin
+
+
+def test_a_link_inside_the_footprint_below_the_tray_is_caught():
+    m = boxed_model()
+    into_the_tray = _one_link((0.10, 0.10, 0.80), (0.10, 0.10, 0.70))
+    assert m._cart_clearance(into_the_tray) < 0
+
+
+def test_a_link_just_above_the_tray_is_clear_but_grazing_is_not():
+    m = boxed_model()
+    assert m._cart_clearance(_one_link((0.0, 0.0, 0.85), (0.1, 0.0, 0.85))) > m.margin
+    assert m._cart_clearance(_one_link((0.0, 0.0, 0.775), (0.1, 0.0, 0.775))) < m.margin
+
+
+def test_the_cart_edge_counts_the_link_radius():
+    # Beside the cart, below tray height, closer than its own radius: caught.
+    m = boxed_model()
+    hugging_the_side = _one_link((0.0, 0.24, 0.70), (0.1, 0.24, 0.70), r=0.03)  # y edge 0.225
+    assert m._cart_clearance(hugging_the_side) < 0
+
+
+def test_without_a_footprint_the_tray_is_still_an_infinite_plane():
+    m = synthetic_model(tray_z=0.76)
+    far_beyond = _one_link((1.0, 1.0, 0.70), (1.1, 1.0, 0.70))
+    assert m._cart_clearance(far_beyond) < 0
+
+
+def test_sampled_box_clearance_never_overstates_the_gap():
+    # The segment's closest point to the box corner falls between samples; the
+    # sampled answer must not come out larger than the exact one.
+    from collision import capsule_box_clearance
+    c = Capsule((0.3, -1.0, 0.5), (0.3, 1.0, 0.5), 0.0, "long")
+    exact = 0.3 - 0.175
+    assert capsule_box_clearance(c, (-0.175, -0.225, 0.0), (0.175, 0.225, 0.76)) <= exact + 1e-9
+
+
+def test_from_json_reads_the_tray_footprint(tmp_path, monkeypatch):
+    import json as _json
+    g = {"arms": {"left": {"position": [0, 0, 0], "yaw_deg": 0}},
+         "link_radii": {"default": 0.02},
+         "cart": {"tray_z": 0.76, "tray_size_m": [0.35, 0.45]}}
+    p = tmp_path / "g.json"
+    p.write_text(_json.dumps(g))
+    monkeypatch.setattr(RobotCollisionModel, "load_kinematics", lambda self, urdf: None)
+    m = RobotCollisionModel.from_json(str(p), "unused.urdf")
+    assert m.tray_size == (0.35, 0.45) and m.tray_z == 0.76

@@ -51,7 +51,7 @@
     "radius": 0.06
   },
   "cart": {
-    "_provenance": "SOURCED -- IKEA RASKOG 35 x 45 x 78 cm; arms bolt to the top tray at z=0.760.",
+    "_provenance": "SOURCED -- IKEA RASKOG 35 x 45 x 78 cm; arms bolt to the top tray at z=0.760. tray_size_m is read as [x, y] and the cart as a box from the floor to tray_z over that footprint, so a link past the tray's edge may go below tray height. The [x, y] ORDER IS ASSUMED, not measured -- and on 2026-10-02 the left arm's live rest pose put gripper_link 22 mm inside the tray, which is physically impossible, so the mount height, mount position or tray size here is off by centimetres. Measure before trusting cart clearances.",
     "tray_z": 0.76,
     "tray_size_m": [
       0.35,

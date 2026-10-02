@@ -364,7 +364,7 @@ fn outcome_json(o :: t.Outcome) -> Str {
 # drift here narrows what leLab can ask for but can never widen what the
 # robot will do.
 fn arm_grant() -> t.Grant {
-  { skills: ["move_arm", "read_joints", "read_camera", "teach_start", "teach_stop"], ws_min: { x: 0.05, y: 0.0 - 0.35, z: 0.0 }, ws_max: { x: 0.45, y: 0.35, z: 0.5 }, max_velocity: 0.25, max_force: 15.0, max_grip_force: 15.0, budget_actions: 10000, budget_wall_ms: 0 }
+  { skills: ["move_arm", "read_joints", "read_camera", "teach_start", "teach_stop"], ws_min: { x: 0.05, y: 0.0 - 0.35, z: 0.0 - 0.3 }, ws_max: { x: 0.45, y: 0.35, z: 0.5 }, max_velocity: 0.25, max_force: 15.0, max_grip_force: 15.0, budget_actions: 10000, budget_wall_ms: 0 }
 }
 
 fn robot(sidecar_url :: Str) -> t.Robot {

@@ -116,3 +116,41 @@ def test_model_error_does_not_block_the_move():
 def test_stall_thresholds_are_configurable_and_sane():
     assert X.STALL_CONFIRM >= 2, "one lagging sample must never be a stall"
     assert X.STALL_ERROR_DEG > 0
+
+
+# ── whose collision is it ───────────────────────────────────────────────────
+#
+# Found on the real unit (2026-10-02): the LEFT arm, resting where the
+# geometry model wrongly put it inside the tray, made every move of the RIGHT
+# arm come back "denied: left:... vs cart tray". The idle arm's own problem
+# says nothing about the motion being checked.
+
+from collision import Collision  # noqa: E402
+
+
+def test_the_idle_arms_own_collision_does_not_veto_this_arm():
+    model = StubModel(hits=[Collision("left:wrist_link->gripper_link", "cart tray", -0.068)])
+    r = robot(_collision=model, hw_arms={"left": StubArm()})
+    assert r._collision_check_for("right")(ACTION) == []
+
+
+def test_this_arms_collision_still_vetoes():
+    hit = Collision("right:wrist_link->gripper_link", "tower", -0.02)
+    r = robot(_collision=StubModel(hits=[hit]), hw_arms={"left": StubArm()})
+    assert r._collision_check_for("right")(ACTION) == [hit]
+
+
+def test_arm_versus_arm_vetoes_either_arm():
+    # The pair is named left-first whichever arm is moving.
+    hit = Collision("left:gripper_link", "right:gripper_link", -0.01)
+    r = robot(_collision=StubModel(hits=[hit]), hw_arms={"left": StubArm(), "right": StubArm()})
+    assert r._collision_check_for("right")(ACTION) == [hit]
+    assert r._collision_check_for("left")(ACTION) == [hit]
+
+
+def test_an_unexpected_hit_shape_is_judged_not_waved_through():
+    # Plain strings are what the stubs above return; a filter that only knew
+    # Collision would raise, and an exception there must never mean "allow".
+    r = robot(_collision=StubModel(hits=["right:wrist vs tower: -20 mm"]))
+    assert r._collision_check_for("right")(ACTION) == ["right:wrist vs tower: -20 mm"]
+    assert r._collision_check_for("left")(ACTION) == []
