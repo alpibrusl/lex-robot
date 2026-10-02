@@ -853,3 +853,138 @@ def test_jog_joint_is_dispatched_and_ledgered_as_an_actuation():
     result = xlerobot_sidecar._handle_skill(
         "jog_joint", {"arm": "left", "joint": "wrist_roll", "delta_deg": -3})
     assert result["outcome"] == "reached" and "-3.0 deg" in result["detail"]
+
+
+# ---- move_to: hold the gripper's orientation, refuse IK branch jumps --------
+#
+# Live on 2026-10-02: move_arm sent IK a fixed (0, 0, 0) orientation. With the
+# right wrist at -133 deg, 1 cm translations rolled it ~26 deg, and one asked a
+# joint for 140 deg -- stopped only because the stall detector misread it.
+
+from xlerobot_sidecar import _HwArm, ik_jump  # noqa: E402
+
+_BODY = ARM_JOINTS[:5]
+
+
+def _obs(**over):
+    o = {f"{j}.pos": 0.0 for j in ARM_JOINTS}
+    o.update({f"{k}.pos": v for k, v in over.items()})
+    return o
+
+
+def test_ik_jump_allows_a_small_solution_for_a_small_move():
+    assert ik_jump(_obs(), _obs(elbow_flex=8.0), (0.20, 0.0, 0.20), (0.21, 0.0, 0.20)) is None
+
+
+def test_ik_jump_refuses_the_measured_140_deg_branch_jump():
+    why = ik_jump(_obs(wrist_roll=-133.0), _obs(wrist_roll=7.0), (0.20, 0.0, 0.20), (0.20, 0.01, 0.20))
+    assert why is not None and "wrist_roll" in why and "140 deg" in why and "1.0 cm" in why
+
+
+def test_ik_jump_gives_long_moves_room_in_proportion():
+    # 20 cm away: 15 + 6*20 = 135 deg allowed, so a 90 deg solution is fine.
+    assert ik_jump(_obs(), _obs(shoulder_pan=90.0), (0.20, 0.0, 0.20), (0.20, 0.20, 0.20)) is None
+
+
+def test_ik_jump_without_fk_only_grants_the_base_allowance():
+    assert ik_jump(_obs(), _obs(elbow_flex=14.0), None, (0.2, 0.0, 0.2)) is None
+    assert ik_jump(_obs(), _obs(elbow_flex=16.0), None, (0.2, 0.0, 0.2)) is not None
+
+
+def test_ik_jump_ignores_the_gripper():
+    assert ik_jump(_obs(), _obs(gripper=90.0), (0.2, 0.0, 0.2), (0.2, 0.0, 0.2)) is None
+
+
+class _MoveFollower:
+    def __init__(self, obs):
+        self.obs = dict(obs)
+        self.sent = []
+
+    def get_observation(self):
+        return dict(self.obs)
+
+    def send_action(self, action):
+        self.sent.append(dict(action))
+        self.obs.update({k: v for k, v in action.items() if k.endswith(".pos")})
+
+
+def _move_arm(start, solution, pose=(0.20, 0.0, 0.20, 0.3, -0.2, 1.1)):
+    """An _HwArm with a fake IK that returns `solution` and records its targets."""
+    arm = object.__new__(_HwArm)
+    arm.side = "right"
+    arm.follower = _MoveFollower(start)
+    arm.events = []
+
+    class _Kin:
+        def forward_kinematics(self, q):
+            arm.events.append(("fk", [round(float(v), 3) for v in q]))
+
+    arm._kinematics = _Kin()
+    arm.targets = []
+
+    def ik(transition):
+        from lerobot.processor import TransitionKey
+        arm.events.append(("ik", None))
+        arm.targets.append(dict(transition[TransitionKey.ACTION]))
+        return {TransitionKey.ACTION: dict(solution)}
+
+    arm._ik = ik
+    arm._forward_kinematics_pose = lambda joints: pose
+    arm._forward_kinematics_ee = lambda joints: None if pose is None else pose[:3]
+    return arm
+
+
+def test_move_to_holds_the_current_orientation_instead_of_zero():
+    arm = _move_arm(_obs(), _obs(elbow_flex=3.0))
+    arm.move_to(0.20, 0.0, 0.20, None, None, None, timeout_s=0.5, tol_m=0.01)
+    t = arm.targets[0]
+    assert (t["ee.wx"], t["ee.wy"], t["ee.wz"]) == (0.3, -0.2, 1.1)
+
+
+def test_move_to_still_takes_an_explicit_orientation():
+    arm = _move_arm(_obs(), _obs(elbow_flex=3.0))
+    arm.move_to(0.20, 0.0, 0.20, 0.0, 0.0, 0.0, timeout_s=0.5, tol_m=0.01)
+    assert (arm.targets[0]["ee.wx"], arm.targets[0]["ee.wy"], arm.targets[0]["ee.wz"]) == (0.0, 0.0, 0.0)
+
+
+def test_move_to_refuses_an_ik_jump_before_sending_anything():
+    arm = _move_arm(_obs(wrist_roll=-133.0), _obs(wrist_roll=7.0))
+    result = arm.move_to(0.20, 0.01, 0.20, None, None, None, timeout_s=0.5, tol_m=0.01)
+    assert result["outcome"] == "refused" and "wrist_roll" in result["detail"]
+    assert arm.follower.sent == []
+
+
+def test_move_to_refuses_when_the_orientation_cannot_be_held():
+    arm = _move_arm(_obs(), _obs(elbow_flex=3.0), pose=None)
+    result = arm.move_to(0.20, 0.0, 0.20, None, None, None, timeout_s=0.5, tol_m=0.01)
+    assert result["outcome"] == "refused" and "orientation" in result["detail"]
+    assert arm.follower.sent == [] and arm.targets == []
+
+
+def test_move_arm_asks_the_hardware_to_hold_the_orientation(monkeypatch):
+    robot = XLeRobot()
+    monkeypatch.setattr(xlerobot_sidecar, "USE_HW", True)
+    robot._grant = None
+    seen = {}
+
+    class _Arm:
+        def move_to(self, x, y, z, rx, ry, rz, timeout_s, tol_m, collision_check=None):
+            seen["rot"] = (rx, ry, rz)
+            return {"outcome": "reached", "detail": "ok"}
+
+    robot._hw_arms = {"right": _Arm()}
+    monkeypatch.setattr(robot, "_collision_check_for", lambda side: None)
+    assert robot.move_arm("right", 0.2, 0.0, 0.2)["outcome"] == "reached"
+    assert seen["rot"] == (None, None, None)
+
+
+def test_move_to_refreshes_the_solver_on_the_live_joints_before_every_ik():
+    # lerobot's IK linearises around the LAST computed pose, not the joints it
+    # is handed: from a stale state a 1 cm step came back as 51 deg.
+    start = _obs(shoulder_pan=-6.6, wrist_roll=-106.5)
+    arm = _move_arm(start, _obs(shoulder_pan=-6.0, wrist_roll=-106.5))
+    arm.move_to(0.20, 0.0, 0.20, None, None, None, timeout_s=0.5, tol_m=0.01)
+    first_ik = arm.events.index(("ik", None))
+    kind, q = arm.events[first_ik - 1]
+    assert kind == "fk"
+    assert q == [round(start[f"{j}.pos"], 3) for j in ARM_JOINTS]

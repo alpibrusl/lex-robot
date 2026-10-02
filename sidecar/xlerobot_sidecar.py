@@ -293,6 +293,35 @@ JOG_JOINTS = ARM_JOINTS[:5]
 # One keypress is a nudge, not a destination. Larger moves are many presses,
 # each one checked on its own.
 JOG_JOINT_MAX_DEG = 10.0
+# How far ONE IK solution may move any joint, for a Cartesian target `d` cm
+# away: IK_JUMP_BASE_DEG + IK_JUMP_DEG_PER_CM * d. An SO-101 covers a
+# centimetre with a few degrees per joint, so a solution far beyond this is IK
+# jumping to a different branch -- measured live on 2026-10-02: a 1 cm step
+# asked one joint for 140 deg. Long moves still get room in proportion.
+IK_JUMP_BASE_DEG = float(os.environ.get("LEX_XLE_IK_JUMP_BASE_DEG", "15"))
+IK_JUMP_DEG_PER_CM = float(os.environ.get("LEX_XLE_IK_JUMP_DEG_PER_CM", "6"))
+
+
+def ik_jump(obs, joint_action, ee_now, target):
+    """None, or why this IK solution moves a joint further than the move needs.
+
+    `ee_now` is the current end-effector position (None if FK is unavailable,
+    in which case only the base allowance applies). Body joints only: the
+    gripper is passed through, not solved.
+    """
+    dist_cm = math.dist(ee_now, target) * 100 if ee_now is not None else 0.0
+    allowed = IK_JUMP_BASE_DEG + IK_JUMP_DEG_PER_CM * dist_cm
+    worst, joint = 0.0, None
+    for j in ARM_JOINTS[:5]:
+        k = f"{j}.pos"
+        if k in joint_action and k in obs:
+            d = abs(float(joint_action[k]) - float(obs[k]))
+            if d > worst:
+                worst, joint = d, j
+    if worst <= allowed:
+        return None
+    return (f"IK asked {joint} to move {worst:.0f} deg for a {dist_cm:.1f} cm move "
+            f"(allowed {allowed:.0f}) -- a jump to another IK branch, not driven")
 
 # XLeRobot 0.4.0 ships a dual-wheel DIFFERENTIAL base (no strafing); the
 # 0.3.0-era kit was a 3-omni-wheel holonomic (LeKiwi) base. Matches the
@@ -442,6 +471,29 @@ class _HwArm:
         except Exception:
             return None
 
+    def _refresh_kinematics(self, obs):
+        """Bring the IK solver's internal pose up to the arm's live joints
+        (see the note in move_to). forward_kinematics sets the joints AND
+        updates placo's kinematics, which inverse_kinematics alone does not."""
+        import numpy as _np
+        self._kinematics.forward_kinematics(
+            _np.array([float(obs[f"{j}.pos"]) for j in ARM_JOINTS], dtype=float))
+
+    def _forward_kinematics_pose(self, joints):
+        """Best-effort FK, position AND orientation: (x, y, z, wx, wy, wz),
+        the orientation as a rotation vector -- the same form the IK step
+        takes as its target. None when no kinematics model is available."""
+        if self._kinematics is None:
+            return None
+        try:
+            from lerobot.robots.so_follower.robot_kinematic_processor import (
+                compute_forward_kinematics_joints_to_ee,
+            )
+            ee = compute_forward_kinematics_joints_to_ee(dict(joints), self._kinematics, ARM_JOINTS)
+            return tuple(float(ee[k]) for k in ("ee.x", "ee.y", "ee.z", "ee.wx", "ee.wy", "ee.wz"))
+        except Exception:
+            return None
+
     def _forward_kinematics_ee(self, joints):
         """Best-effort FK for the settle check in move_to(). *joints* must be
         keyed like lerobot's own observations (f"{name}.pos" per ARM_JOINTS
@@ -525,6 +577,18 @@ class _HwArm:
         return {"ok": True, "x": x, "y": y, "z": z}
 
     def move_to(self, x, y, z, rx, ry, rz, timeout_s, tol_m, collision_check=None):
+        """Drive the end effector to (x, y, z).
+
+        rx/ry/rz=None HOLDS the gripper's current orientation. The IK carries a
+        soft orientation term, and a fixed (0, 0, 0) target -- what move_arm
+        used to send -- pulled the wrist toward that pose on every step: a
+        1 cm translation rolled the wrist ~26 deg, and once asked a joint for
+        140 deg. Holding the current orientation makes x/y/z translate and
+        leaves the wrist to jog_joint.
+
+        Before each command, an IK solution that moves any joint further than
+        the distance justifies (IK_JUMP_*) is refused rather than driven.
+        """
         if self._ik is None:
             raise HardwareError(
                 "no Cartesian IK available: either LEX_XLE_URDF_PATH isn't set, `placo` "
@@ -538,6 +602,15 @@ class _HwArm:
         deadline = _time.monotonic() + timeout_s
         last_dist = None
         fk_available = True
+        if None in (rx, ry, rz):
+            start = self.follower.get_observation()
+            pose = self._forward_kinematics_pose({f"{j}.pos": start[f"{j}.pos"] for j in ARM_JOINTS})
+            if pose is None:
+                return {"outcome": "refused",
+                        "detail": f"{self.side} arm: cannot read the gripper's current orientation "
+                                  "(no FK), so it cannot be held -- refusing rather than letting IK "
+                                  "choose the wrist"}
+            rx, ry, rz = pose[3:]
         # Distinguishing "converging slowly" from "jammed against something"
         # needs the joint-level tracking error, not the Cartesian distance: a
         # blocked arm sits at a constant offset from the goal its servos were
@@ -564,8 +637,19 @@ class _HwArm:
                 # self.transition (set by __call__, not by calling .action()
                 # directly) to get at the observation, so it must be invoked as
                 # ik(transition), not ik.action(...).
+                # lerobot's RobotKinematics.inverse_kinematics sets the joints
+                # but never calls update_kinematics() before solving, so placo
+                # linearises around whatever pose was LAST computed (the zero
+                # pose on a fresh solver). Measured on this arm: a 1 cm step
+                # came back as a 51 deg joint move from a stale state, 3 deg
+                # from a fresh one. One FK on the live joints refreshes it.
+                self._refresh_kinematics(obs)
                 transition = create_transition(observation=obs, action=target)
                 joint_action = self._ik(transition)[TransitionKey.ACTION]
+                jump = ik_jump(obs, joint_action, self._forward_kinematics_ee(
+                    {f"{j}.pos": obs[f"{j}.pos"] for j in ARM_JOINTS}), (x, y, z))
+                if jump is not None:
+                    return {"outcome": "refused", "detail": f"{self.side} arm: {jump}"}
                 # Refuse BEFORE commanding. Joint limits cannot catch this: a
                 # perfectly in-range configuration can still put the gripper
                 # through the mast, because the constraint is coupled across
@@ -3236,7 +3320,7 @@ class XLeRobot:
                 return missing
             timeout_s = float(os.environ.get("LEX_XLE_ARM_TIMEOUT_S", "8"))
             tol_m = float(os.environ.get("LEX_XLE_ARM_TOL_M", "0.01"))
-            return self._hw_arms[arm].move_to(x, y, z, 0.0, 0.0, 0.0, timeout_s, tol_m,
+            return self._hw_arms[arm].move_to(x, y, z, None, None, None, timeout_s, tol_m,
                                               collision_check=self._collision_check_for(arm))
         a = self.arms[arm]
         a["positions"] = [round(v, 3) for v in [x, y, z, 0.0, 0.0, a["positions"][5]]]
