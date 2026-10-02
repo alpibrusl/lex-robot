@@ -18,7 +18,9 @@ both arms, does anything intersect?
 
 Approach: conservative capsule approximation. Each arm link becomes a capsule
 (a segment with a radius) between consecutive link origins from forward
-kinematics; the tower is a vertical capsule; the cart tray is a half-space.
+kinematics; the tower is a vertical capsule; the cart is a box, from the floor
+up to the tray, over the tray's footprint (a half-space at the tray height when
+no footprint is configured).
 Capsules over-approximate the real geometry, so the model reports collisions
 slightly early rather than slightly late — the correct direction to be wrong in
 when the alternative is driving a servo into a mast.
@@ -117,6 +119,32 @@ def capsule_plane_clearance(c: Capsule, plane_z: float) -> float:
     return min(c.a[2], c.b[2]) - c.radius - plane_z
 
 
+def point_box_signed_distance(p, lo, hi) -> float:
+    """Distance from a point to an axis-aligned box; negative inside it."""
+    p, lo, hi = (np.asarray(v, float) for v in (p, lo, hi))
+    centre, half = (lo + hi) / 2, (hi - lo) / 2
+    q = np.abs(p - centre) - half
+    return float(np.linalg.norm(np.maximum(q, 0.0)) + min(float(q.max()), 0.0))
+
+
+# Samples per capsule for the box test. A link is at most ~0.12 m, so the
+# spacing is under a centimetre; the error that leaves is subtracted below.
+BOX_SAMPLES = 16
+
+
+def capsule_box_clearance(c: Capsule, lo, hi) -> float:
+    """Gap between a capsule and an axis-aligned box. Negative means inside.
+
+    Sampled along the segment rather than solved exactly. The closest sample
+    can be up to half a spacing further away than the true closest point, so
+    that half spacing is subtracted: the answer may err early, never late.
+    """
+    a, b = np.asarray(c.a, float), np.asarray(c.b, float)
+    best = min(point_box_signed_distance(a + (b - a) * (k / BOX_SAMPLES), lo, hi)
+               for k in range(BOX_SAMPLES + 1))
+    return best - c.radius - float(np.linalg.norm(b - a)) / (2 * BOX_SAMPLES)
+
+
 # ── the robot ───────────────────────────────────────────────────────────────
 
 @dataclass
@@ -155,6 +183,11 @@ class RobotCollisionModel:
     tower: Capsule | None
     tray_z: float | None
     margin: float = 0.01
+    # (x, y) size of the tray, centred on the robot origin. None keeps the old
+    # behaviour -- the tray as an infinite plane -- which refuses every pose
+    # below tray height, including a gripper reaching past the cart's edge to
+    # a lower table.
+    tray_size: tuple[float, float] | None = None
     _fk: dict = field(default_factory=dict, repr=False)
 
     # -- construction --------------------------------------------------------
@@ -166,9 +199,12 @@ class RobotCollisionModel:
                   for side, m in g["arms"].items()}
         t = g.get("tower")
         tower = Capsule(tuple(t["base"]), tuple(t["top"]), float(t["radius"]), "tower") if t else None
+        cart = g.get("cart") or {}
+        size = cart.get("tray_size_m")
         model = RobotCollisionModel(
             mounts=mounts, link_radii=g["link_radii"], tower=tower,
-            tray_z=(g.get("cart") or {}).get("tray_z"), margin=float(g.get("margin_m", 0.01)),
+            tray_z=cart.get("tray_z"), margin=float(g.get("margin_m", 0.01)),
+            tray_size=(float(size[0]), float(size[1])) if size else None,
         )
         model.load_kinematics(urdf_path)
         return model
@@ -193,6 +229,18 @@ class RobotCollisionModel:
             r = self.link_radii.get(ARM_FRAMES[i + 1], self.link_radii.get("default", 0.03))
             out.append(Capsule(pts[i], pts[i + 1], r, f"{side}:{seg}"))
         return out
+
+    def _cart_clearance(self, c: Capsule) -> float:
+        """Gap between a link and the cart: the tray and everything under it.
+
+        With a footprint, the cart is a box from the floor to the tray, so a
+        gripper reaching past the tray's edge down to a lower table is clear,
+        while one driven into the tray, or under it into the cart, is not.
+        """
+        if self.tray_size is None:
+            return capsule_plane_clearance(c, self.tray_z)
+        sx, sy = self.tray_size
+        return capsule_box_clearance(c, (-sx / 2, -sy / 2, 0.0), (sx / 2, sy / 2, self.tray_z))
 
     # -- the question this module exists to answer ---------------------------
 
@@ -223,7 +271,7 @@ class RobotCollisionModel:
                 # verdict would have refused all motion. Only links that can
                 # actually be driven down into the tray are checked.
                 if self.tray_z is not None and i >= MOUNTED_LINKS:
-                    d = capsule_plane_clearance(c, self.tray_z)
+                    d = self._cart_clearance(c)
                     if d < self.margin:
                         hits.append(Collision(c.name, "cart tray", d))
         if "left" in caps and "right" in caps:

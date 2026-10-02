@@ -69,6 +69,16 @@ API on its own) bypasses that check entirely, so the sidecar now *also*
 loads the same grant and applies the two checks that matter most for a
 directly-actuated arm:
 - **`move_arm`**: the target is checked against that arm's `workspace_m` box.
+  **The box is in that arm's OWN frame**: origin at its base on the cart
+  tray (0.76 m up), +x forward, +y the robot's left, +z up -- the frame
+  `read_arm_pose` reports. It is not the robot frame. Until 2026-10-02 the
+  capsule split y into halves (left `y >= 0`, right `y <= 0`), which reads as
+  "each arm on its own side" in the robot frame but, applied per arm, barred
+  each arm from crossing its OWN centreline -- the right arm's rest pose by
+  the tower was outside its grant. Keeping the arms apart is the collision
+  model's job (arm-vs-arm, arm-vs-tower, from both arms' live joints), so both
+  boxes now span y `[-0.35, 0.35]`. z reaches `-0.30` (30 cm below the tray)
+  because a table is lower than the tray the arms are bolted to.
   Outside it → `{"outcome": "denied", ...}`, **nothing is sent to
   hardware** — a position can't be safely "clamped" into an envelope the way
   a scalar can, so this is a refusal, not an adjustment (same philosophy as
