@@ -988,3 +988,21 @@ def test_move_to_refreshes_the_solver_on_the_live_joints_before_every_ik():
     kind, q = arm.events[first_ik - 1]
     assert kind == "fk"
     assert q == [round(start[f"{j}.pos"], 3) for j in ARM_JOINTS]
+
+
+# ---- the motion loops hand their reading to the recorder ----------------------
+
+def test_move_to_taps_the_pose_it_reads_after_every_command(monkeypatch):
+    monkeypatch.setattr(xlerobot_sidecar, "_JOINT_TAP", {})
+    arm = _move_arm(_obs(), _obs(elbow_flex=3.0))
+    arm.move_to(0.20, 0.0, 0.20, None, None, None, timeout_s=0.5, tol_m=0.01)
+    got = xlerobot_sidecar.latest_joints("right", 5.0)
+    assert got is not None and got["elbow_flex"] == pytest.approx(3.0)
+
+
+def test_jog_joint_taps_the_pose_it_reads_after_every_step(monkeypatch):
+    monkeypatch.setattr(xlerobot_sidecar, "_JOINT_TAP", {})
+    robot, bus = _jog_robot(monkeypatch, present={**_HOME, "wrist_roll": 7.0})
+    robot.jog_joint("left", "wrist_roll", 4)
+    got = xlerobot_sidecar.latest_joints("left", 5.0)
+    assert got is not None and got["wrist_roll"] == pytest.approx(7.0)   # what the bus reads back

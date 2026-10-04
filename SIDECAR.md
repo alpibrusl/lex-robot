@@ -166,6 +166,20 @@ What it does and doesn't do:
   through FK before torque is enabled, then driven in `teach.MAX_STEP_DEG`
   steps with each pose offered to the collision model. Which way `+` turns
   the wrist has not been measured on this unit, so the page labels it `+`/`-`.
+- **Recording while you drive** (`/control`'s RECORD row, `Space` to start/stop;
+  skill `teach_start {driven: true}`). Torque stays on and the keys move the
+  arm; the recording is tagged `keyboard`. The hard part is the bus lock: a
+  move holds the arm's lock for its whole duration, so a recorder that needed
+  it for every sample would record nothing while the arm moves. Instead the
+  motion loops (`move_to`, `go_to`) hand over the joint reading they already
+  take every ~50 ms (`tap_joints`), and the recorder uses it only when the bus
+  is busy -- fresh (`LEX_XLE_DRIVEN_TAP_MAX_AGE_S`, 0.25 s) and covering every
+  joint. With no honest pose the tick is skipped rather than paired with a
+  stale one, and the stop report says how many came from the move loop and how
+  many were skipped. Cameras are read outside the bus lock (separate USB
+  devices), so recording never stalls a move; each `_HwCamera` now serialises
+  its own reads, since `/control`'s poll and a recording share them.
+  `docs/RECORDING_PLAN.md` says what to record, in what order.
 - **`move_arm` holds the gripper's orientation** (`move_to` with `rx/ry/rz =
   None`) instead of asking IK for a fixed `(0, 0, 0)`; that fixed target rolled
   the wrist on every x/y/z step and once asked a joint for 140 deg. Two more
