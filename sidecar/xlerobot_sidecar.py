@@ -1892,6 +1892,7 @@ CONTROL_PAGE_HTML = """<!doctype html>
   <span>wrist roll <kbd data-k="l">L</kbd> + <kbd data-k="j">J</kbd> &minus;</span>
   <span>gripper <kbd data-k="o">O</kbd> open <kbd data-k="c">C</kbd> close</span>
   <span>step <kbd data-k="-">-</kbd> &divide;2 <kbd data-k="+">+</kbd> &times;2</span>
+  <span><kbd data-k="h">H</kbd> go to the saved home pose</span>
   <span><kbd data-k="Escape">Esc</kbd> disable control</span>
   <span><kbd data-k=" ">Space</kbd> start / stop recording</span>
   <span>Hold a key to keep moving: each step is sent only after the last one answers.</span>
@@ -1903,6 +1904,7 @@ CONTROL_PAGE_HTML = """<!doctype html>
   <label>tags <input id="rec-tags" size="14" placeholder="stage1, p0"></label>
   <button id="rec-btn">&#9679; Record</button>
   <button id="rec-discard" disabled>Discard last</button>
+  <button id="rec-home">Go home (H)</button>
   <div id="rec-status">Records the arm chosen with 1/2 while you drive it with the keys. Torque stays on.
     The task text is TRAINING INPUT: keep it identical across the demos of one task.</div>
 </div>
@@ -2145,6 +2147,27 @@ async function jogJoint(arm, joint, dir) {
   }
 }
 
+// The pose every demonstration should start from, saved on /teach ("Set this
+// as home"). Same grant and collision checks as any other move. Refused while
+// recording: a trip home in the middle of a demonstration is not part of it.
+async function goHome(arm) {
+  const status = document.getElementById(`status-${arm}`);
+  if (!enabled || busy[arm]) return;
+  if (recording) { status.textContent = 'stop the recording before going home'; return; }
+  busy[arm] = true; updateButtonStates();
+  status.textContent = 'going home...';
+  try {
+    const r = await fetchWithTimeout('/skill/teach_home_go', {method: 'POST', body: JSON.stringify({arm})}, 30000);
+    const j = await r.json();
+    status.textContent = `${j.outcome}: ${j.detail || ''}`;
+  } catch (e) {
+    status.textContent = 'command failed (sidecar unreachable)';
+  } finally {
+    busy[arm] = false; updateButtonStates();
+    runPending(arm);
+  }
+}
+
 async function gripperCmd(arm, action) {
   if (!enabled || busy[arm]) return;
   busy[arm] = true; updateButtonStates();
@@ -2365,6 +2388,7 @@ const KEYMAP = {
   i: ['joint', 'wrist_flex', 1], k: ['joint', 'wrist_flex', -1],
   l: ['joint', 'wrist_roll', 1], j: ['joint', 'wrist_roll', -1],
   o: ['grip', 'open'], c: ['grip', 'close'],
+  h: ['home'],
 };
 
 function selectKbArm(arm) {
@@ -2421,7 +2445,7 @@ document.addEventListener('keydown', (e) => {
   if (!action) return;
   e.preventDefault();
   flashKey(k);
-  if (action[0] === 'grip' && e.repeat) return;   // one open/close per press
+  if ((action[0] === 'grip' || action[0] === 'home') && e.repeat) return;   // once per press
   const arm = kbArm;
   if (busy[arm]) {
     const q = pending[arm];
@@ -2436,6 +2460,7 @@ document.addEventListener('keydown', (e) => {
 function keyAction(arm, [kind, what, dir]) {
   const status = document.getElementById(`status-${arm}`);
   if (!enabled) { status.textContent = 'keyboard ignored: tick "Enable control" first'; return; }
+  if (kind === 'home') return goHome(arm);
   if (kind === 'grip') return gripperCmd(arm, what);
   if (kind === 'joint') return jogJoint(arm, what, dir);
   if (!lastPose[arm]) { status.textContent = 'no pose yet -- waiting for the next poll'; return; }
@@ -2537,6 +2562,7 @@ async function discardLast() {
 }
 
 $rec('rec-btn').addEventListener('click', toggleRec);
+$rec('rec-home').addEventListener('click', () => goHome(kbArm));
 $rec('rec-discard').addEventListener('click', discardLast);
 
 let recPolling = false;

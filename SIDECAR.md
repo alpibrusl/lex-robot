@@ -179,7 +179,10 @@ What it does and doesn't do:
   many were skipped. Cameras are read outside the bus lock (separate USB
   devices), so recording never stalls a move; each `_HwCamera` now serialises
   its own reads, since `/control`'s poll and a recording share them.
-  `docs/RECORDING_PLAN.md` says what to record, in what order.
+  `docs/RECORDING_PLAN.md` says what to record, in what order, and
+  `docs/recording_sequence.csv` lists every episode with its exact name.
+  `H` (or "Go home") drives the arm to the pose saved on `/teach`, so every
+  demonstration starts from the same place; refused while recording.
 - **`move_arm` holds the gripper's orientation** (`move_to` with `rx/ry/rz =
   None`) instead of asking IK for a fixed `(0, 0, 0)`; that fixed target rolled
   the wrist on every x/y/z step and once asked a joint for 140 deg. Two more
