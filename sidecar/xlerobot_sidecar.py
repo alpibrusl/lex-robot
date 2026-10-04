@@ -302,6 +302,43 @@ IK_JUMP_BASE_DEG = float(os.environ.get("LEX_XLE_IK_JUMP_BASE_DEG", "15"))
 IK_JUMP_DEG_PER_CM = float(os.environ.get("LEX_XLE_IK_JUMP_DEG_PER_CM", "6"))
 
 
+# Last joint reading each arm's motion loop took, for the recorder. A move holds
+# the arm's bus lock for its whole duration (up to LEX_XLE_ARM_TIMEOUT_S), so
+# a recorder that needed the lock for every sample would record nothing while
+# the arm is moving -- the only part of a driven demonstration that matters.
+# The loop already reads the joints every ~50 ms; it hands that reading over
+# here instead of making the recorder ask the bus again.
+_JOINT_TAP = {}
+_TAP_LOCK = threading.Lock()
+
+
+def tap_joints(side, values):
+    """Record `values` ({joint: deg}) as arm `side`'s latest reading. Accepts
+    lerobot observation keys ("elbow_flex.pos") and bare joint names."""
+    clean = {}
+    for k, v in values.items():
+        name = k[:-4] if isinstance(k, str) and k.endswith(".pos") else k
+        if name in ARM_JOINTS:
+            clean[name] = float(v)
+    if not clean:
+        return
+    with _TAP_LOCK:
+        old = _JOINT_TAP.get(side, (0.0, {}))[1]
+        _JOINT_TAP[side] = (time.monotonic(), {**old, **clean})
+
+
+def latest_joints(side, max_age_s):
+    """The tapped reading if it is at most max_age_s old AND covers every
+    joint, else None. A partial or stale reading is not a pose."""
+    with _TAP_LOCK:
+        t, vals = _JOINT_TAP.get(side, (None, {}))
+    if t is None or time.monotonic() - t > max_age_s:
+        return None
+    if any(j not in vals for j in ARM_JOINTS):
+        return None
+    return dict(vals)
+
+
 def ik_jump(obs, joint_action, ee_now, target):
     """None, or why this IK solution moves a joint further than the move needs.
 
@@ -664,6 +701,7 @@ class _HwArm:
                 _time.sleep(0.05)
                 obs = self.follower.get_observation()
                 joints = {f"{j}.pos": obs[f"{j}.pos"] for j in ARM_JOINTS}
+                tap_joints(self.side, joints)
                 if stall is not None:
                     worst = max(
                         (abs(float(joint_action[k]) - float(obs[k]))
@@ -1076,11 +1114,15 @@ class _HwCamera:
             cfg["fourcc"] = fourcc
         self.camera = OpenCVCamera(OpenCVCameraConfig(**cfg))
         self.camera.connect()
+        # The /control poll and a recording both read the same camera, from
+        # different threads. Serialise them rather than hope OpenCV copes.
+        self._read_lock = threading.Lock()
 
     def capture(self):
         """One raw HxWx3 uint8 RGB frame — shared by read_camera (JPEG-encodes
         it) and _hw_scan_qr (decodes a QR code from it)."""
-        return self.camera.read()
+        with self._read_lock:
+            return self.camera.read()
 
     def read(self):
         import base64
@@ -1819,6 +1861,17 @@ CONTROL_PAGE_HTML = """<!doctype html>
   kbd.hit { border-color:var(--cyan); color:var(--cyan); }
   #keys .armsel { color:var(--cyan); }
   .panel.kb-active { outline:1px solid var(--cyan); outline-offset:-1px; }
+  #rec { padding:8px 16px; border-bottom:1px solid var(--border); display:flex; flex-wrap:wrap;
+         gap:6px 12px; align-items:center; font-size:11px; }
+  #rec label { color:var(--muted); }
+  #rec input { background:var(--bg3); color:var(--text); border:1px solid var(--border);
+               padding:2px 4px; font-family:inherit; font-size:11px; }
+  #rec button { background:var(--bg3); color:var(--text); border:1px solid var(--border);
+                padding:4px 10px; cursor:pointer; font-family:inherit; }
+  #rec button.on { border-color:var(--red); color:var(--red); }
+  #rec-status { flex-basis:100%; color:var(--muted); min-height:14px; }
+  #rec-status .bad { color:var(--red); } #rec-status .warn { color:var(--yellow); }
+  #rec-status .ok { color:var(--lime); }
 </style></head>
 <body>
 <header>
@@ -1839,8 +1892,21 @@ CONTROL_PAGE_HTML = """<!doctype html>
   <span>wrist roll <kbd data-k="l">L</kbd> + <kbd data-k="j">J</kbd> &minus;</span>
   <span>gripper <kbd data-k="o">O</kbd> open <kbd data-k="c">C</kbd> close</span>
   <span>step <kbd data-k="-">-</kbd> &divide;2 <kbd data-k="+">+</kbd> &times;2</span>
+  <span><kbd data-k="h">H</kbd> go to the saved home pose</span>
   <span><kbd data-k="Escape">Esc</kbd> disable control</span>
+  <span><kbd data-k=" ">Space</kbd> start / stop recording</span>
   <span>Hold a key to keep moving: each step is sent only after the last one answers.</span>
+</div>
+<div id="rec">
+  <b style="color:var(--cyan)">RECORD</b>
+  <label>task <input id="rec-task" size="30" placeholder="same wording for every demo of a task"></label>
+  <label>name <input id="rec-prefix" size="10"></label>
+  <label>tags <input id="rec-tags" size="14" placeholder="stage1, p0"></label>
+  <button id="rec-btn">&#9679; Record</button>
+  <button id="rec-discard" disabled>Discard last</button>
+  <button id="rec-home">Go home (H)</button>
+  <div id="rec-status">Records the arm chosen with 1/2 while you drive it with the keys. Torque stays on.
+    The task text is TRAINING INPUT: keep it identical across the demos of one task.</div>
 </div>
 <div id="tower">
   <div class="panel">
@@ -2081,6 +2147,27 @@ async function jogJoint(arm, joint, dir) {
   }
 }
 
+// The pose every demonstration should start from, saved on /teach ("Set this
+// as home"). Same grant and collision checks as any other move. Refused while
+// recording: a trip home in the middle of a demonstration is not part of it.
+async function goHome(arm) {
+  const status = document.getElementById(`status-${arm}`);
+  if (!enabled || busy[arm]) return;
+  if (recording) { status.textContent = 'stop the recording before going home'; return; }
+  busy[arm] = true; updateButtonStates();
+  status.textContent = 'going home...';
+  try {
+    const r = await fetchWithTimeout('/skill/teach_home_go', {method: 'POST', body: JSON.stringify({arm})}, 30000);
+    const j = await r.json();
+    status.textContent = `${j.outcome}: ${j.detail || ''}`;
+  } catch (e) {
+    status.textContent = 'command failed (sidecar unreachable)';
+  } finally {
+    busy[arm] = false; updateButtonStates();
+    runPending(arm);
+  }
+}
+
 async function gripperCmd(arm, action) {
   if (!enabled || busy[arm]) return;
   busy[arm] = true; updateButtonStates();
@@ -2285,6 +2372,7 @@ function poll() {
     if (!polling[arm]) pollArm(arm);
   }
   pollExtra();
+  pollRec();
 }
 
 // ---- keyboard ---------------------------------------------------------------
@@ -2300,6 +2388,7 @@ const KEYMAP = {
   i: ['joint', 'wrist_flex', 1], k: ['joint', 'wrist_flex', -1],
   l: ['joint', 'wrist_roll', 1], j: ['joint', 'wrist_roll', -1],
   o: ['grip', 'open'], c: ['grip', 'close'],
+  h: ['home'],
 };
 
 function selectKbArm(arm) {
@@ -2338,6 +2427,14 @@ document.addEventListener('keydown', (e) => {
     flashKey(k); return;
   }
   if (k === '1' || k === '2') { selectKbArm(k === '1' ? 'left' : 'right'); flashKey(k); return; }
+  if (k === ' ') {
+    e.preventDefault(); flashKey(' ');
+    if (!e.repeat) {
+      if (document.activeElement && document.activeElement.tagName === 'BUTTON') document.activeElement.blur();
+      toggleRec();
+    }
+    return;
+  }
   // -/+ rather than [/]: on a Spanish or French layout the brackets need
   // AltGr, which the modifier guard above ignores. '=' is '+' unshifted on US.
   if (k === '-' || k === '+' || k === '=') {
@@ -2348,7 +2445,7 @@ document.addEventListener('keydown', (e) => {
   if (!action) return;
   e.preventDefault();
   flashKey(k);
-  if (action[0] === 'grip' && e.repeat) return;   // one open/close per press
+  if ((action[0] === 'grip' || action[0] === 'home') && e.repeat) return;   // once per press
   const arm = kbArm;
   if (busy[arm]) {
     const q = pending[arm];
@@ -2363,6 +2460,7 @@ document.addEventListener('keydown', (e) => {
 function keyAction(arm, [kind, what, dir]) {
   const status = document.getElementById(`status-${arm}`);
   if (!enabled) { status.textContent = 'keyboard ignored: tick "Enable control" first'; return; }
+  if (kind === 'home') return goHome(arm);
   if (kind === 'grip') return gripperCmd(arm, what);
   if (kind === 'joint') return jogJoint(arm, what, dir);
   if (!lastPose[arm]) { status.textContent = 'no pose yet -- waiting for the next poll'; return; }
@@ -2371,6 +2469,115 @@ function keyAction(arm, [kind, what, dir]) {
     return;
   }
   return jog(arm, what, dir);
+}
+
+// ---- recording --------------------------------------------------------------
+// Driven recording: the arm stays powered and the keys move it, while the
+// sidecar samples pose + cameras in the background. Pose comes from the bus
+// when the arm is still, and from the reading the move loop just took while
+// it is moving (a move holds the bus for its whole duration).
+let recording = false;
+let lastSaved = null;
+const $rec = (id) => document.getElementById(id);
+try {
+  $rec('rec-task').value = localStorage.getItem('lex.rec.task') || 'pick up the object';
+  $rec('rec-prefix').value = localStorage.getItem('lex.rec.prefix') || 'pick';
+  $rec('rec-tags').value = localStorage.getItem('lex.rec.tags') || '';
+} catch (e) { /* storage blocked: the page works without remembering */ }
+
+async function skillCall(name, args) {
+  const r = await fetchWithTimeout(`/skill/${name}`, {method: 'POST', body: JSON.stringify(args || {})});
+  return r.json();
+}
+
+async function nextRecName(prefix) {
+  const j = await skillCall('teach_list', {});
+  const used = new Set((j.recordings || []).map(r => r.name));
+  for (let n = 1; n < 1000; n++) {
+    const c = `${prefix}_${String(n).padStart(3, '0')}`;
+    if (!used.has(c)) return c;
+  }
+  return `${prefix}_${Date.now()}`;
+}
+
+function recSay(html) { $rec('rec-status').innerHTML = html; }
+const esc = (t) => String(t).replace(/[&<>]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;'}[c]));
+
+function setRecState(s) {
+  recording = !!s.recording;
+  const btn = $rec('rec-btn');
+  btn.innerHTML = recording ? '&#9632; Stop &amp; save' : '&#9679; Record';
+  btn.classList.toggle('on', recording);
+  if (recording) {
+    const extra = (s.from_tap ? ` &middot; ${s.from_tap} from the move loop` : '') +
+                  (s.skipped ? ` &middot; <span class="warn">${s.skipped} skipped</span>` : '');
+    recSay(`<span class="bad">&#9679; REC</span> ${esc(s.name)} (${esc(s.arm)} arm) &middot; ` +
+           `${s.frames} frames &middot; ${s.elapsed_s}s${extra}`);
+  }
+}
+
+async function startRec() {
+  const task = $rec('rec-task').value.trim();
+  const prefix = $rec('rec-prefix').value.trim();
+  if (!task) { recSay('<span class="bad">write the task first</span> -- it becomes the training text.'); return; }
+  if (!prefix) { recSay('<span class="bad">give the recordings a name prefix</span>'); return; }
+  try {
+    localStorage.setItem('lex.rec.task', task);
+    localStorage.setItem('lex.rec.prefix', prefix);
+    localStorage.setItem('lex.rec.tags', $rec('rec-tags').value);
+  } catch (e) { /* ignore */ }
+  const tags = $rec('rec-tags').value.split(',').map(t => t.trim()).filter(Boolean);
+  try {
+    const name = await nextRecName(prefix);
+    const res = await skillCall('teach_start', {arm: kbArm, name, task, tags, seconds: 90, fps: 20, driven: true});
+    if (!res.ok) { recSay(`<span class="bad">${esc(res.detail)}</span>`); return; }
+    $rec('rec-discard').disabled = true;
+    setRecState({recording: true, name, arm: kbArm, frames: 0, elapsed_s: 0});
+  } catch (e) { recSay('<span class="bad">could not start (sidecar unreachable)</span>'); }
+}
+
+async function stopRec() {
+  try {
+    const r = await skillCall('teach_stop', {});
+    recording = false;
+    setRecState({recording: false});
+    if (!r.saved) { recSay(`<span class="bad">${esc(r.detail || 'nothing recorded')}</span>`); return; }
+    lastSaved = r.saved.replace(/[.]json$/, '');
+    $rec('rec-discard').disabled = false;
+    const bits = [`<span class="${r.ok ? 'ok' : 'bad'}">saved ${esc(r.saved)}</span>`,
+                  `${r.frames} frames`, `${r.duration_s}s`, `max step ${r.max_step_deg} deg`];
+    (r.problems || []).forEach(p => bits.push(`<span class="bad">${esc(p)}</span>`));
+    (r.warnings || []).forEach(w => bits.push(`<span class="warn">${esc(w)}</span>`));
+    recSay(bits.join(' &middot; '));
+  } catch (e) { recSay('<span class="bad">could not stop (sidecar unreachable)</span>'); }
+}
+
+function toggleRec() { return recording ? stopRec() : startRec(); }
+
+async function discardLast() {
+  if (!lastSaved) return;
+  const r = await skillCall('teach_delete', {name: lastSaved});
+  recSay(r.ok ? `discarded ${esc(lastSaved)}` : `<span class="bad">${esc(r.detail)}</span>`);
+  if (r.ok) { lastSaved = null; $rec('rec-discard').disabled = true; }
+}
+
+$rec('rec-btn').addEventListener('click', toggleRec);
+$rec('rec-home').addEventListener('click', () => goHome(kbArm));
+$rec('rec-discard').addEventListener('click', discardLast);
+
+let recPolling = false;
+async function pollRec() {
+  if (recPolling) return;
+  recPolling = true;
+  try {
+    const s = await skillCall('teach_status', {});
+    if (s.recording) setRecState(s);
+    else if (recording) {                     // it ended on its own (time limit or error)
+      recording = false; setRecState({recording: false});
+      recSay(`<span class="warn">recording ended${s.error ? ': ' + esc(s.error) : ''} -- press Stop & save if it is still unsaved</span>`);
+    }
+  } catch (e) { /* the next tick retries */ }
+  recPolling = false;
 }
 
 buildJogControls();
@@ -3412,7 +3619,8 @@ class XLeRobot:
         if denial is not None:
             return {"outcome": "denied", "detail": denial}
         result = _teach.go_to(bus, ARM_JOINTS, target,
-                              collision_check=self._collision_check_for(arm))
+                              collision_check=self._collision_check_for(arm),
+                              on_state=lambda vals: tap_joints(arm, vals))
         if result.get("outcome") == "reached":
             result = dict(result, detail=f"{arm} {joint} {delta:+.1f} deg")
         return result
@@ -3451,8 +3659,16 @@ class XLeRobot:
         }
 
 
+# Recording while the arm is DRIVEN (keyboard) rather than guided by hand. The
+# recorder asks for the arm's bus lock this long per tick; if a move holds it,
+# it falls back to the reading the move loop tapped, provided that is fresh.
+DRIVEN_LOCK_WAIT_S = float(os.environ.get("LEX_XLE_DRIVEN_LOCK_WAIT_S", "0.01"))
+DRIVEN_TAP_MAX_AGE_S = float(os.environ.get("LEX_XLE_DRIVEN_TAP_MAX_AGE_S", "0.25"))
+
+
 class _TeachRecorder:
-    """Records a hand-guided demonstration in the background.
+    """Records a demonstration in the background: hand-guided (torque off) or,
+    with driven=True, while the arm is moved by /control's keys (torque on).
 
     HTTP is request/response, so recording cannot happen inside a handler --
     the browser needs to start it, watch it, and stop it. Each sample takes
@@ -3471,12 +3687,16 @@ class _TeachRecorder:
         self.error = None
         self.started_at = None
         self.arm = None
+        self.driven = False
+        self.from_tap = 0       # driven: samples taken from the move loop's reading
+        self.skipped = 0        # driven: ticks with no usable reading at all
 
     @property
     def recording(self):
         return self._thread is not None and self._thread.is_alive()
 
-    def start(self, arm, name, task, tags, fps, seconds, cameras=None, free_gripper=False):
+    def start(self, arm, name, task, tags, fps, seconds, cameras=None, free_gripper=False,
+              driven=False):
         import teach as _teach
         if self.recording:
             return {"ok": False, "detail": "already recording"}
@@ -3491,23 +3711,29 @@ class _TeachRecorder:
         # to reaching for the control page mid-demonstration. The caller
         # chooses; the default keeps it powered.
         free = _teach.ARM_JOINTS if free_gripper else _teach.BODY_JOINTS
+        if driven:
+            free = []      # the keys drive the arm: torque stays ON, nothing goes limp
         if cameras is None:
             cameras = [c for c in ("head", arm) if c in getattr(ROBOT, "_hw_cameras", {})]
         cameras = [c for c in cameras if not USE_HW or c in getattr(ROBOT, "_hw_cameras", {})]
         self.reset_state()
         self._stop.clear()
         self.arm = arm
+        self.driven = bool(driven)
         self.started_at = time.time()
+        tags = list(tags)
+        if driven and "keyboard" not in tags:
+            tags.append("keyboard")
         self.traj = _teach.Trajectory(
             fps=fps, joints=list(_teach.ARM_JOINTS), name=name, task=task,
-            tags=list(tags), arm=arm, cameras=list(cameras),
+            tags=tags, arm=arm, cameras=list(cameras),
             created_at=time.strftime("%Y-%m-%dT%H:%M:%S"))
         for c in cameras:
             (self.traj.image_dir() / c).mkdir(parents=True, exist_ok=True)
 
         def run():
             try:
-                if USE_HW:
+                if USE_HW and free:
                     with hold_port(hw.follower.config.port):
                         hw.follower.bus.disable_torque(free)
                 deadline = time.time() + seconds
@@ -3516,7 +3742,18 @@ class _TeachRecorder:
                 idx = 0
                 while not self._stop.is_set() and time.time() < deadline:
                     t0 = time.time()
-                    if USE_HW:
+                    if USE_HW and self.driven:
+                        frame = self._driven_joints(hw, arm)
+                        if frame is None:
+                            self.skipped += 1       # no honest pose this tick: no frame
+                            time.sleep(max(0.0, period - (time.time() - t0)))
+                            continue
+                        # Cameras are separate USB devices: no bus lock needed,
+                        # and holding it here would stall the move in progress.
+                        for c in self.traj.cameras:
+                            self._write_jpeg(self.traj.image_path(c, idx),
+                                             ROBOT._hw_cameras[c].capture())
+                    elif USE_HW:
                         # Joints and images under ONE lock acquisition: taking
                         # it twice would let another request move the arm
                         # between the pose and the picture of it.
@@ -3541,8 +3778,31 @@ class _TeachRecorder:
         self._thread.start()
         return {"ok": True, "free": list(free), "cameras": list(cameras),
                 "detail": f"recording {arm} arm at {fps:.0f} Hz"
+                          + (" (driven: torque stays on)" if driven else "")
                           + (f" with cameras {', '.join(cameras)}" if cameras
                              else " -- NO CAMERAS (state-only dataset)")}
+
+    def _driven_joints(self, hw, arm):
+        """One pose for a driven recording, or None if there is no honest one.
+
+        The bus first (fresh, and it refreshes the tap); if a move holds the
+        lock, the reading that move loop just tapped -- but only if it is
+        recent and complete. Never a stale pose: a frame is also an image, and
+        pairing a camera frame with a pose from a quarter-second ago trains
+        the wrong thing.
+        """
+        try:
+            with hold_port(hw.follower.config.port, timeout=DRIVEN_LOCK_WAIT_S):
+                obs = hw.follower.bus.sync_read("Present_Position")
+            vals = {j: float(obs[j]) for j in ARM_JOINTS}
+            tap_joints(arm, vals)
+            return [vals[j] for j in ARM_JOINTS]
+        except BusBusy:
+            vals = latest_joints(arm, DRIVEN_TAP_MAX_AGE_S)
+            if vals is None:
+                return None
+            self.from_tap += 1
+            return [vals[j] for j in ARM_JOINTS]
 
     @staticmethod
     def _write_jpeg(path, image):
@@ -3557,7 +3817,8 @@ class _TeachRecorder:
         with self._lock:
             n = len(self.traj.frames) if self.traj else 0
         return {"recording": self.recording, "frames": n, "error": self.error,
-                "arm": self.arm,
+                "arm": self.arm, "driven": self.driven,
+                "from_tap": self.from_tap, "skipped": self.skipped,
                 "elapsed_s": round(time.time() - self.started_at, 1) if self.started_at else 0.0,
                 "name": self.traj.name if self.traj else ""}
 
@@ -3589,6 +3850,15 @@ class _TeachRecorder:
                     if int(stale.stem) >= len(kept):
                         stale.unlink()
         report = _teach.validate(traj)
+        if self.driven:
+            if self.from_tap:
+                report["warnings"].append(
+                    f"{self.from_tap} of {raw} poses came from the move loop's last reading "
+                    f"(the bus was busy moving the arm), not a fresh bus read")
+            if self.skipped:
+                report["warnings"].append(
+                    f"{self.skipped} ticks had no fresh pose and were skipped -- timestamps "
+                    f"show the gaps; a demo with many of them is worth re-recording")
         path = _teach.library_dir() / (_teach.safe_name(traj.name) + ".json")
         traj.save(str(path))
         self.reset_state()
@@ -3730,7 +4000,8 @@ def _handle_skill(name, args):
         return TEACH.start(args.get("arm", "left"), args.get("name", ""),
                            args.get("task", ""), args.get("tags", []),
                            float(args.get("fps", 20)), float(args.get("seconds", 120)),
-                           args.get("cameras"), bool(args.get("free_gripper", False)))
+                           args.get("cameras"), bool(args.get("free_gripper", False)),
+                           bool(args.get("driven", False)))
     if name in ("teach_free", "teach_hold"):
         import teach as _teach
         arm = args.get("arm", "left")
@@ -3787,7 +4058,8 @@ def _handle_skill(name, args):
         if denial is not None:
             return {"outcome": "denied", "detail": denial}
         return _teach.go_to(hw.follower.bus, h["joints"], h["positions"],
-                            collision_check=ROBOT._collision_check_for(arm))
+                            collision_check=ROBOT._collision_check_for(arm),
+                            on_state=lambda vals: tap_joints(arm, vals))
     if name == "teach_stop":
         return TEACH.stop(bool(args.get("keep_still", False)))
     if name == "teach_status":

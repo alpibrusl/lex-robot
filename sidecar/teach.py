@@ -354,11 +354,15 @@ def load_home(arm: str) -> dict | None:
 
 
 def go_to(bus, joints: list[str], target: list[float], *, max_step_deg: float = MAX_STEP_DEG,
-          period_s: float = 0.05, collision_check=None) -> dict:
+          period_s: float = 0.05, collision_check=None, on_state=None) -> dict:
     """Drive an already-connected bus to a pose, creeping rather than snapping.
 
     Same discipline as replay: bounded steps from wherever the arm actually is,
     and every intermediate pose can be vetoed before it is commanded.
+
+    `on_state`, if given, is called with {joint: degrees} read back after each
+    step. A caller holding the bus lock for the whole move uses it to hand the
+    live pose to anything that cannot take the lock meanwhile (the recorder).
     """
     obs = bus.sync_read("Present_Position")
     current = [float(obs[j]) for j in joints]
@@ -373,6 +377,9 @@ def go_to(bus, joints: list[str], target: list[float], *, max_step_deg: float = 
         bus.sync_write("Goal_Position", dict(zip(joints, frame)))
         sent += 1
         time.sleep(period_s)
+        if on_state is not None:
+            seen = bus.sync_read("Present_Position")
+            on_state({j: float(seen[j]) for j in joints})
     return {"outcome": "reached", "frames_sent": sent,
             "detail": f"moved to the saved home pose in {sent} step(s)"}
 
