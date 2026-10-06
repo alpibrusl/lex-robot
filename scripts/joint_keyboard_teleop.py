@@ -111,11 +111,12 @@ assert {m for m, _ in WEB_KEYS.values()} == set(STEPS), "the web layout must dri
 # recording launcher (record_with_keyboard.py) narrows lerobot's listener to
 # the arrows and Esc, so these letters only ever drive the arm. Space arrives
 # from pynput as a special key, not a character -- deltas_from_keys matches it
-# by name. Signs: the first key of each pair adds; not yet measured on the arm.
+# by name. Signs: the first key of each pair adds, except o/p (swapped after
+# trying it on the left arm, 2026-10-06); the others are not yet confirmed.
 DEFAULT_KEYS = {
     "q": ("shoulder_lift", +1), "a": ("shoulder_lift", -1),
     "s": ("elbow_flex", +1), "w": ("elbow_flex", -1),
-    "o": ("shoulder_pan", +1), "p": ("shoulder_pan", -1),
+    "o": ("shoulder_pan", -1), "p": ("shoulder_pan", +1),   # swapped: measured on the left arm
     "i": ("wrist_flex", +1), "k": ("wrist_flex", -1),
     "l": ("wrist_roll", +1), "ñ": ("wrist_roll", -1),
     "space": ("gripper", +1), "m": ("gripper", -1),

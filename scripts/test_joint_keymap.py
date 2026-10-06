@@ -86,7 +86,7 @@ def test_default_layout_is_exactly_what_was_asked_for():
     assert J.DEFAULT_KEYS == {
         "q": ("shoulder_lift", +1), "a": ("shoulder_lift", -1),
         "s": ("elbow_flex", +1), "w": ("elbow_flex", -1),
-        "o": ("shoulder_pan", +1), "p": ("shoulder_pan", -1),
+        "o": ("shoulder_pan", -1), "p": ("shoulder_pan", +1),
         "i": ("wrist_flex", +1), "k": ("wrist_flex", -1),
         "l": ("wrist_roll", +1), "ñ": ("wrist_roll", -1),
         "space": ("gripper", +1), "m": ("gripper", -1),
