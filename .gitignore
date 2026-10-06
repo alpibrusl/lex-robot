@@ -19,3 +19,8 @@ MUJOCO_LOG.TXT
 # transient negative-test file written by scripts/smoke.sh
 .effwall_neg.lex
 taught/
+
+# Camera frames: this repo is PUBLIC and what the robot sees is Alfonso's
+# home. Only the capture destination is ignored, not the documentation images
+# (media/, examples/), which should stay versioned.
+outputs/
