@@ -25,17 +25,18 @@
 # here so it can be restored:  pan 1508, tilt 3386. `scripts/preflight.py`
 # checks it before you start.
 #
-# Keys: JOINT control, one servo per key pair. Top row adds, home row
-# subtracts, left to right from the base to the gripper:
+# Keys: JOINT control, one servo per key pair, with the same letters as the
+# /control web page:
 #
-#     w / s   rotate the base      y / h   wrist up/down
-#     e / d   shoulder             u / j   rotate the wrist
-#     t / g   elbow                i / k   open/close the gripper
+#     a / d   rotate the base      i / k   wrist tilt
+#     w / s   shoulder             l / j   rotate the wrist
+#     e / f   elbow                o / c   open / close the gripper
 #
-#   q, r, n, esc and the arrows are not used: they belong to lerobot-record
+#   Height-up is E, not R: q, r, n, esc and the arrows belong to lerobot-record
 #   (next episode, re-record, quit) and both listeners receive every key.
+#   LEX_KEY_LAYOUT=rows brings back the original w/s e/d t/g y/h u/j i/k map.
 #
-#   They combine when pressed together (e+t raises shoulder and elbow in the
+#   They combine when pressed together (w+e moves shoulder and elbow in the
 #   same frame). Shift = quarter speed, for fine grasping.
 #
 # Why not lerobot's Cartesian keyboard (keyboard_ee): it emits x/y/z deltas and

@@ -25,7 +25,9 @@ from lerobot.processor import (  # noqa: E402
 )
 from lerobot.scripts.lerobot_record import record  # noqa: E402
 
-from joint_keyboard_teleop import KEYS, DeltaToPosition, JointKeyboardTeleop  # noqa: E402,F401
+from joint_keyboard_teleop import (  # noqa: E402,F401
+    DeltaToPosition, JointKeyboardTeleop, base_keymap, describe_keymap, load_keymap,
+)
 
 KEY_TEST_SECONDS = 20
 
@@ -69,9 +71,9 @@ def keyboard_responds(seconds: int = KEY_TEST_SECONDS) -> bool:
 
 
 def key_help() -> None:
-    print("  Top row ADDS, home row SUBTRACTS, from the base to the gripper:")
-    for up, down in (("w", "s"), ("e", "d"), ("t", "g"), ("y", "h"), ("u", "j"), ("i", "k")):
-        print(f"    {up} / {down}   {KEYS[up][0]}")
+    print("  Keys in use (+ / -), from the base to the gripper:")
+    for line in describe_keymap(load_keymap(base_keymap())):
+        print(f"    {line}")
     print("  They combine when pressed together.  Shift = quarter speed (fine grasping).")
     print("  Reserved by lerobot-record, these do not move the arm:")
     print("    n / right arrow = episode accepted, next one")

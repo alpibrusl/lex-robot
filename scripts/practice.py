@@ -52,6 +52,8 @@ from joint_keyboard_teleop import (  # noqa: E402
     JointKeyboardTeleopConfig,
     deltas_from_keys,
     is_fine,
+    base_keymap,
+    describe_keymap,
     load_keymap,
 )
 
@@ -173,9 +175,9 @@ def key_help(arms: list[Arm], both: bool = False, dual_map: dict | None = None) 
         print("  Esc or Ctrl-C to quit; the arms stay HELD, they do not fall.\n")
         return
 
-    print("\n  w/s  rotate the base     y/h  wrist up/down")
-    print("  e/d  shoulder            u/j  rotate the wrist")
-    print("  t/g  elbow               i/k  open/close the gripper")
+    print("\n  Keys in use (+ / -), from the base to the gripper:")
+    for line in describe_keymap(load_keymap(base_keymap())):
+        print(f"    {line}")
     if len(arms) > 1:
         switch = "   ".join(f"{k} = {arms[i].name}" for k, i in ARM_KEYS.items() if i < len(arms))
         print(f"\n  Switch arm:  {switch}")

@@ -70,6 +70,59 @@ KEYS = {
 
 assert not (RESERVED & KEYS.keys()), "a movement key would collide with lerobot-record"
 
+# The default layout: the SAME LETTERS as the /control web page, so one set of
+# muscle memory drives both. The web moves the gripper tip (x/y/z) through
+# inverse kinematics; this moves joints, so the letters mean "the joint that
+# does most of that motion":
+#
+#     a / d   base        (web: across, left / right)
+#     w / s   shoulder    (web: reach, out / in)
+#     e / f   elbow       (web: height up / down -- but R belongs to
+#                          lerobot-record, so up moved one key left, to E)
+#     i / k   wrist tilt  (web: same)
+#     l / j   wrist roll  (web: same)
+#     o / c   gripper     (web: open / close)
+#
+# The SIGNS are a first guess, not measured on this arm: if a key goes the
+# wrong way, flip it in a LEX_KEYMAP file (it merges by key, so a flip is one
+# line) and tell the repo.
+WEB_KEYS = {
+    "a": ("shoulder_pan", -1), "d": ("shoulder_pan", +1),
+    "w": ("shoulder_lift", +1), "s": ("shoulder_lift", -1),
+    "e": ("elbow_flex", +1), "f": ("elbow_flex", -1),
+    "i": ("wrist_flex", +1), "k": ("wrist_flex", -1),
+    "l": ("wrist_roll", +1), "j": ("wrist_roll", -1),
+    "o": ("gripper", +1), "c": ("gripper", -1),
+}
+
+assert not (RESERVED & WEB_KEYS.keys()), "a web-layout key would collide with lerobot-record"
+assert {m for m, _ in WEB_KEYS.values()} == set(STEPS), "the web layout must drive every joint"
+
+LAYOUTS = {"web": WEB_KEYS, "rows": KEYS}
+
+
+def base_keymap() -> dict:
+    """The layout named by $LEX_KEY_LAYOUT: "web" (default) or "rows" (the
+    original top-row-adds layout). LEX_KEYMAP is then merged over it."""
+    name = os.environ.get("LEX_KEY_LAYOUT", "web").strip().lower()
+    if name not in LAYOUTS:
+        print(f"Unknown LEX_KEY_LAYOUT {name!r} (use: {', '.join(LAYOUTS)}); using web")
+        name = "web"
+    return LAYOUTS[name]
+
+
+def describe_keymap(keymap: dict) -> list[str]:
+    """One line per joint, '+key / -key  joint', in base-to-gripper order --
+    so the help printed is the map actually in use, not a remembered one."""
+    by_motor = {}
+    for key, (motor, sign) in keymap.items():
+        by_motor.setdefault(motor, {})[sign] = key
+    lines = []
+    for motor in STEPS:
+        keys = by_motor.get(motor, {})
+        lines.append(f"{keys.get(+1, '-')} / {keys.get(-1, '-')}   {motor}")
+    return lines
+
 # Second layout, for driving both arms at once: left hand drives the left arm,
 # right hand the right one, which is the mapping your hands already expect.
 # Twelve keys per arm is a lot to play; if it does not suit you, change it --
@@ -204,7 +257,7 @@ class JointKeyboardTeleop(KeyboardTeleop):
         self._drain_pressed_keys()
         pressed = {k for k, v in self.current_pressed.items() if v}
         scale = self.config.scale * (FINE if is_fine(pressed) else 1.0)
-        deltas = deltas_from_keys(pressed, load_keymap(KEYS), scale)
+        deltas = deltas_from_keys(pressed, load_keymap(base_keymap()), scale)
         return {f"{m}.delta": v for m, v in deltas.items()}
 
     def send_feedback(self, feedback: dict[str, float]) -> None:

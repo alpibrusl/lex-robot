@@ -5,9 +5,11 @@
 #   ./practice.sh --both         both arms AT ONCE, one hand each
 #   ./practice.sh left           only that one
 #
-#     w / s   rotate the base      y / h   wrist up/down
-#     e / d   shoulder             u / j   rotate the wrist
-#     t / g   elbow                i / k   open/close the gripper
+#   Same letters as the /control web page (joints, not x/y/z):
+#     a / d   rotate the base      i / k   wrist tilt
+#     w / s   shoulder             l / j   rotate the wrist
+#     e / f   elbow                o / c   open / close the gripper
+#   (LEX_KEY_LAYOUT=rows for the original w/s e/d t/g y/h u/j i/k layout.)
 #
 #     1 / 2   switch arm (left / right)
 #
