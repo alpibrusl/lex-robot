@@ -98,16 +98,42 @@ WEB_KEYS = {
 assert not (RESERVED & WEB_KEYS.keys()), "a web-layout key would collide with lerobot-record"
 assert {m for m, _ in WEB_KEYS.values()} == set(STEPS), "the web layout must drive every joint"
 
-LAYOUTS = {"web": WEB_KEYS, "rows": KEYS}
+# The default layout, chosen by the operator (2026-10-06):
+#
+#     q / a      shoulder (lift)
+#     s / w      elbow
+#     o / p      rotate the base
+#     i / k      wrist tilt
+#     l / ñ      rotate the wrist
+#     space / m  open / close the gripper
+#
+# q is lerobot-record's "quit" key and r/n are its re-record/next keys; the
+# recording launcher (record_with_keyboard.py) narrows lerobot's listener to
+# the arrows and Esc, so these letters only ever drive the arm. Space arrives
+# from pynput as a special key, not a character -- deltas_from_keys matches it
+# by name. Signs: the first key of each pair adds; not yet measured on the arm.
+DEFAULT_KEYS = {
+    "q": ("shoulder_lift", +1), "a": ("shoulder_lift", -1),
+    "s": ("elbow_flex", +1), "w": ("elbow_flex", -1),
+    "o": ("shoulder_pan", +1), "p": ("shoulder_pan", -1),
+    "i": ("wrist_flex", +1), "k": ("wrist_flex", -1),
+    "l": ("wrist_roll", +1), "ñ": ("wrist_roll", -1),
+    "space": ("gripper", +1), "m": ("gripper", -1),
+}
+
+assert {m for m, _ in DEFAULT_KEYS.values()} == set(STEPS), "the default layout must drive every joint"
+
+LAYOUTS = {"default": DEFAULT_KEYS, "web": WEB_KEYS, "rows": KEYS}
 
 
 def base_keymap() -> dict:
-    """The layout named by $LEX_KEY_LAYOUT: "web" (default) or "rows" (the
-    original top-row-adds layout). LEX_KEYMAP is then merged over it."""
-    name = os.environ.get("LEX_KEY_LAYOUT", "web").strip().lower()
+    """The layout named by $LEX_KEY_LAYOUT: "default", "web" (the /control
+    page's letters) or "rows" (the original top-row-adds layout).
+    LEX_KEYMAP is then merged over it."""
+    name = os.environ.get("LEX_KEY_LAYOUT", "default").strip().lower()
     if name not in LAYOUTS:
-        print(f"Unknown LEX_KEY_LAYOUT {name!r} (use: {', '.join(LAYOUTS)}); using web")
-        name = "web"
+        print(f"Unknown LEX_KEY_LAYOUT {name!r} (use: {', '.join(LAYOUTS)}); using default")
+        name = "default"
     return LAYOUTS[name]
 
 
@@ -197,9 +223,12 @@ def deltas_from_keys(pressed: set, keymap: dict, scale: float) -> dict[str, floa
     """
     deltas = {m: 0.0 for m in STEPS}
     for key in pressed:
-        if not isinstance(key, str):
+        # Characters arrive as str; special keys (space, ...) as pynput Key
+        # objects, matched by their name.
+        name = key if isinstance(key, str) else getattr(key, "name", None)
+        if not name:
             continue
-        target = keymap.get(key.lower())
+        target = keymap.get(name.lower())
         if target is None:
             continue
         motor, sign = target

@@ -23,13 +23,43 @@ from lerobot.processor import (  # noqa: E402
     robot_action_observation_to_transition,
     transition_to_robot_action,
 )
+import lerobot.scripts.lerobot_record as _lerobot_record  # noqa: E402
 from lerobot.scripts.lerobot_record import record  # noqa: E402
+from lerobot.utils.keyboard_input import (  # noqa: E402
+    apply_recording_control,
+    create_key_listener,
+)
 
 from joint_keyboard_teleop import (  # noqa: E402,F401
     DeltaToPosition, JointKeyboardTeleop, base_keymap, describe_keymap, load_keymap,
 )
 
 KEY_TEST_SECONDS = 20
+
+
+def arrows_only_listener():
+    """lerobot-record's episode controls, WITHOUT its letter shortcuts.
+
+    lerobot binds n/r/q as well as the arrows and Esc, and with pynput both
+    its listener and ours receive every key -- so q, which drives the
+    shoulder, would also quit the recording. Same events dict and same
+    backend selection as lerobot's own init_keyboard_listener; only the
+    letters are dropped.
+    """
+    events = {"exit_early": False, "rerecord_episode": False, "stop_recording": False}
+
+    def on_key(name: str) -> None:
+        key = name.lower()
+        if key in ("right", "left", "esc"):
+            apply_recording_control(key, events)
+
+    listener = create_key_listener(
+        on_key, controls_help="Right = next episode, Left = re-record, Esc = stop")
+    return listener, events
+
+
+# record() looks this name up in its own module at call time.
+_lerobot_record.init_keyboard_listener = arrows_only_listener
 
 
 def keyboard_responds(seconds: int = KEY_TEST_SECONDS) -> bool:
@@ -75,10 +105,10 @@ def key_help() -> None:
     for line in describe_keymap(load_keymap(base_keymap())):
         print(f"    {line}")
     print("  They combine when pressed together.  Shift = quarter speed (fine grasping).")
-    print("  Reserved by lerobot-record, these do not move the arm:")
-    print("    n / right arrow = episode accepted, next one")
-    print("    r / left arrow  = re-record the episode")
-    print("    q / esc         = quit\n")
+    print("  Episode controls (letters are free for the arm):")
+    print("    right arrow = episode accepted, next one")
+    print("    left arrow  = re-record the episode")
+    print("    esc         = stop recording\n")
 
 
 def main() -> int:
